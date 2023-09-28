@@ -242,6 +242,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             ScryptedInterface.Settings.value,
         ])
 
+        if self.has_sip_webrtc_streaming and self.use_sip_webrtc_streaming:
+            results.add(ScryptedInterface.RTCSignalingChannel.value)
+
         if self.has_push_to_talk:
             results.add(ScryptedInterface.Intercom.value)
 
@@ -321,6 +324,13 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             return False
 
     @property
+    def use_sip_webrtc_streaming(self) -> bool:
+        if self.storage:
+            return True if self.storage.getItem("use_sip_webrtc_streaming") else False
+        else:
+            return False
+
+    @property
     def snapshot_throttle_interval(self) -> int:
         interval = self.storage.getItem("snapshot_throttle_interval")
         if interval is None:
@@ -364,6 +374,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     def uses_sip_push_to_talk(self) -> bool:
         return "sip" in self.arlo_capabilities.get("Capabilities", {}).get("PushToTalk", {}).get("signal", [])
 
+    @property
+    def has_sip_webrtc_streaming(self) -> bool:
+        return "SIPStreaming" in self.arlo_capabilities.get("Capabilities", {}).get("Streaming", {})
+
     async def getSettings(self) -> List[Setting]:
         result = []
         if self.has_battery:
@@ -379,7 +393,19 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                     "type": "boolean",
                 },
             )
-        result.extend([
+        if self.has_sip_webrtc_streaming:
+            result.append(
+                {
+                    "group": "General",
+                    "key": "use_sip_webrtc_streaming",
+                    "title": "Use SIP WebRTC Streaming",
+                    "value": self.use_sip_webrtc_streaming,
+                    "description": "This is Arlo's newest streaming protocol, which uses WebRTC over SIP to serve video and 2 way audio. " + \
+                                "If enabled, will disable RTSP and DASH streaming options.",
+                    "type": "boolean",
+                }
+            )
+        result.append(
             {
                 "group": "General",
                 "key": "eco_mode",
@@ -388,17 +414,20 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                 "description": "Configures Scrypted to limit the number of requests made to this camera. " + \
                                "Additional eco mode settings will appear when this is turned on.",
                 "type": "boolean",
-            },
-            {
-                "group": "General",
-                "key": "disable_eager_streams",
-                "title": "Disable Eager Streams",
-                "value": self.disable_eager_streams,
-                "description": "If eager streams are disabled, Scrypted will wait for Arlo Cloud to report that " + \
-                               "the camera stream has started before passing the stream URL to downstream consumers.",
-                "type": "boolean",
-            },
-        ])
+            }
+        )
+        if not self.use_sip_webrtc_streaming:
+            result.append(
+                {
+                    "group": "General",
+                    "key": "disable_eager_streams",
+                    "title": "Disable Eager Streams",
+                    "value": self.disable_eager_streams,
+                    "description": "If eager streams are disabled, Scrypted will wait for Arlo Cloud to report that " + \
+                                "the camera stream has started before passing the stream URL to downstream consumers.",
+                    "type": "boolean",
+                }
+            )
         if self.eco_mode:
             result.append(
                 {
@@ -430,13 +459,13 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             return
 
-        if key in ["wired_to_power"]:
+        if key in ["wired_to_power", "use_sip_webrtc_streaming"]:
             self.storage.setItem(key, value == "true" or value == True)
             await self.provider.discover_devices()
         elif key in ["eco_mode", "disable_eager_streams"]:
             self.storage.setItem(key, value == "true" or value == True)
         elif key == "print_debug":
-            self.logger.info(f"Device Capabilities: {self.arlo_capabilities}")
+            self.logger.info(f"Device Capabilities: {json.dumps(self.arlo_capabilities)}")
         else:
             self.storage.setItem(key, value)
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
@@ -492,7 +521,67 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
             return await scrypted_sdk.mediaManager.createMediaObject(self.last_picture, "image/jpeg")
 
+    @async_print_exception_guard
+    async def startRTCSignalingSession(self, scrypted_session):
+        plugin_session = ArloCameraRTCSignalingSession(self)
+
+        ice_servers = [
+            {
+                "urls": [f"{blob['type']}:{blob['domain']}:{blob['port']}"],
+                "username": blob.get('username'),
+                "credential": blob.get("credential"),
+            }
+            for blob in plugin_session.sip_info["iceServers"]["data"]
+        ]
+
+        scrypted_setup = {
+            "type": "offer",
+            "audio": {
+                "direction": "sendrecv",
+            },
+            "video": {
+                "direction": "recvonly",
+            },
+            "configuration": {
+                "iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]},
+                ] + ice_servers,
+                "iceCandidatePoolSize": 0,
+            }
+        }
+        plugin_setup = {}
+
+        # in this section, we are giving the scrypted consumer a maximum of 3s to gather all
+        # candidates. if a timeout occurs, call createLocalDescription again to fetch the
+        # currentlly available SDP.
+        # for a client like Chrome, gathering candidates could take a long time since it can
+        # take 40s for bad candidates to time out. Chrome is not opposed to creating another
+        # description, so we can do that.
+        # for a client like werift, creating another description causes problems when reading
+        # arlo's SDP, but since werift candidate gathering is fast, we assume that it will finish
+        # within our timeout window.
+        try:
+            scrypted_offer = await asyncio.wait_for(
+                scrypted_session.createLocalDescription("offer", scrypted_setup),
+                timeout=3
+            )
+        except asyncio.TimeoutError:
+            async def ignore_trickle(c):
+                pass
+            scrypted_offer = await scrypted_session.createLocalDescription("offer", scrypted_setup, ignore_trickle)
+
+        self.logger.info(f"Scrypted offer sdp:\n{scrypted_offer['sdp']}")
+        await plugin_session.setRemoteDescription(scrypted_offer, plugin_setup)
+        plugin_answer = await plugin_session.createLocalDescription("answer", plugin_setup)
+        self.logger.info(f"Scrypted answer sdp:\n{plugin_answer['sdp']}")
+        await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
+
+        return ArloCameraRTCSessionControl(plugin_session)
+
     async def getVideoStreamOptions(self, id: str = None) -> List[ResponseMediaStreamOptions]:
+        if self.use_sip_webrtc_streaming:
+            return []
+
         options = [
             {
                 "id": 'default',
@@ -539,6 +628,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     async def getVideoStream(self, options: RequestMediaStreamOptions = {}) -> MediaObject:
         self.logger.debug("Entered getVideoStream")
 
+        if self.use_sip_webrtc_streaming:
+            raise Exception("direct video stream urls are not available when SIP WebRTC is enabled")
+
         mso = await self.getVideoStreamOptions(id=options.get("id", "default"))
         mso['refreshAt'] = round(time.time() * 1000) + 30 * 60 * 1000
         container = mso["container"]
@@ -569,6 +661,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     @async_print_exception_guard
     async def startIntercom(self, media: MediaObject) -> None:
         self.logger.info("Starting intercom")
+
+        if self.use_sip_webrtc_streaming:
+            raise Exception("direct intercom connections are not available when SIP WebRTC is enabled")
 
         if self.uses_sip_push_to_talk:
             # signaling happens over sip
@@ -922,3 +1017,72 @@ class ArloCameraSIPIntercomSession(ArloCameraIntercomSession):
         if self.arlo_sip is not None:
             self.arlo_sip.Close()
             self.arlo_sip = None
+
+class ArloCameraRTCSignalingSession(BackgroundTaskMixin):
+    def __init__(self, camera: ArloCamera) -> None:
+        super().__init__()
+        self.camera = camera
+        self.provider = camera.provider
+        self.logger = camera.logger
+        self.arlo_sip = None
+        self.sip_info = self.provider.arlo.GetSIPInfoV2(self.camera.arlo_device)
+
+    def __del__(self) -> None:
+        self.stop_subscriptions = True
+        self.cancel_pending_tasks()
+
+    async def createLocalDescription(self, type, setup, sendIceCandidate=None) -> dict:
+        if type == "offer":
+            raise Exception("can only create answers in ArloCameraRTCSignalingSession.createLocalDescription")
+        if self.arlo_sip is None:
+            raise Exception("need to initialize sip with setRemoteDescription first")
+
+        answer_sdp = self.arlo_sip.Start()
+        return {
+            "sdp": answer_sdp,
+            "type": "answer"
+        }
+
+    async def setRemoteDescription(self, description, setup) -> None:
+        if description["type"] != "offer":
+            raise Exception("can only accept offers in ArloCameraRTCSignalingSession.createLocalDescription")
+
+        sip_call_info = self.sip_info["sipCallInfo"]
+        ice_servers = scrypted_arlo_go.Slice_webrtc_ICEServer([])
+        sip_cfg = scrypted_arlo_go.SIPInfo(
+            DeviceID=self.camera.nativeId,
+            CallerURI=f"sip:{sip_call_info['id']}@{sip_call_info['domain']}:7443",
+            CalleeURI=sip_call_info['calleeUri'],
+            Password=sip_call_info['password'],
+            UserAgent="SIP.js/0.21.1",
+            WebsocketURI="wss://livestream-z2-prod.arlo.com:7443",
+            WebsocketOrigin="https://my.arlo.com",
+            WebsocketHeaders=scrypted_arlo_go.HeadersMap({"User-Agent": USER_AGENTS["firefox"]}),
+            SDP=description["sdp"],
+        )
+
+        self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(self.camera.logger_server_port, ice_servers, sip_cfg)
+
+
+class ArloCameraRTCSessionControl:
+    def __init__(self, arlo_session: ArloCameraRTCSignalingSession) -> None:
+        self.arlo_session = arlo_session
+        self.logger = arlo_session.logger
+
+    async def getRefreshAt(self) -> int:
+        pass
+
+    async def extendSession(self) -> None:
+        pass
+
+    async def endSession(self) -> None:
+        self.logger.info("Ending RTC session")
+        self.arlo_session.arlo_sip.Close()
+
+    async def setPlayback(self, options) -> None:
+        self.logger.debug(f"setPlayback options {options}")
+
+        if options["audio"]:
+            self.arlo_session.arlo_sip.StartTalk()
+        else:
+            self.arlo_session.arlo_sip.StopTalk()
