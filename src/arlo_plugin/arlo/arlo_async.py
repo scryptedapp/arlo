@@ -1074,6 +1074,37 @@ class Arlo(object):
             }
         })
 
+    def GetMode(self) -> dict:
+        currentmode = self._getMode()
+        return [currentmode[list(currentmode.keys())[0]]['properties']['mode'], list(currentmode.keys())[0], currentmode[list(currentmode.keys())[0]]['revision']]
+
+    def _getMode(self) -> dict:
+        device_id = str(uuid.uuid4())
+        headers = {
+            'Origin': f'https://{self.BASE_URL}',
+            'Referer': f'https://{self.BASE_URL}/',
+            'x-user-device-id': device_id,
+            'x-forwarded-user': self.user_id,
+        }
+        return self.request.get(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
+
+    def SetMode(self, newmode_value, location_value, moderevision_value) -> dict:
+        newmode = self._setMode(newmode_value, location_value, moderevision_value)
+        return
+
+    def _setMode(self, setmode, setlocation, setrevision) -> dict:
+        device_id = str(uuid.uuid4())
+        headers = {
+            'Origin': f'https://{self.BASE_URL}',
+            'Referer': f'https://{self.BASE_URL}/',
+            'x-user-device-id': device_id,
+            'x-forwarded-user': self.user_id,
+        }
+        params = {
+            'mode': setmode,
+        }
+        return self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={setlocation}&revision={setrevision}', params=params, headers=headers)
+
     def GetLibrary(self, device, from_date: datetime, to_date: datetime):
         """
         This call returns the following:

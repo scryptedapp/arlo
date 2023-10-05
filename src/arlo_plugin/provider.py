@@ -22,11 +22,12 @@ from .camera import ArloCamera
 from .doorbell import ArloDoorbell
 from .basestation import ArloBasestation
 from .base import ArloDeviceBase
-
+from .mvss import ArloModeVirtualSecuritySystem
 
 class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceLoggerMixin, BackgroundTaskMixin):
     arlo_cameras = None
     arlo_basestations = None
+    arlo_mvss = None
     all_device_ids: set = set()
     _arlo_mfa_code = None
     scrypted_devices = None
@@ -49,6 +50,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
         self.arlo_cameras = {}
         self.arlo_basestations = {}
+        self.arlo_mvss = {}
         self.scrypted_devices = {}
         self.imap = None
         self.imap_signal = None
@@ -176,6 +178,22 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         return ids
 
     @property
+    def mode_enabled(self) -> bool:
+        securitymode = self.storage.getItem("mode_enabled")
+        if securitymode is None and (self.mode_device is None or self.mode_device == ""):
+            securitymode = False
+            self.storage.setItem("mode_enabled", securitymode)
+        return securitymode
+
+    @property
+    def mode_device(self) -> str:
+        modedevice = self.storage.getItem("mode_device")
+        if modedevice is None:
+            modedevice = ""
+            self.storage.setItem("mode_device", modedevice)
+        return modedevice
+
+    @property
     def arlo(self) -> Arlo:
         if self._arlo is not None:
             if self._arlo_mfa_complete_auth is not None:
@@ -262,6 +280,14 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.print(f"Setting plugin transport to {self.arlo_transport}")
         change_stream_class(self.arlo_transport)
 
+    def propagate_mode(self) -> None:
+        if self.mode_enabled == False:
+            self.print(f"Setting Mode Security System to {not self.mode_enabled}")
+            self.storage.setItem("mode_enabled", True)
+        else:
+            self.print(f"Setting Mode Security System to {self.mode_enabled}")
+            self.storage.setItem("mode_enabled", False)
+
     def initialize_imap(self, try_count=1) -> None:
         if not self.imap_mfa_host or not self.imap_mfa_port or \
             not self.imap_mfa_username or not self.imap_mfa_password or \
@@ -281,7 +307,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 raise Exception(f"IMAP failed to fetch INBOX: {res}")
 
             # fetch existing arlo emails so we skip them going forward
-            res, self.imap_skip_emails = self.imap.search(None, "FROM", "do_not_reply@arlo.com")
+            res, self.imap_skip_emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
             if res.lower() != "ok":
                 raise Exception(f"IMAP failed to fetch old Arlo emails: {res}")
         except Exception:
@@ -558,6 +584,14 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 "multiple": True,
                 "choices": [id for id in self.all_device_ids],
             },
+            {
+                "group": "General",
+                "key": "mode_enabled",
+                "title": "Mode Enabled",
+                "description": "Enable to allow Scrypted to handle changing Modes in the Arlo App.",
+                "value": self.mode_enabled,
+                "type": "boolean",
+            },
         ])
 
         return results
@@ -577,6 +611,12 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         elif key == "plugin_verbosity":
             self.storage.setItem(key, "Verbose" if value == "true" or value == True else "Normal")
             self.propagate_verbosity()
+            skip_arlo_client = True
+        elif key == "mode_enabled":
+            if self._arlo is not None and self._arlo.logged_in:
+                self.propagate_mode()
+                self._arlo.Unsubscribe()
+                await self.do_arlo_setup()
             skip_arlo_client = True
         else:
             self.storage.setItem(key, value)
@@ -657,6 +697,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.logger.info("Discovering devices...")
         self.arlo_cameras = {}
         self.arlo_basestations = {}
+        self.arlo_mvss = {}
         self.all_device_ids = set()
         self.scrypted_devices = {}
 
@@ -682,7 +723,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
             device = await self.getDevice_impl(nativeId)
             scrypted_interfaces = device.get_applicable_interfaces()
-            manifest = device.get_device_manifest()
+            manifest = device.get_device_manifest(nativeId)
             self.logger.debug(f"Interfaces for {nativeId} ({basestation['modelId']}): {scrypted_interfaces}")
 
             # for basestations, we want to add them to the top level DeviceProvider
@@ -718,7 +759,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             if nativeId in self.hidden_device_ids:
                 self.logger.info(f"Skipping camera {camera['deviceId']} ({camera['modelId']}) because it is hidden")
                 continue
- 
+
             self.arlo_cameras[nativeId] = camera
 
             if camera["deviceId"] == camera["parentId"]:
@@ -728,7 +769,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
             device = await self.getDevice_impl(nativeId)
             scrypted_interfaces = device.get_applicable_interfaces()
-            manifest = device.get_device_manifest()
+            manifest = device.get_device_manifest(nativeId)
             self.logger.debug(f"Interfaces for {nativeId} ({camera['modelId']} parent {camera['parentId']}): {scrypted_interfaces}")
 
             if camera["deviceId"] == camera["parentId"] or camera["parentId"] in self.hidden_device_ids:
@@ -754,6 +795,45 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                              "admin permissions in the Arlo app.")
         else:
             self.logger.info(f"Discovered {len(cameras)} cameras")
+
+        if (self.mode_enabled == True and self.mode_device is None) or (self.mode_enabled == True and self.mode_device == ""):
+            mvss_dict = self.arlo.GetDevices(['basestation', 'camera'])
+
+            mvss_device = mvss_dict[0]
+            nativeId = f'{mvss_device["deviceId"]}.mvss'
+            self.storage.setItem("mode_device", nativeId)
+        elif (self.mode_enabled == True and self.mode_device.endswith("mvss")):
+            mvss_dict = self.arlo.GetDevices(['basestation', 'camera'])
+            nativeId = self.mode_device.replace('.mvss', '')
+            mvss_device = next(item for item in mvss_dict if item['deviceId'] == nativeId)
+            nativeId = f'{mvss_device["deviceId"]}.mvss'
+
+        self.all_device_ids.add(f"Arlo Mode Virtual Security System ({nativeId})")
+
+        self.logger.debug(f"Adding {nativeId}")
+
+        if (mvss_device["deviceId"] != mvss_device["parentId"] or mvss_device["parentId"] is None):
+            mvss_device["parentId"] = mvss_device["deviceId"]
+
+        self.arlo_mvss[nativeId] = mvss_device
+
+        device = await self.getDevice_impl(nativeId)
+        scrypted_interfaces = device.get_applicable_interfaces()
+        manifest = device.get_device_manifest(nativeId)
+
+        self.logger.debug(f"Interfaces for {nativeId} ({mvss_device['modelId']} parent {mvss_device['parentId']}): {scrypted_interfaces}")
+
+        if mvss_device["parentId"] is not None:
+            if mvss_device["deviceId"] == mvss_device["parentId"] or mvss_device["parentId"] in self.hidden_device_ids:
+                provider_to_device_map.setdefault(None, []).append(manifest)
+            else:
+                provider_to_device_map.setdefault(mvss_device["parentId"], []).append(manifest)
+        else:
+            provider_to_device_map.setdefault(mvss_device["deviceId"], []).append(manifest)
+
+        await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+
+        self.logger.info(f"Discovered 1 mode virtual security system")
 
         for provider_id in provider_to_device_map.keys():
             if provider_id is None:
@@ -793,9 +873,14 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         return ret
 
     def create_device(self, nativeId: str) -> ArloDeviceBase:
-        if nativeId not in self.arlo_cameras and nativeId not in self.arlo_basestations:
+        if nativeId not in self.arlo_cameras and nativeId not in self.arlo_basestations and nativeId not in self.arlo_mvss:
             self.logger.warning(f"Cannot create device for nativeId {nativeId}, maybe it hasn't been loaded yet?")
             return None
+
+        if nativeId.endswith("mvss"):
+            arlo_device = self.arlo_mvss[nativeId]
+            arlo_basestation = self.arlo_mvss[nativeId]
+            return ArloModeVirtualSecuritySystem(nativeId, arlo_device, arlo_basestation, self, nativeId)
 
         arlo_device = self.arlo_cameras.get(nativeId)
         if not arlo_device:

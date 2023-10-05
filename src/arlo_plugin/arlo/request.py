@@ -73,7 +73,10 @@ class Request(object):
         #"""
 
         if not skip_event_id:
-            url = f'{url}?eventId={self.gen_event_id()}&time={self.get_time()}'
+            if "automation" not in url:
+                url = f'{url}?eventId={self.gen_event_id()}&time={self.get_time()}'
+            else:
+                url = f'{url}&eventId={self.gen_event_id()}&time={self.get_time()}'
 
         if method == 'GET':
             #print('COOKIES: ', self.session.cookies.get_dict())
