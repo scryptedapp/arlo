@@ -44,10 +44,8 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
 
         mode_location_revision = self.provider.arlo.GetMode()
         mode = mode_location_revision[0]
-        location = mode_location_revision[1]
-        revision = str(int(mode_location_revision[2]) + 1)
-        self.storage.setItem("mode_location", location)
-        self.storage.setItem("mode_revision", revision)
+        self.storage.setItem("mode_location", mode_location_revision[1])
+        self.storage.setItem("mode_revision", str(int(mode_location_revision[2]) + 1))
 
         if mode == "armAway":
             mode = SecuritySystemMode.AwayArmed.value
@@ -56,14 +54,17 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         elif mode == "standby":
             mode = SecuritySystemMode.Disarmed.value
 
+        self.securitySystemState = {
+            **self.securitySystemState,
+            "mode": mode,
+        }
+
         if mode is None or mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
             raise ValueError(f"invalid mode {mode}")
         return mode
 
     @mode.setter
     def mode(self, mode: str) -> None:
-        if mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
-            raise ValueError(f"invalid mode {mode}")
         self.storage.setItem("mode", mode)
         self.securitySystemState = {
             **self.securitySystemState,
@@ -122,9 +123,9 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
 
         if newmode == SecuritySystemMode.AwayArmed.value:
             newmode = "armAway"
-        if newmode == SecuritySystemMode.HomeArmed.value:
+        elif newmode == SecuritySystemMode.HomeArmed.value:
             newmode = "armHome"
-        if newmode == SecuritySystemMode.Disarmed.value:
+        elif newmode == SecuritySystemMode.Disarmed.value:
             newmode = "standby"
 
         self.provider.arlo.SetMode(newmode, self.mode_location, self.mode_revision)
@@ -136,14 +137,70 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         elif newmode == "standby":
             newmode = SecuritySystemMode.Disarmed.value
 
+        self.storage.setItem("mode", newmode)
+        self.securitySystemState = {
+            **self.securitySystemState,
+            "mode": newmode,
+        }
+
         if self.mode is None or self.mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
             raise ValueError(f"invalid mode {self.mode}")
 
     async def getReadmeMarkdown(self) -> str:
         return """
-# Virtual Security System for Arlo Modes
+# Virtual Security System for Arlo Security Modes
 
 This security system device is not a real physical device, but a virtual, emulated device provided by the Arlo Scrypted plugin. Its purpose is to grant security system semantics of Arm Away/Arm Home/Disarm of the Arlo App Routines through integrations such as Homekit.
 
 Making changes to this device will perform changes to Arlo cloud and your Arlo account, it is possible that in using this device that you can change the mode outside of the Arlo App which will affect any automations or routines you have.
 """.strip()
+
+    @async_print_exception_guard
+    async def armSecuritySystem(self, mode: SecuritySystemMode) -> None:
+        self.logger.info("Setting Arlo Security Mode")
+
+        newmode = mode
+
+        if newmode == SecuritySystemMode.AwayArmed.value:
+            newmode = "armAway"
+        elif newmode == SecuritySystemMode.HomeArmed.value:
+            newmode = "armHome"
+        elif newmode == SecuritySystemMode.Disarmed.value:
+            newmode = "standby"
+
+        self.provider.arlo.SetMode(newmode, self.mode_location, self.mode_revision)
+
+        if newmode == "armAway":
+            newmode = SecuritySystemMode.AwayArmed.value
+        elif newmode == "armHome":
+            newmode = SecuritySystemMode.HomeArmed.value
+        elif newmode == "standby":
+            newmode = SecuritySystemMode.Disarmed.value
+
+        self.storage.setItem("mode", newmode)
+        self.securitySystemState = {
+            **self.securitySystemState,
+            "mode": newmode,
+        }
+
+        if self.mode is None or self.mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
+            raise ValueError(f"invalid mode {self.mode}")
+
+    @async_print_exception_guard
+    async def disarmSecuritySystem(self) -> None:
+        self.logger.info("Setting Arlo Security Mode")
+
+        newmode = "standby"
+
+        self.provider.arlo.SetMode(newmode, self.mode_location, self.mode_revision)
+
+        newmode = SecuritySystemMode.Disarmed.value
+
+        self.storage.setItem("mode", newmode)
+        self.securitySystemState = {
+            **self.securitySystemState,
+            "mode": newmode,
+        }
+
+        if self.mode is None or self.mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
+            raise ValueError(f"invalid mode {self.mode}")
