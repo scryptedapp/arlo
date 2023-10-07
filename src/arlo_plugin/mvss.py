@@ -1,3 +1,4 @@
+"""Created new mvss.py based on existing vss.py and cleaned out code that was not needed for the siren."""
 from __future__ import annotations
 
 import asyncio
@@ -19,9 +20,11 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, parent: str) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
+        """Sets the parent as the nativeId passed through the call from provider.py."""
         self.parent = parent
         self.create_task(self.delayed_init())
 
+    """Storage Location for holding the location code required to pass back on the put request."""
     @property
     def mode_location(self) -> str:
         _mode_location = self.storage.getItem("mode_location")
@@ -30,6 +33,7 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
             self.storage.setItem("mode_location", _mode_location)
         return _mode_location
 
+    """Storage Location for holding the revision code required to pass back on the put request."""
     @property
     def mode_revision(self) -> str:
         _mode_revision = self.storage.getItem("mode_revision")
@@ -39,14 +43,16 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         return _mode_revision
 
     @property
-    def mode(self) -> str:
+    def mode(self) -> SecuritySystemMode:
         self.logger.info("Getting Current Arlo Security Mode")
 
+        """Calls out to the Arlo API to get the current mode, location code, and revision number and brings them back and stores them."""
         mode_location_revision = self.provider.arlo.GetMode()
-        mode = mode_location_revision[0]
+        mode: SecuritySystemMode = mode_location_revision[0]
         self.storage.setItem("mode_location", mode_location_revision[1])
         self.storage.setItem("mode_revision", str(int(mode_location_revision[2]) + 1))
 
+        """Converts the Arlo Modes to the Homekit Modes."""
         if mode == "armAway":
             mode = SecuritySystemMode.AwayArmed.value
         elif mode == "armHome":
@@ -54,6 +60,7 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         elif mode == "standby":
             mode = SecuritySystemMode.Disarmed.value
 
+        """Required by Homekit to force set the mode of the Security System."""
         self.securitySystemState = {
             **self.securitySystemState,
             "mode": mode,
@@ -64,7 +71,9 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         return mode
 
     @mode.setter
-    def mode(self, mode: str) -> None:
+    def mode(self, mode: SecuritySystemMode) -> None:
+        if mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
+            raise ValueError(f"invalid mode {mode}")
         self.storage.setItem("mode", mode)
         self.securitySystemState = {
             **self.securitySystemState,
@@ -80,6 +89,7 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
                 return
 
             try:
+                print(type(ArloModeVirtualSecuritySystem.SUPPORTED_MODES))
                 self.securitySystemState = {
                     "supportedModes": ArloModeVirtualSecuritySystem.SUPPORTED_MODES,
                     "mode": self.mode,
@@ -105,21 +115,21 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         return [
             {
                 "key": "mode",
-                "title": "Arm Mode",
-                "description": "Change this value to Change the Mode in Your Arlo App.",
+                "title": "Security Mode",
+                "description": "Change this value to Change the Security Mode in Your Arlo App.",
                 "value": self.mode,
                 "choices": ArloModeVirtualSecuritySystem.SUPPORTED_MODES,
             },
         ]
 
-    @async_print_exception_guard
     async def putSetting(self, key: str, value: SettingValue) -> None:
         if key != "mode":
             raise ValueError(f"invalid setting {key}")
 
+        """This starts configuring the variables to go into the put request to change the Security Mode through the Arlo API."""
         self.logger.info("Setting Arlo Security Mode")
 
-        newmode = value
+        newmode: SecuritySystemMode = value
 
         if newmode == SecuritySystemMode.AwayArmed.value:
             newmode = "armAway"
@@ -128,8 +138,10 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         elif newmode == SecuritySystemMode.Disarmed.value:
             newmode = "standby"
 
+        """Calling the Arlo API put request to change the Security Mode."""
         self.provider.arlo.SetMode(newmode, self.mode_location, self.mode_revision)
 
+        """Converting the Arlo Modes back to Homekit Modes and storing them and force setting the Security System."""
         if newmode == "armAway":
             newmode = SecuritySystemMode.AwayArmed.value
         elif newmode == "armHome":
@@ -155,11 +167,12 @@ This security system device is not a real physical device, but a virtual, emulat
 Making changes to this device will perform changes to Arlo cloud and your Arlo account, it is possible that in using this device that you can change the mode outside of the Arlo App which will affect any automations or routines you have.
 """.strip()
 
+    """Using the same configurations of the get and set settings for the Homekit calls to arm and disarm the Security System."""
     @async_print_exception_guard
     async def armSecuritySystem(self, mode: SecuritySystemMode) -> None:
         self.logger.info("Setting Arlo Security Mode")
 
-        newmode = mode
+        newmode: SecuritySystemMode = mode
 
         if newmode == SecuritySystemMode.AwayArmed.value:
             newmode = "armAway"
@@ -190,7 +203,7 @@ Making changes to this device will perform changes to Arlo cloud and your Arlo a
     async def disarmSecuritySystem(self) -> None:
         self.logger.info("Setting Arlo Security Mode")
 
-        newmode = "standby"
+        newmode: SecuritySystemMode = "standby"
 
         self.provider.arlo.SetMode(newmode, self.mode_location, self.mode_revision)
 

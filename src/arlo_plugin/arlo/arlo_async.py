@@ -1073,7 +1073,7 @@ class Arlo(object):
                 }
             }
         })
-
+    """Added Get and Put Requests to the Arlo API for the Arlo App Secuity Mode and to return the required values from the Get Request."""
     def GetMode(self) -> dict:
         currentmode = self._getMode()
         return [currentmode[list(currentmode.keys())[0]]['properties']['mode'], list(currentmode.keys())[0], currentmode[list(currentmode.keys())[0]]['revision']]

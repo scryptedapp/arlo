@@ -50,7 +50,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     def get_device_type(self) -> str:
         """Returns the Scrypted device type that applies to this device."""
         return ""
-
+    """Added the nativeId to the passable variables so that the manifest can be customized for the Arlo Mode Security System as a Top Level Device."""
     def get_device_manifest(self, nativeId: str) -> Device:
         """Returns the Scrypted device manifest representing this device."""
         parent = None
@@ -59,7 +59,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
 
         if parent in self.provider.hidden_device_ids:
             parent = None
-
+        """Added the if statement to determine which manifest to return."""
         if self.provider.mode_enabled == True and nativeId.endswith("mvss"):
             return {
                 "info": {
