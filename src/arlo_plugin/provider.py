@@ -589,8 +589,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 "multiple": True,
                 "choices": [id for id in self.all_device_ids],
             },
-            """Add the new Mode Enabled Option to the Settings under the General Tab."""
             {
+                """Add the new Mode Enabled Option to the Settings under the General Tab."""
                 "group": "General",
                 "key": "mode_enabled",
                 "title": "Mode Enabled",
@@ -618,8 +618,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.storage.setItem(key, "Verbose" if value == "true" or value == True else "Normal")
             self.propagate_verbosity()
             skip_arlo_client = True
-        """When Settings are saved update the Mode Enabled Value and run the setup to either find devices or remove them."""
         elif key == "mode_enabled":
+            """When Settings are saved update the Mode Enabled Value and run the setup to either find devices or remove them."""
             if self._arlo is not None and self._arlo.logged_in:
                 self.propagate_mode()
                 self._arlo.Unsubscribe()
@@ -812,8 +812,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             mvss_device = mvss_dict[0]
             nativeId = f'{mvss_device["deviceId"]}.mvss'
             self.storage.setItem("mode_device", nativeId)
-        """If there is already a primary device being used for the Virtual Security System, it uses that Id. Checks to see if it is still in your devices in Arlo and if not, selects a new primary device."""
         elif self.mode_enabled == True and self.mode_device.endswith("mvss"):
+            """If there is already a primary device being used for the Virtual Security System, it uses that Id. Checks to see if it is still in your devices in Arlo and if not, selects a new primary device."""
             mvss_dict = self.arlo.GetDevices(['basestation', 'camera'])
             mvss_device = next(item for item in mvss_dict if item['deviceId'] == self.mode_device.replace('.mvss', ''))
             if mvss_device == None:
