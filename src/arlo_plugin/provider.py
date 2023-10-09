@@ -466,6 +466,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.logger.info(f"Exiting IMAP refresh loop {id(imap_signal)}")
                 return
 
+    """Add the new Mode Enabled Option to the Settings under the General Tab."""
     async def getSettings(self) -> List[Setting]:
         results = [
             {
@@ -590,7 +591,6 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 "choices": [id for id in self.all_device_ids],
             },
             {
-                """Add the new Mode Enabled Option to the Settings under the General Tab."""
                 "group": "General",
                 "key": "mode_enabled",
                 "title": "Mode Enabled",
@@ -624,7 +624,6 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.propagate_mode()
                 self._arlo.Unsubscribe()
                 await self.do_arlo_setup()
-            skip_arlo_client = True
         else:
             self.storage.setItem(key, value)
 
@@ -812,6 +811,24 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             mvss_device = mvss_dict[0]
             nativeId = f'{mvss_device["deviceId"]}.mvss'
             self.storage.setItem("mode_device", nativeId)
+
+            self.all_device_ids.add(f"Arlo Mode Virtual Security System ({nativeId})")
+
+            self.logger.debug(f"Adding {nativeId}")
+
+            self.arlo_mvss[nativeId] = mvss_device
+
+            device = await self.getDevice_impl(nativeId)
+            scrypted_interfaces = device.get_applicable_interfaces()
+            manifest = device.get_device_manifest(nativeId)
+
+            self.logger.debug(f"Interfaces for {nativeId} ({mvss_device['modelId']} parent {mvss_device['parentId']}): {scrypted_interfaces}")
+
+            provider_to_device_map.setdefault(None, []).append(manifest)
+
+            await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+
+            self.logger.info(f"Discovered 1 mode virtual security system")
         elif self.mode_enabled == True and self.mode_device.endswith("mvss"):
             """If there is already a primary device being used for the Virtual Security System, it uses that Id. Checks to see if it is still in your devices in Arlo and if not, selects a new primary device."""
             mvss_dict = self.arlo.GetDevices(['basestation', 'camera'])
@@ -821,23 +838,23 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             nativeId = f'{mvss_device["deviceId"]}.mvss'
             self.storage.setItem("mode_device", nativeId)
 
-        self.all_device_ids.add(f"Arlo Mode Virtual Security System ({nativeId})")
+            self.all_device_ids.add(f"Arlo Mode Virtual Security System ({nativeId})")
 
-        self.logger.debug(f"Adding {nativeId}")
+            self.logger.debug(f"Adding {nativeId}")
 
-        self.arlo_mvss[nativeId] = mvss_device
+            self.arlo_mvss[nativeId] = mvss_device
 
-        device = await self.getDevice_impl(nativeId)
-        scrypted_interfaces = device.get_applicable_interfaces()
-        manifest = device.get_device_manifest(nativeId)
+            device = await self.getDevice_impl(nativeId)
+            scrypted_interfaces = device.get_applicable_interfaces()
+            manifest = device.get_device_manifest(nativeId)
 
-        self.logger.debug(f"Interfaces for {nativeId} ({mvss_device['modelId']} parent {mvss_device['parentId']}): {scrypted_interfaces}")
+            self.logger.debug(f"Interfaces for {nativeId} ({mvss_device['modelId']} parent {mvss_device['parentId']}): {scrypted_interfaces}")
 
-        provider_to_device_map.setdefault(None, []).append(manifest)
+            provider_to_device_map.setdefault(None, []).append(manifest)
 
-        await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+            await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
 
-        self.logger.info(f"Discovered 1 mode virtual security system")
+            self.logger.info(f"Discovered 1 mode virtual security system")
 
         for provider_id in provider_to_device_map.keys():
             if provider_id is None:

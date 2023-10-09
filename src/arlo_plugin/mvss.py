@@ -60,12 +60,6 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         elif mode == "standby":
             mode = SecuritySystemMode.Disarmed.value
 
-        """Required by Homekit to force set the mode of the Security System."""
-        self.securitySystemState = {
-            **self.securitySystemState,
-            "mode": mode,
-        }
-
         if mode is None or mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
             raise ValueError(f"invalid mode {mode}")
         return mode
@@ -89,7 +83,6 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
                 return
 
             try:
-                print(type(ArloModeVirtualSecuritySystem.SUPPORTED_MODES))
                 self.securitySystemState = {
                     "supportedModes": ArloModeVirtualSecuritySystem.SUPPORTED_MODES,
                     "mode": self.mode,
