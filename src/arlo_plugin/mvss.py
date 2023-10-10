@@ -22,35 +22,39 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
         """Sets the parent as the nativeId passed through the call from provider.py."""
         self.parent = parent
+        self.nativeId = nativeId
         self.create_task(self.delayed_init())
 
     """Storage Location for holding the location code required to pass back on the put request."""
     @property
     def mode_location(self) -> str:
-        _mode_location = self.storage.getItem("mode_location")
-        if _mode_location is None:
-            _mode_location = ""
-            self.storage.setItem("mode_location", _mode_location)
-        return _mode_location
+        mode_location_revision = self.provider.arlo.GetMode()
+        mode_location = mode_location_revision[1]
+        return mode_location
+
+    @mode_location.setter
+    def mode_location(self, mode_location: str) -> None:
+        self.storage.setItem("mode_location", mode_location)
+
 
     """Storage Location for holding the revision code required to pass back on the put request."""
     @property
     def mode_revision(self) -> str:
-        _mode_revision = self.storage.getItem("mode_revision")
-        if _mode_revision is None:
-            _mode_revision = ""
-            self.storage.setItem("mode_revision", _mode_revision)
-        return _mode_revision
+        mode_location_revision = self.provider.arlo.GetMode()
+        mode_revision = str(int(mode_location_revision[2]) + 1)
+        return mode_revision
+
+    @mode_revision.setter
+    def mode_revision(self, mode_revision: str) -> None:
+        self.storage.setItem("mode_revision", mode_revision)
 
     @property
-    def mode(self) -> SecuritySystemMode:
+    def mode(self) -> str:
         self.logger.info("Getting Current Arlo Security Mode")
 
         """Calls out to the Arlo API to get the current mode, location code, and revision number and brings them back and stores them."""
         mode_location_revision = self.provider.arlo.GetMode()
-        mode: SecuritySystemMode = mode_location_revision[0]
-        self.storage.setItem("mode_location", mode_location_revision[1])
-        self.storage.setItem("mode_revision", str(int(mode_location_revision[2]) + 1))
+        mode = mode_location_revision[0]
 
         """Converts the Arlo Modes to the Homekit Modes."""
         if mode == "armAway":
@@ -65,7 +69,7 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         return mode
 
     @mode.setter
-    def mode(self, mode: SecuritySystemMode) -> None:
+    def mode(self, mode: str) -> None:
         if mode not in ArloModeVirtualSecuritySystem.SUPPORTED_MODES:
             raise ValueError(f"invalid mode {mode}")
         self.storage.setItem("mode", mode)
@@ -83,6 +87,7 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
                 return
 
             try:
+                await asyncio.sleep(0.1)
                 self.securitySystemState = {
                     "supportedModes": ArloModeVirtualSecuritySystem.SUPPORTED_MODES,
                     "mode": self.mode,
