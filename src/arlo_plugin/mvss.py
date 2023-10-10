@@ -22,7 +22,6 @@ class ArloModeVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
         """Sets the parent as the nativeId passed through the call from provider.py."""
         self.parent = parent
-        self.nativeId = nativeId
         self.create_task(self.delayed_init())
 
     """Storage Location for holding the location code required to pass back on the put request."""
