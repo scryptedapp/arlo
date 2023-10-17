@@ -23,13 +23,13 @@ from .doorbell import ArloDoorbell
 from .basestation import ArloBasestation
 from .base import ArloDeviceBase
 """Added the mvss value as it will be a top level device, even though it is being built from an existing device, it changes the value for all devices and it does not matter what device it is created from."""
-from .mvss import ArloModeVirtualSecuritySystem
+from .smss import ArloSecurityModeSecuritySystem
 
 class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceLoggerMixin, BackgroundTaskMixin):
     arlo_cameras = None
     arlo_basestations = None
-    """Initialized the new mvss type as a variable to have the device stored in."""
-    arlo_mvss = None
+    """Initialized the new smss type as a variable to have the device stored in."""
+    arlo_smss = None
     all_device_ids: set = set()
     _arlo_mfa_code = None
     scrypted_devices = None
@@ -52,7 +52,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
         self.arlo_cameras = {}
         self.arlo_basestations = {}
-        self.arlo_mvss = {}
+        self.arlo_smss = {}
         self.scrypted_devices = {}
         self.imap = None
         self.imap_signal = None
@@ -284,13 +284,15 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.print(f"Setting plugin transport to {self.arlo_transport}")
         change_stream_class(self.arlo_transport)
 
-    """Change the Mode Enabled Value."""
+    """Change the Mode Enabled Value and resetting the Mode Device."""
     def propagate_mode(self) -> None:
-        self.print(f"Setting Mode Security System to {not self.mode_enabled}")
+        self.print(f"Setting Security Mode Security System to {not self.mode_enabled}")
         if self.mode_enabled == False:
             self.storage.setItem("mode_enabled", True)
+            self.storage.setItem("mode_device", "")
         else:
             self.storage.setItem("mode_enabled", False)
+            self.storage.setItem("mode_device", "")
 
     def initialize_imap(self, try_count=1) -> None:
         if not self.imap_mfa_host or not self.imap_mfa_port or \
@@ -593,8 +595,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             {
                 "group": "General",
                 "key": "mode_enabled",
-                "title": "Mode Enabled",
-                "description": "Enable to allow Scrypted to handle changing Modes in the Arlo App.",
+                "title": "Allow Scrypted to Control Arlo Security Modes",
+                "description": "Enable to allow Scrypted to handle changing Security Modes in the Arlo App.",
                 "value": self.mode_enabled,
                 "type": "boolean",
             },
@@ -704,7 +706,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.arlo_cameras = {}
         self.arlo_basestations = {}
         """Initialize the variable for storage."""
-        self.arlo_mvss = {}
+        self.arlo_smss = {}
         self.all_device_ids = set()
         self.scrypted_devices = {}
 
@@ -805,56 +807,56 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         else:
             self.logger.info(f"Discovered {len(cameras)} cameras")
 
-        """Checks if Security Mode is enabled and if there isn't a primary device already selected. Chooses the first base station or camera and uses that."""
-        if self.mode_enabled == True and (self.mode_device is None or self.mode_device == ""):
-            mvss_dict = self.arlo.GetDevices(['basestation', 'camera'])
-            mvss_device = mvss_dict[0]
-            nativeId = f'{mvss_device["deviceId"]}.mvss'
+        """Checks if Security Mode Controls are enabled and if there isn't a primary device already selected. Chooses the first base station or camera and uses that."""
+        if self.mode_enabled == True and (self.mode_device is not None or self.mode_device == ""):
+            smss_dict = self.arlo.GetDevices(['basestation', 'camera'])
+            smss_device = smss_dict[0]
+            nativeId = f'{smss_device["deviceId"]}.smss'
             self.storage.setItem("mode_device", nativeId)
 
-            self.all_device_ids.add(f"Arlo Mode Virtual Security System ({nativeId})")
+            self.all_device_ids.add(f"Arlo Security Mode Security System ({nativeId})")
 
             self.logger.debug(f"Adding {nativeId}")
 
-            self.arlo_mvss[nativeId] = mvss_device
+            self.arlo_smss[nativeId] = smss_device
 
             device = await self.getDevice_impl(nativeId)
             scrypted_interfaces = device.get_applicable_interfaces()
             manifest = device.get_device_manifest(nativeId)
 
-            self.logger.debug(f"Interfaces for {nativeId} ({mvss_device['modelId']} parent {mvss_device['parentId']}): {scrypted_interfaces}")
+            self.logger.debug(f"Interfaces for {nativeId} ({smss_device['modelId']} parent {smss_device['parentId']}): {scrypted_interfaces}")
 
             provider_to_device_map.setdefault(None, []).append(manifest)
 
             await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
 
-            self.logger.info(f"Discovered 1 mode virtual security system")
-        elif self.mode_enabled == True and self.mode_device.endswith("mvss"):
-            """If there is already a primary device being used for the Virtual Security System, it uses that Id. Checks to see if it is still in your devices in Arlo and if not, selects a new primary device."""
-            mvss_dict = self.arlo.GetDevices(['basestation', 'camera'])
-            mvss_device = next(item for item in mvss_dict if item['deviceId'] == self.mode_device.replace('.mvss', ''))
-            if mvss_device == None:
-               mvss_device = mvss_dict[0]
-            nativeId = f'{mvss_device["deviceId"]}.mvss'
+            self.logger.info(f"Discovered 1 security mode security system")
+        elif self.mode_enabled == True and self.mode_device.endswith("smss"):
+            """If there is already a primary device being used for the Security Mode Security System, it uses that Id. Checks to see if it is still in your devices in Arlo and if not, selects a new primary device."""
+            smss_dict = self.arlo.GetDevices(['basestation', 'camera'])
+            smss_device = next(item for item in smss_dict if item['deviceId'] == self.mode_device.replace('.smss', ''))
+            if smss_device == None:
+               smss_device = smss_dict[0]
+            nativeId = f'{smss_device["deviceId"]}.smss'
             self.storage.setItem("mode_device", nativeId)
 
-            self.all_device_ids.add(f"Arlo Mode Virtual Security System ({nativeId})")
+            self.all_device_ids.add(f"Arlo Security Mode Security System ({nativeId})")
 
             self.logger.debug(f"Adding {nativeId}")
 
-            self.arlo_mvss[nativeId] = mvss_device
+            self.arlo_smss[nativeId] = smss_device
 
             device = await self.getDevice_impl(nativeId)
             scrypted_interfaces = device.get_applicable_interfaces()
             manifest = device.get_device_manifest(nativeId)
 
-            self.logger.debug(f"Interfaces for {nativeId} ({mvss_device['modelId']} parent {mvss_device['parentId']}): {scrypted_interfaces}")
+            self.logger.debug(f"Interfaces for {nativeId} ({smss_device['modelId']} parent {smss_device['parentId']}): {scrypted_interfaces}")
 
             provider_to_device_map.setdefault(None, []).append(manifest)
 
             await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
 
-            self.logger.info(f"Discovered 1 mode virtual security system")
+            self.logger.info(f"Discovered 1 security mode security system")
 
         for provider_id in provider_to_device_map.keys():
             if provider_id is None:
@@ -894,16 +896,16 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         return ret
 
     def create_device(self, nativeId: str) -> ArloDeviceBase:
-        """Added to check in the mvss storage if that device has been stored."""
-        if nativeId not in self.arlo_cameras and nativeId not in self.arlo_basestations and nativeId not in self.arlo_mvss:
+        """Added to check in the smss storage if that device has been stored."""
+        if nativeId not in self.arlo_cameras and nativeId not in self.arlo_basestations and nativeId not in self.arlo_smss:
             self.logger.warning(f"Cannot create device for nativeId {nativeId}, maybe it hasn't been loaded yet?")
             return None
 
-        """Added check if device is mvss device."""
-        if nativeId.endswith("mvss"):
-            arlo_device = self.arlo_mvss[nativeId]
-            arlo_basestation = self.arlo_mvss[nativeId]
-            return ArloModeVirtualSecuritySystem(nativeId, arlo_device, arlo_basestation, self, nativeId)
+        """Added check if device is smss device."""
+        if nativeId.endswith("smss"):
+            arlo_device = self.arlo_smss[nativeId]
+            arlo_basestation = self.arlo_smss[nativeId]
+            return ArloSecurityModeSecuritySystem(nativeId, arlo_device, arlo_basestation, self, nativeId)
 
         arlo_device = self.arlo_cameras.get(nativeId)
         if not arlo_device:

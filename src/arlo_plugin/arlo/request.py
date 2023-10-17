@@ -71,7 +71,7 @@ class Request(object):
         #"""
 
         if not skip_event_id:
-            """Added Check if the url is for the Automation Security Mode as the url for that request puts the evenId and time after the location and revision pased from the calls."""
+            """Added Check if the url contains Automation for the Arlo Security Mode as the url for that request puts the evenId and time after the location and revision pased from the calls."""
             if "automation" not in url:
                 url = f'{url}?eventId={self.gen_event_id()}&time={self.get_time()}'
             else:

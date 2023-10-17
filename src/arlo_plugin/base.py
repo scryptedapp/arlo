@@ -60,7 +60,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
         if parent in self.provider.hidden_device_ids:
             parent = None
         """Added the if statement to determine which manifest to return."""
-        if self.provider.mode_enabled == True and nativeId.endswith("mvss"):
+        if self.provider.mode_enabled and nativeId.endswith("smss"):
             return {
                 "info": {
                     "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '')}".strip(),
@@ -69,7 +69,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
                     "serialNumber": self.arlo_device["deviceId"],
                 },
                 "nativeId": nativeId,
-                "name": f'Arlo Mode Virtual Security System',
+                "name": f'Arlo Security Mode Security System',
                 "interfaces": self.get_applicable_interfaces(),
                 "type": self.get_device_type(),
                 "providerNativeId": parent,

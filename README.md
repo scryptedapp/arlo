@@ -38,13 +38,13 @@ In external integrations like Homekit, sirens are exposed as simple on-off switc
 
 Note that the virtual security system is NOT tied to your Arlo account at all, and will not make any changes such as switching your device's motion alert armed/disarmed modes. For more information, please see the README on the virtual security system device in Scrypted.
 
-## Virtual Security System for Arlo Security Modes
+## Security System for Arlo Security Modes
 
-In external integrations like Homekit, the Arlo App Security Modes are exposed as a virtual security system. This allows users to change the security mode, Away, Home, or Standby, of the Arlo App from the Home App or the Scrypted Management Console. These security modes in the Arlo App can be used to determine which cameras send notifications. This can be useful when using automations in the Home App to determine when people arrive and leave and which cameras are sending notifications to record.
+In external integrations like Homekit, the Arlo App Security Modes are exposed as a security system. This allows users to change the security mode, Away, Home, or Standby, of the Arlo App from the Home App or the Scrypted Management Console. These security modes in the Arlo App can be used to determine which cameras send notifications. This can be useful when using automations in the Home App to determine when people arrive and leave and which cameras are sending notifications to record.
 
 For example, have all Arlo Cameras set to Stream & Record in the Home App both Home and Away in the Recording Options. Set up the Away Security Mode in the Arlo App to have all cameras send notifications. Set up the Home Security Mode in the Arlo App to only have the cameras you want to send notifications while you are at home. Set up the Standby Security Mode to have none of the cameras send notifications. Now, you can use Automations in the Home App to change the Security Mode of the Virtual Security System so that the Security Mode in the Arlo App changes and only sends notifications for the cameras you want based on your automations. HKSV Recordings are done based on the notifications so even though you are home according to the Home App and the camera is set to Stream & Record in the Home App, it will only record when Scrypted receives the notification.
 
-Note that this will not set up or change the Security Modes in the Arlo App, only change which one is active.
+Note that this will not set up or modify settings of the Security Modes in the Arlo App, only change which one is active.
 
 ## Video Clips
 

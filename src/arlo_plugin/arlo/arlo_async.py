@@ -1074,11 +1074,19 @@ class Arlo(object):
             }
         })
     """Added Get and Put Requests to the Arlo API for the Arlo App Secuity Mode and to return the required values from the Get Request."""
-    def GetMode(self) -> dict:
-        currentmode = self._getMode()
-        return [currentmode[list(currentmode.keys())[0]]['properties']['mode'], list(currentmode.keys())[0], currentmode[list(currentmode.keys())[0]]['revision']]
+    def GetCurrentMode(self) -> str:
+        currentmode = self._getCurrentMode_Location_NextRevision()
+        return currentmode[list(currentmode.keys())[0]]['properties']['mode']
 
-    def _getMode(self) -> dict:
+    def GetLocation(self) -> str:
+        location = self._getCurrentMode_Location_NextRevision()
+        return list(location.keys())[0]
+
+    def GetNextRevision(self) -> str:
+        nextRevision = self._getCurrentMode_Location_NextRevision()
+        return nextRevision[list(nextRevision.keys())[0]]['revision']
+
+    def _getCurrentMode_Location_NextRevision(self) -> dict:
         device_id = str(uuid.uuid4())
         headers = {
             'Origin': f'https://{self.BASE_URL}',
@@ -1088,11 +1096,7 @@ class Arlo(object):
         }
         return self.request.get(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
 
-    def SetMode(self, newmode_value, location_value, moderevision_value) -> dict:
-        newmode = self._setMode(newmode_value, location_value, moderevision_value)
-        return
-
-    def _setMode(self, setmode, setlocation, setrevision) -> dict:
+    def SetMode(self, setmode, location, nextrevision) -> None:
         device_id = str(uuid.uuid4())
         headers = {
             'Origin': f'https://{self.BASE_URL}',
@@ -1103,7 +1107,8 @@ class Arlo(object):
         params = {
             'mode': setmode,
         }
-        return self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={setlocation}&revision={setrevision}', params=params, headers=headers)
+        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={location}&revision={nextrevision}', params=params, headers=headers)
+        return
 
     def GetLibrary(self, device, from_date: datetime, to_date: datetime):
         """
