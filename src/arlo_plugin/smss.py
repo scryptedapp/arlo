@@ -72,8 +72,7 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
                 return
 
             try:
-                if self.securitySystemState is None:
-                    await asyncio.sleep(5)
+                await asyncio.sleep(0.1)
                 self.securitySystemState = {
                     "supportedModes": ArloSecurityModeSecuritySystem.SUPPORTED_MODES,
                     "mode": self.mode,
