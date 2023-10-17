@@ -808,7 +808,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.logger.info(f"Discovered {len(cameras)} cameras")
 
         """Checks if Security Mode Controls are enabled and if there isn't a primary device already selected. Chooses the first base station or camera and uses that."""
-        if self.mode_enabled == True and (self.mode_device is not None or self.mode_device == ""):
+        if self.mode_enabled == True and (self.mode_device is None or self.mode_device == ""):
             smss_dict = self.arlo.GetDevices(['basestation', 'camera'])
             smss_device = smss_dict[0]
             nativeId = f'{smss_device["deviceId"]}.smss'
