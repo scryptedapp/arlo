@@ -34,7 +34,10 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
         self.logger.setLevel(self.provider.get_current_log_level())
 
         try:
-            self.arlo_capabilities = self.provider.arlo.GetDeviceCapabilities(self.arlo_device)
+            if not nativeId.endswith("smss"):
+                self.arlo_capabilities = self.provider.arlo.GetDeviceCapabilities(self.arlo_device)
+            elif nativeId.endswith("smss"):
+                self.arlo_capabilities = {}
         except Exception as e:
             self.logger.warning(f"Could not load device capabilities: {e}")
             self.arlo_capabilities = {}
@@ -50,8 +53,8 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     def get_device_type(self) -> str:
         """Returns the Scrypted device type that applies to this device."""
         return ""
-    """Added the nativeId to the passable variables so that the manifest can be customized for the Arlo Mode Security System as a Top Level Device."""
-    def get_device_manifest(self, nativeId: str) -> Device:
+
+    def get_device_manifest(self) -> Device:
         """Returns the Scrypted device manifest representing this device."""
         parent = None
         if self.arlo_device.get("parentId") and self.arlo_device["parentId"] != self.arlo_device["deviceId"]:
@@ -59,35 +62,20 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
 
         if parent in self.provider.hidden_device_ids:
             parent = None
-        """Added the if statement to determine which manifest to return."""
-        if self.provider.mode_enabled and nativeId.endswith("smss"):
-            return {
-                "info": {
-                    "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '')}".strip(),
-                    "manufacturer": "Arlo",
-                    "firmware": self.arlo_device.get("firmwareVersion"),
-                    "serialNumber": self.arlo_device["deviceId"],
-                },
-                "nativeId": nativeId,
-                "name": f'Arlo Security Mode Security System',
-                "interfaces": self.get_applicable_interfaces(),
-                "type": self.get_device_type(),
-                "providerNativeId": parent,
-            }
-        else:
-            return {
-                "info": {
-                    "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '')}".strip(),
-                    "manufacturer": "Arlo",
-                    "firmware": self.arlo_device.get("firmwareVersion"),
-                    "serialNumber": self.arlo_device["deviceId"],
-                },
-                "nativeId": self.arlo_device["deviceId"],
-                "name": self.arlo_device["deviceName"],
-                "interfaces": self.get_applicable_interfaces(),
-                "type": self.get_device_type(),
-                "providerNativeId": parent,
-            }
+
+        return {
+            "info": {
+                "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '')}".strip(),
+                "manufacturer": "Arlo",
+                "firmware": self.arlo_device.get("firmwareVersion"),
+                "serialNumber": self.arlo_device["deviceId"],
+            },
+            "nativeId": self.arlo_device["deviceId"],
+            "name": self.arlo_device["deviceName"],
+            "interfaces": self.get_applicable_interfaces(),
+            "type": self.get_device_type(),
+            "providerNativeId": parent,
+        }
 
     def get_builtin_child_device_manifests(self) -> List[Device]:
         """Returns the list of child device manifests representing hardware features built into this device."""

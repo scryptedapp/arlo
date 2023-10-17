@@ -1,4 +1,3 @@
-"""Created new smss.py based on existing vss.py and cleaned out code that was not needed for the siren."""
 from __future__ import annotations
 
 import asyncio
@@ -14,17 +13,13 @@ if TYPE_CHECKING:
     from .provider import ArloProvider
 
 class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Readme, DeviceProvider):
-    """A security system that controls the Active Security Mode in the Arlo App."""
 
     SUPPORTED_MODES = [SecuritySystemMode.AwayArmed.value, SecuritySystemMode.HomeArmed.value, SecuritySystemMode.Disarmed.value]
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, parent: str) -> None:
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
-        """Sets the parent as the nativeId passed through the call from provider.py."""
-        self.parent = parent
         self.create_task(self.delayed_init())
 
-    """Storage Location for holding the location code required to pass back on the put request."""
     @property
     def location(self) -> str:
         location = self.provider.arlo.GetLocation()
@@ -34,7 +29,6 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
     def location(self, location: str) -> None:
         self.storage.setItem("location", location)
 
-    """Storage Location for holding the next revision code required to pass back on the put request."""
     @property
     def next_revision(self) -> str:
         next_revision = str(int(self.provider.arlo.GetNextRevision()) + 1)
@@ -44,12 +38,10 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
     def next_revision(self, next_revision: str) -> None:
         self.storage.setItem("next_revision", next_revision)
 
-    """Storage Location for holding the current security mode from the Arlo API."""
     @property
     def mode(self) -> str:
         mode = self.provider.arlo.GetCurrentMode()
 
-        """Converts the Arlo Modes to the Homekit Modes."""
         if mode == "armAway":
             mode = SecuritySystemMode.AwayArmed.value
         elif mode == "armHome":
@@ -80,9 +72,8 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
                 return
 
             try:
-                """Check if securitySystemState is initialized and wait if it is not ready."""
                 if self.securitySystemState is None:
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(5)
                 self.securitySystemState = {
                     "supportedModes": ArloSecurityModeSecuritySystem.SUPPORTED_MODES,
                     "mode": self.mode,
@@ -119,7 +110,6 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
         if key != "mode":
             raise ValueError(f"invalid setting {key}")
 
-        """This starts configuring the variables to go into the put request to change the Security Mode through the Arlo API."""
         self.logger.info(f"Setting Arlo Security Mode to {value}")
 
         if value == SecuritySystemMode.AwayArmed.value:
@@ -129,7 +119,6 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
         elif value == SecuritySystemMode.Disarmed.value:
             setmode: SecuritySystemMode = "standby"
 
-        """Calling the Arlo API put request to change the Security Mode."""
         self.provider.arlo.SetMode(setmode, self.location, self.next_revision)
 
         self.storage.setItem("mode", value)
@@ -152,7 +141,6 @@ This security system device is provided by the Arlo Scrypted plugin. Its purpose
 Making changes to this device will perform changes to Arlo cloud and your Arlo account, it is possible that in using this device that you can change the security mode outside of the Arlo App which will affect any automations or routines you have configured in the Arlo App.
 """.strip()
 
-    """Using the same configurations of the get and set settings for the Homekit calls to arm and disarm the Security System."""
     @async_print_exception_guard
     async def armSecuritySystem(self, mode: SecuritySystemMode) -> None:
         self.logger.info(f"Setting Arlo Security Mode to {mode}")
