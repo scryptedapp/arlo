@@ -1073,6 +1073,42 @@ class Arlo(object):
                 }
             }
         })
+    """Added Get and Put Requests to the Arlo API for the Arlo App Secuity Mode and to return the required values from the Get Request."""
+    def GetCurrentMode(self) -> str:
+        currentmode = self._getCurrentMode_Location_NextRevision()
+        return currentmode[list(currentmode.keys())[0]]['properties']['mode']
+
+    def GetLocation(self) -> str:
+        location = self._getCurrentMode_Location_NextRevision()
+        return list(location.keys())[0]
+
+    def GetNextRevision(self) -> str:
+        nextRevision = self._getCurrentMode_Location_NextRevision()
+        return nextRevision[list(nextRevision.keys())[0]]['revision']
+
+    def _getCurrentMode_Location_NextRevision(self) -> dict:
+        device_id = str(uuid.uuid4())
+        headers = {
+            'Origin': f'https://{self.BASE_URL}',
+            'Referer': f'https://{self.BASE_URL}/',
+            'x-user-device-id': device_id,
+            'x-forwarded-user': self.user_id,
+        }
+        return self.request.get(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
+
+    def SetMode(self, setmode, location, nextrevision) -> None:
+        device_id = str(uuid.uuid4())
+        headers = {
+            'Origin': f'https://{self.BASE_URL}',
+            'Referer': f'https://{self.BASE_URL}/',
+            'x-user-device-id': device_id,
+            'x-forwarded-user': self.user_id,
+        }
+        params = {
+            'mode': setmode,
+        }
+        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={location}&revision={nextrevision}', params=params, headers=headers)
+        return
 
     def GetLibrary(self, device, from_date: datetime, to_date: datetime):
         """
