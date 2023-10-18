@@ -272,13 +272,6 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.print(f"Setting plugin transport to {self.arlo_transport}")
         change_stream_class(self.arlo_transport)
 
-    def propagate_mode(self) -> None:
-        self.print(f"Setting Security Mode Security System to {not self.mode_enabled}")
-        if self.mode_enabled == False:
-            self.storage.setItem("mode_enabled", True)
-        else:
-            self.storage.setItem("mode_enabled", False)
-
     def initialize_imap(self, try_count=1) -> None:
         if not self.imap_mfa_host or not self.imap_mfa_port or \
             not self.imap_mfa_username or not self.imap_mfa_password or \
@@ -604,11 +597,6 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.storage.setItem(key, "Verbose" if value == "true" or value == True else "Normal")
             self.propagate_verbosity()
             skip_arlo_client = True
-        elif key == "mode_enabled":
-            if self._arlo is not None and self._arlo.logged_in:
-                self.propagate_mode()
-                self._arlo.Unsubscribe()
-                await self.do_arlo_setup()
         else:
             self.storage.setItem(key, value)
 
@@ -637,6 +625,10 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                     self._arlo.Unsubscribe()
                     await self.do_arlo_setup()
                 skip_arlo_client = True
+            elif key == "mode_enabled":
+                if self._arlo is not None and self._arlo.logged_in:
+                    self._arlo.Unsubscribe()
+                    await self.do_arlo_setup()
             else:
                 # force arlo client to be invalidated and reloaded
                 self.invalidate_arlo_client()
