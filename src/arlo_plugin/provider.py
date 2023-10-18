@@ -180,7 +180,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     @property
     def mode_enabled(self) -> bool:
         securitymode = self.storage.getItem("mode_enabled")
-        if securitymode is None and (self.mode_device is None or self.mode_device == ""):
+        if securitymode is None:
             securitymode = False
             self.storage.setItem("mode_enabled", securitymode)
         return securitymode
@@ -789,7 +789,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
         if self.mode_enabled:
             nativeId = "Arlo.smss"
-            
+
             self.all_device_ids.add(f"Arlo Security Mode Security System ({nativeId})")
 
             self.logger.debug(f"Adding {nativeId}")
