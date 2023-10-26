@@ -34,7 +34,10 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
         self.logger.setLevel(self.provider.get_current_log_level())
 
         try:
-            self.arlo_capabilities = self.provider.arlo.GetDeviceCapabilities(self.arlo_device)
+            if not nativeId.endswith("smss"):
+                self.arlo_capabilities = self.provider.arlo.GetDeviceCapabilities(self.arlo_device)
+            elif nativeId.endswith("smss"):
+                self.arlo_capabilities = {}
         except Exception as e:
             self.logger.warning(f"Could not load device capabilities: {e}")
             self.arlo_capabilities = {}

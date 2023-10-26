@@ -48,6 +48,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     MODELS_WITH_SPOTLIGHTS = [
         "vmc2030",
         "vmc2032",
+        "vmc2050",
+        "vmc2052",
+        "vmc3050",
+        "vmc3052",
         "vmc4040p",
         "vmc4041p",
         "vmc4050p",
@@ -69,6 +73,12 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "vmc2020",
         "vmc2030",
         "vmc2032",
+        "vmc2050",
+        "vmc2052",
+        "vmc2060",
+        "vmc3050",
+        "vmc3052",
+        "vmc3060",
         "vmc4030",
         "vmc4030p",
         "vmc4040p",
@@ -84,6 +94,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "abc1000",
         "abc1000a",
         "fb1001",
+        "vmc2040",
         "vmc3040",
         "vmc3040s",
         "vmc4030",
@@ -92,14 +103,17 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "vmc4041p",
         "vmc4050p",
         "vmc5040",
+        "vml2030",
         "vml4030",
     ]
 
     MODELS_WITHOUT_BATTERY = [
         "avd1001",
         "vmc2040",
+        "vmc2060",
         "vmc3040",
         "vmc3040s",
+        "vmc3060",
     ]
 
     timeout: int = 30
@@ -1062,7 +1076,6 @@ class ArloCameraRTCSignalingSession(BackgroundTaskMixin):
         )
 
         self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(self.camera.logger_server_port, ice_servers, sip_cfg)
-
 
 class ArloCameraRTCSessionControl:
     def __init__(self, arlo_session: ArloCameraRTCSignalingSession) -> None:
