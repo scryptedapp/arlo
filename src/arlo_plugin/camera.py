@@ -116,6 +116,17 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "vmc3060",
     ]
 
+    MODELS_WITH_SIP_STREAMING = [
+        "avd3001",
+        "avd4001",
+        "vmc2050",
+        "vmc2052",
+        "vmc2060",
+        "vmc3050",
+        "vmc3052",
+        "vmc3060",
+    ]
+
     timeout: int = 30
     intercom_session: ArloCameraIntercomSession = None
     light: ArloSpotlight = None
@@ -390,7 +401,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
     @property
     def has_sip_webrtc_streaming(self) -> bool:
-        return "SIPStreaming" in self.arlo_capabilities.get("Capabilities", {}).get("Streaming", {})
+        if any([self.arlo_device["modelId"].lower().startswith(model) for model in ArloCamera.MODELS_WITH_SIP_STREAMING]):
+            return True
+        else:
+            return "SIPStreaming" in self.arlo_capabilities.get("Capabilities", {}).get("Streaming", {})
 
     async def getSettings(self) -> List[Setting]:
         result = []
