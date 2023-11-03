@@ -614,9 +614,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
         section = []
 
-        # Here we run through each line in the sdp and remove lives with more than one :,
-        # which are the IPV6 Addresses and filter out and .local Addresses from the list
-        # of candidates. Everything is joined back together and sent back.
+        # Here we run through each line in the sdp and remove candidate lines with more than
+        # one :, which should be the IPV6 Addresses, and .local Addresses from the list of
+        # candidates. Everything is joined back together and sent back. This is for HomeKit
+        # and WebRTC to connect correctly.
         for line in lines:
             if line.startswith('a=candidate:'):
                 if line.count(':') <= 1 and not ".local" in line:
