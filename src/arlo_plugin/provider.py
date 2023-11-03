@@ -291,7 +291,6 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 raise Exception(f"IMAP failed to fetch INBOX: {res}")
 
             # fetch existing arlo emails so we skip them going forward
-            """Modified FROM value to use the stored vairable instead of the defauly value."""
             res, self.imap_skip_emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
             if res.lower() != "ok":
                 raise Exception(f"IMAP failed to fetch old Arlo emails: {res}")

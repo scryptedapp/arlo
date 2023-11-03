@@ -598,8 +598,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                 pass
             scrypted_offer = await scrypted_session.createLocalDescription("offer", scrypted_setup, ignore_trickle)
 
-        parsed_sdp = self.parse_sdp(scrypted_offer['sdp'])
-        scrypted_offer['sdp'] = parsed_sdp
+        scrypted_offer['sdp'] = self.parse_sdp(scrypted_offer['sdp'])
         
         self.logger.info(f"Scrypted offer sdp:\n{scrypted_offer['sdp']}")
         await plugin_session.setRemoteDescription(scrypted_offer, plugin_setup)
@@ -625,8 +624,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         ret = '\r\n'.join(section)
 
         return ret
-
-
 
     async def getVideoStreamOptions(self, id: str = None) -> List[ResponseMediaStreamOptions]:
         if self.use_sip_webrtc_streaming:
