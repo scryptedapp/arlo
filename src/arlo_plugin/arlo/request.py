@@ -25,8 +25,6 @@ import uuid
 
 from .logging import logger
 
-
-
 #from requests_toolbelt.utils import dump
 #def print_raw_http(response):
 #    data = dump.dump_all(response, request_prefix=b'', response_prefix=b'')
@@ -73,7 +71,10 @@ class Request(object):
         #"""
 
         if not skip_event_id:
-            url = f'{url}?eventId={self.gen_event_id()}&time={self.get_time()}'
+            if "automation" not in url:
+                url = f'{url}?eventId={self.gen_event_id()}&time={self.get_time()}'
+            else:
+                url = f'{url}&eventId={self.gen_event_id()}&time={self.get_time()}'
 
         if method == 'GET':
             #print('COOKIES: ', self.session.cookies.get_dict())

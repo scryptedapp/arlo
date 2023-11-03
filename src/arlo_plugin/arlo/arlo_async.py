@@ -317,8 +317,8 @@ class Arlo(object):
                     basestation['deviceType'] not in ['doorbell', 'siren', 'arloq', 'arloqs'] and \
                     basestation['modelId'].lower() not in ['abc1000', 'abc1000a']:
                     continue
-                # avd2001 is the battery doorbell, and we don't want to drain its battery, so disable pings
-                if basestation['modelId'].lower().startswith('avd2001'):
+                # avd2001, avd3001, and avd4001 are battery doorbells, and we don't want to drain its battery, so disable pings
+                if basestation['modelId'].lower().startswith(('avd2001', 'avd3001', 'avd4001')):
                     continue
                 devices_to_ping[basestation['deviceId']] = basestation
 
@@ -1073,6 +1073,41 @@ class Arlo(object):
                 }
             }
         })
+    def GetCurrentMode(self) -> str:
+        currentmode = self._getCurrentMode_Location_NextRevision()
+        return currentmode[list(currentmode.keys())[0]]['properties']['mode']
+
+    def GetLocation(self) -> str:
+        location = self._getCurrentMode_Location_NextRevision()
+        return list(location.keys())[0]
+
+    def GetNextRevision(self) -> str:
+        nextRevision = self._getCurrentMode_Location_NextRevision()
+        return nextRevision[list(nextRevision.keys())[0]]['revision']
+
+    def _getCurrentMode_Location_NextRevision(self) -> dict:
+        device_id = str(uuid.uuid4())
+        headers = {
+            'Origin': f'https://{self.BASE_URL}',
+            'Referer': f'https://{self.BASE_URL}/',
+            'x-user-device-id': device_id,
+            'x-forwarded-user': self.user_id,
+        }
+        return self.request.get(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
+
+    def SetMode(self, setmode, location, nextrevision) -> None:
+        device_id = str(uuid.uuid4())
+        headers = {
+            'Origin': f'https://{self.BASE_URL}',
+            'Referer': f'https://{self.BASE_URL}/',
+            'x-user-device-id': device_id,
+            'x-forwarded-user': self.user_id,
+        }
+        params = {
+            'mode': setmode,
+        }
+        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={location}&revision={nextrevision}', params=params, headers=headers)
+        return
 
     def GetLibrary(self, device, from_date: datetime, to_date: datetime):
         """

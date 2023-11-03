@@ -48,6 +48,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     MODELS_WITH_SPOTLIGHTS = [
         "vmc2030",
         "vmc2032",
+        "vmc2050",
+        "vmc2052",
+        "vmc3050",
+        "vmc3052",
         "vmc4040p",
         "vmc4041p",
         "vmc4050p",
@@ -69,6 +73,12 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "vmc2020",
         "vmc2030",
         "vmc2032",
+        "vmc2050",
+        "vmc2052",
+        "vmc2060",
+        "vmc3050",
+        "vmc3052",
+        "vmc3060",
         "vmc4030",
         "vmc4030p",
         "vmc4040p",
@@ -84,6 +94,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "abc1000",
         "abc1000a",
         "fb1001",
+        "vmc2040",
         "vmc3040",
         "vmc3040s",
         "vmc4030",
@@ -92,14 +103,28 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "vmc4041p",
         "vmc4050p",
         "vmc5040",
+        "vml2030",
         "vml4030",
     ]
 
     MODELS_WITHOUT_BATTERY = [
         "avd1001",
         "vmc2040",
+        "vmc2060",
         "vmc3040",
         "vmc3040s",
+        "vmc3060",
+    ]
+
+    MODELS_WITH_SIP_STREAMING = [
+        "avd3001",
+        "avd4001",
+        "vmc2050",
+        "vmc2052",
+        "vmc2060",
+        "vmc3050",
+        "vmc3052",
+        "vmc3060",
     ]
 
     timeout: int = 30
@@ -376,7 +401,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
     @property
     def has_sip_webrtc_streaming(self) -> bool:
-        return "SIPStreaming" in self.arlo_capabilities.get("Capabilities", {}).get("Streaming", {})
+        if any([self.arlo_device["modelId"].lower().startswith(model) for model in ArloCamera.MODELS_WITH_SIP_STREAMING]):
+            return True
+        else:
+            return "SIPStreaming" in self.arlo_capabilities.get("Capabilities", {}).get("Streaming", {})
 
     async def getSettings(self) -> List[Setting]:
         result = []
@@ -570,6 +598,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                 pass
             scrypted_offer = await scrypted_session.createLocalDescription("offer", scrypted_setup, ignore_trickle)
 
+        scrypted_offer['sdp'] = self.parse_sdp(scrypted_offer['sdp'])
+        
         self.logger.info(f"Scrypted offer sdp:\n{scrypted_offer['sdp']}")
         await plugin_session.setRemoteDescription(scrypted_offer, plugin_setup)
         plugin_answer = await plugin_session.createLocalDescription("answer", plugin_setup)
@@ -577,6 +607,27 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
 
         return ArloCameraRTCSessionControl(plugin_session)
+
+    def parse_sdp(self, sdp):
+        lines = sdp.split('\n')
+        lines = [line.strip() for line in lines]
+
+        section = []
+
+        # Here we run through each line in the sdp and remove candidate lines with more than
+        # one :, which should be the IPV6 Addresses, and .local Addresses from the list of
+        # candidates. Everything is joined back together and sent back. This is for HomeKit
+        # and WebRTC to connect correctly.
+        for line in lines:
+            if line.startswith('a=candidate:'):
+                if line.count(':') <= 1 and not ".local" in line:
+                    section.append(line)
+            else:
+                section.append(line)
+
+        ret = '\r\n'.join(section)
+
+        return ret
 
     async def getVideoStreamOptions(self, id: str = None) -> List[ResponseMediaStreamOptions]:
         if self.use_sip_webrtc_streaming:
@@ -1062,7 +1113,6 @@ class ArloCameraRTCSignalingSession(BackgroundTaskMixin):
         )
 
         self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(self.camera.logger_server_port, ice_servers, sip_cfg)
-
 
 class ArloCameraRTCSessionControl:
     def __init__(self, arlo_session: ArloCameraRTCSignalingSession) -> None:
