@@ -599,7 +599,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             scrypted_offer = await scrypted_session.createLocalDescription("offer", scrypted_setup, ignore_trickle)
 
         scrypted_offer['sdp'] = self.parse_sdp(scrypted_offer['sdp'])
-        
+
         self.logger.info(f"Scrypted offer sdp:\n{scrypted_offer['sdp']}")
         await plugin_session.setRemoteDescription(scrypted_offer, plugin_setup)
         plugin_answer = await plugin_session.createLocalDescription("answer", plugin_setup)
