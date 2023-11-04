@@ -619,11 +619,16 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         # candidates. Everything is joined back together and sent back. This is for HomeKit
         # and WebRTC to connect correctly.
         for line in lines:
+            added = False
             if line.startswith('a=candidate:'):
                 if line.count(':') <= 1 and not ".local" in line:
                     section.append(line)
+                    added = True
             else:
                 section.append(line)
+                added = True
+            if not added:
+                self.logger.debug(f"Filtered out candidate: {line}")
 
         ret = '\r\n'.join(section)
 
