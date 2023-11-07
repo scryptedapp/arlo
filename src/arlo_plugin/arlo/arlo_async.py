@@ -1073,20 +1073,23 @@ class Arlo(object):
                 }
             }
         })
-    """Added Get and Put Requests to the Arlo API for the Arlo App Secuity Mode and to return the required values from the Get Request."""
-    def GetCurrentMode(self) -> str:
-        currentmode = self._getCurrentMode_Location_NextRevision()
-        return currentmode[list(currentmode.keys())[0]]['properties']['mode']
 
-    def GetLocation(self) -> str:
-        location = self._getCurrentMode_Location_NextRevision()
-        return list(location.keys())[0]
+    def GetMainLocation(self) -> str:
+        mainLocation = self._getMainLocation()
+        return mainLocation['sharedLocations'][0]['locationId']
 
-    def GetNextRevision(self) -> str:
-        nextRevision = self._getCurrentMode_Location_NextRevision()
-        return nextRevision[list(nextRevision.keys())[0]]['revision']
+    def GetCurrentMode(self, mainLocation: str) -> str:
+        currentmode = self._getCurrentMode_NextRevision()
+        return currentmode[f'{mainLocation}']['properties']['mode']
 
-    def _getCurrentMode_Location_NextRevision(self) -> dict:
+    def GetNextRevision(self, mainLocation: str) -> str:
+        nextRevision = self._getCurrentMode_NextRevision()
+        return nextRevision[f'{mainLocation}']['revision']
+
+    def _getMainLocation(self) -> dict:
+        return self.request.get(f'https://{self.BASE_URL}/hmsdevicemanagement/users/{self.user_id}/locations')
+
+    def _getCurrentMode_NextRevision(self) -> dict:
         device_id = str(uuid.uuid4())
         headers = {
             'Origin': f'https://{self.BASE_URL}',
@@ -1096,7 +1099,7 @@ class Arlo(object):
         }
         return self.request.get(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
 
-    def SetMode(self, setmode, location, nextrevision) -> None:
+    def SetMode(self, setmode, mainLocation, nextrevision) -> None:
         device_id = str(uuid.uuid4())
         headers = {
             'Origin': f'https://{self.BASE_URL}',
@@ -1107,7 +1110,7 @@ class Arlo(object):
         params = {
             'mode': setmode,
         }
-        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={location}&revision={nextrevision}', params=params, headers=headers)
+        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={mainLocation}&revision={nextrevision}', params=params, headers=headers)
         return
 
     def GetLibrary(self, device, from_date: datetime, to_date: datetime):
