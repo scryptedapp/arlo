@@ -22,7 +22,7 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
 
     @property
     def location(self) -> str:
-        location = self.provider.arlo.GetMainLocation()
+        location = self.nativeId.replace('.smss', '')
         return location
 
     @location.setter

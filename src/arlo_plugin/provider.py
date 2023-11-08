@@ -779,37 +779,39 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.logger.info(f"Discovered {len(cameras)} cameras")
 
         if self.mode_enabled:
-            nativeId = "Arlo.smss"
+            locations = self.arlo.GetLocations()
+            for location in locations:
+                nativeId = f'{location}.smss'
 
-            self.all_device_ids.add(f"Arlo Security Mode Security System ({nativeId})")
+                self.all_device_ids.add(f"Arlo Security Mode Security System ({nativeId})")
 
-            self.logger.debug(f"Adding {nativeId}")
+                self.logger.debug(f"Adding {nativeId}")
 
-            self.arlo_smss[nativeId] = ""
+                self.arlo_smss[nativeId] = ""
 
-            device = await self.getDevice_impl(nativeId)
-            scrypted_interfaces = device.get_applicable_interfaces()
-            manifest = {
-                "info": {
-                    "model": "Arlo Security Mode Security System",
-                    "manufacturer": "Arlo",
-                    "firmware": "1.0",
-                    "serialNumber": "000",
-                },
-                "nativeId": nativeId,
-                "name": "Arlo Security Mode Security System",
-                "interfaces": scrypted_interfaces,
-                "type": device.get_device_type(),
-                "providerNativeId": None,
-            }
+                device = await self.getDevice_impl(nativeId)
+                scrypted_interfaces = device.get_applicable_interfaces()
+                manifest = {
+                    "info": {
+                        "model": "Arlo Security Mode Security System",
+                        "manufacturer": "Arlo",
+                        "firmware": "1.0",
+                        "serialNumber": "000",
+                    },
+                    "nativeId": nativeId,
+                    "name": f'Arlo Security Mode Security System - {locations[location]}',
+                    "interfaces": scrypted_interfaces,
+                    "type": device.get_device_type(),
+                    "providerNativeId": None,
+                }
 
-            self.logger.debug(f"Interfaces for {nativeId}: {scrypted_interfaces}")
+                self.logger.debug(f"Interfaces for {nativeId}: {scrypted_interfaces}")
 
-            provider_to_device_map.setdefault(None, []).append(manifest)
+                provider_to_device_map.setdefault(None, []).append(manifest)
 
-            await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+                await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
 
-            self.logger.info(f"Discovered 1 security mode security system")
+            self.logger.info(f"Discovered {len(locations)} security mode security systems")
 
         for provider_id in provider_to_device_map.keys():
             if provider_id is None:
