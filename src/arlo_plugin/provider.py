@@ -783,11 +783,19 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             for location in locations:
                 nativeId = f'{location}.smss'
 
-                self.all_device_ids.add(f"Arlo Security Mode Security System ({nativeId})")
+                self.all_device_ids.add(f"Arlo Security Mode Security System - {locations[location]} ({nativeId})")
 
                 self.logger.debug(f"Adding {nativeId}")
 
+                if nativeId in self.arlo_smss:
+                    self.logger.info(f"Skipping security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) as it has already been added")
+                    continue
+
                 self.arlo_smss[nativeId] = ""
+
+                if nativeId in self.hidden_device_ids:
+                    self.logger.info(f"Skipping security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) because it is hidden")
+                    continue
 
                 device = await self.getDevice_impl(nativeId)
                 scrypted_interfaces = device.get_applicable_interfaces()
