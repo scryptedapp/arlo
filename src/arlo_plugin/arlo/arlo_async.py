@@ -1074,19 +1074,23 @@ class Arlo(object):
             }
         })
 
-    def GetMainLocation(self) -> str:
-        mainLocation = self._getMainLocation()
-        return mainLocation['sharedLocations'][0]['locationId']
+    def GetLocations(self) -> list:
+        locations = self._getLocations()
+        locationList = {}
+        for location in locations.keys():
+            for locationId in range(len(locations[f'{location}'])):
+                locationList[locations[f'{location}'][locationId]['locationId']] = locations[f'{location}'][locationId]['locationName']
+        return locationList
 
-    def GetCurrentMode(self, mainLocation: str) -> str:
+    def GetCurrentMode(self, location: str) -> str:
         currentmode = self._getCurrentMode_NextRevision()
-        return currentmode[f'{mainLocation}']['properties']['mode']
+        return currentmode[f'{location}']['properties']['mode']
 
-    def GetNextRevision(self, mainLocation: str) -> str:
+    def GetNextRevision(self, location: str) -> str:
         nextRevision = self._getCurrentMode_NextRevision()
-        return nextRevision[f'{mainLocation}']['revision']
+        return nextRevision[f'{location}']['revision']
 
-    def _getMainLocation(self) -> dict:
+    def _getLocations(self) -> dict:
         return self.request.get(f'https://{self.BASE_URL}/hmsdevicemanagement/users/{self.user_id}/locations')
 
     def _getCurrentMode_NextRevision(self) -> dict:
@@ -1099,7 +1103,7 @@ class Arlo(object):
         }
         return self.request.get(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
 
-    def SetMode(self, setmode, mainLocation, nextrevision) -> None:
+    def SetMode(self, setmode, location, nextrevision) -> None:
         device_id = str(uuid.uuid4())
         headers = {
             'Origin': f'https://{self.BASE_URL}',
@@ -1110,7 +1114,7 @@ class Arlo(object):
         params = {
             'mode': setmode,
         }
-        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={mainLocation}&revision={nextrevision}', params=params, headers=headers)
+        self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={location}&revision={nextrevision}', params=params, headers=headers)
         return
 
     def GetLibrary(self, device, from_date: datetime, to_date: datetime):

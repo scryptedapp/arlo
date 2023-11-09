@@ -44,6 +44,8 @@ In external integrations like Homekit, the Arlo App Security Modes are exposed a
 
 For example, have all Arlo Cameras set to Stream & Record in the Home App both Home and Away in the Recording Options. Set up the Away Security Mode in the Arlo App to have all cameras send notifications. Set up the Home Security Mode in the Arlo App to only have the cameras you want to send notifications while you are at home. Set up the Standby Security Mode to have none of the cameras send notifications. Now, you can use Automations in the Home App to change the Security Mode of the Virtual Security System so that the Security Mode in the Arlo App changes and only sends notifications for the cameras you want based on your automations. HKSV Recordings are done based on the notifications so even though you are home according to the Home App and the camera is set to Stream & Record in the Home App, it will only record when Scrypted receives the notification.
 
+Multiple Security Systems are created, one for each location. A location is defined as a User Location, a location created on the account signed into Scrypted, and a Shared Location, a location that is shared from another account to the account signed into Scrypted. Each Location has a name in the Arlo App and this name is passed to Scrypted for identification.
+
 Note that this will not set up or modify settings of the Security Modes in the Arlo App, only change which one is active.
 
 ## Video Clips
