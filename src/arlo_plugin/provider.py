@@ -683,7 +683,9 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.all_device_ids = set()
         self.scrypted_devices = {}
 
+        basestation_devices = []
         camera_devices = []
+        smss_devices = []
         provider_to_device_map = {None: []}
 
         basestations = self.arlo.GetDevices(['basestation', 'siren'])
@@ -694,13 +696,13 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.logger.debug(f"Adding {nativeId}")
 
             if nativeId in self.arlo_basestations:
-                self.logger.info(f"Skipping basestation {nativeId} ({basestation['modelId']}) as it has already been added")
+                self.logger.info(f"Skipping basestation {nativeId} ({basestation['modelId']}) as it has already been added.")
                 continue
 
             self.arlo_basestations[nativeId] = basestation
 
             if nativeId in self.hidden_device_ids:
-                self.logger.info(f"Skipping manifest for basestation {nativeId} ({basestation['modelId']}) as it is hidden")
+                self.logger.info(f"Skipping manifest for basestation {nativeId} ({basestation['modelId']}) as it is hidden.")
                 continue
 
             device = await self.getDevice_impl(nativeId)
@@ -721,7 +723,15 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 await scrypted_sdk.deviceManager.onDeviceDiscovered(child_manifest)
                 provider_to_device_map.setdefault(child_manifest["providerNativeId"], []).append(child_manifest)
 
-        self.logger.info(f"Discovered {len(self.arlo_basestations)} basestations")
+            basestation_devices.append(manifest)
+
+        if len(basestations) != len(basestation_devices):
+            self.logger.info(f"Discovered {len(basestations)} basestations, but only {len(basestation_devices)} are shown.")
+            self.logger.info("This could be because some of the basestations are hidden.")
+            self.logger.info("If a basestation is not hidden but is still missing, ensure all basestations are shared "
+                             "with admin permissions in the Arlo App.")
+        else:
+            self.logger.info(f"Discovered {len(self.arlo_basestations)} basestations.")
 
         cameras = self.arlo.GetDevices(['camera', "arloq", "arloqs", "doorbell"])
         for camera in cameras:
@@ -731,29 +741,32 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.logger.debug(f"Adding {nativeId}")
 
             if camera["deviceId"] != camera["parentId"] and camera["parentId"] not in self.arlo_basestations:
-                self.logger.info(f"Skipping camera {camera['deviceId']} ({camera['modelId']}) because its basestation was not found")
+                self.logger.info(f"Skipping camera {camera['deviceId']} ({camera['modelId']}) because its basestation was not found.")
                 continue
 
             if nativeId in self.arlo_cameras:
-                self.logger.info(f"Skipping camera {nativeId} ({camera['modelId']}) as it has already been added")
-                continue
-
-            if nativeId in self.hidden_device_ids:
-                self.logger.info(f"Skipping camera {camera['deviceId']} ({camera['modelId']}) because it is hidden")
+                self.logger.info(f"Skipping camera {nativeId} ({camera['modelId']}) as it has already been added.")
                 continue
 
             self.arlo_cameras[nativeId] = camera
 
             if camera["deviceId"] == camera["parentId"]:
-                # these are standalone cameras with no basestation, so they act as their
-                # own basestation
+                # these are standalone cameras with no basestation required,
+                # so they act as their own basestation
                 self.arlo_basestations[camera["deviceId"]] = camera
+
+            if nativeId in self.hidden_device_ids:
+                self.logger.info(f"Skipping camera {camera['deviceId']} ({camera['modelId']}) because it is hidden.")
+                continue
 
             device = await self.getDevice_impl(nativeId)
             scrypted_interfaces = device.get_applicable_interfaces()
             manifest = device.get_device_manifest()
             self.logger.debug(f"Interfaces for {nativeId} ({camera['modelId']} parent {camera['parentId']}): {scrypted_interfaces}")
 
+            # for cameras without basestations or cameras who have a hidden basestation,
+            # we want to add them as top level devices.
+            # otherwise, we add the camera under the basestation
             if camera["deviceId"] == camera["parentId"] or camera["parentId"] in self.hidden_device_ids:
                 provider_to_device_map.setdefault(None, []).append(manifest)
             else:
@@ -771,10 +784,10 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             camera_devices.append(manifest)
 
         if len(cameras) != len(camera_devices):
-            self.logger.info(f"Discovered {len(cameras)} cameras, but only {len(camera_devices)} are usable")
+            self.logger.info(f"Discovered {len(cameras)} cameras, but only {len(camera_devices)} are shown.")
             self.logger.info("This could be because some cameras are hidden.")
-            self.logger.info("If a camera is not hidden but is still missing, ensure all cameras shared with "
-                             "admin permissions in the Arlo app.")
+            self.logger.info("If a camera is not hidden but is still missing, ensure all cameras are shared "
+                             "with admin permissions in the Arlo app.")
         else:
             self.logger.info(f"Discovered {len(cameras)} cameras")
 
@@ -782,19 +795,18 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             locations = self.arlo.GetLocations()
             for location in locations:
                 nativeId = f'{location}.smss'
-
                 self.all_device_ids.add(f"Arlo Security Mode Security System - {locations[location]} ({nativeId})")
 
                 self.logger.debug(f"Adding {nativeId}")
 
                 if nativeId in self.arlo_smss:
-                    self.logger.info(f"Skipping security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) as it has already been added")
+                    self.logger.info(f"Skipping security mode security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) as it has already been added.")
                     continue
 
                 self.arlo_smss[nativeId] = ""
 
                 if nativeId in self.hidden_device_ids:
-                    self.logger.info(f"Skipping security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) because it is hidden")
+                    self.logger.info(f"Skipping security mode security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) because it is hidden.")
                     continue
 
                 device = await self.getDevice_impl(nativeId)
@@ -812,14 +824,24 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                     "type": device.get_device_type(),
                     "providerNativeId": None,
                 }
-
                 self.logger.debug(f"Interfaces for {nativeId}: {scrypted_interfaces}")
 
+                # we want to add the security mode security system as a top level device
                 provider_to_device_map.setdefault(None, []).append(manifest)
 
+                # trickle discover this security mode security system so it exists for later steps
                 await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
 
-            self.logger.info(f"Discovered {len(locations)} security mode security systems")
+                smss_devices.append(manifest)
+
+            if len(locations) != len(smss_devices):
+                self.logger.info(f"Discovered {len(locations)} security mode security systems, but only {len(smss_devices)} are shown.")
+                self.logger.info("This could be because some security mode security systems are hidden.")
+                self.logger.info("If a security mode security system is not hidden but is still missing, ensure that "
+                                 "all locations are in the Arlo App and shared locations are shared with admin "
+                                 "permissions in the Arlo App.")
+            else:
+                self.logger.info(f"Discovered {len(locations)} security mode security systems.")
 
         for provider_id in provider_to_device_map.keys():
             if provider_id is None:
