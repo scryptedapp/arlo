@@ -1073,20 +1073,27 @@ class Arlo(object):
                 }
             }
         })
-    """Added Get and Put Requests to the Arlo API for the Arlo App Secuity Mode and to return the required values from the Get Request."""
-    def GetCurrentMode(self) -> str:
-        currentmode = self._getCurrentMode_Location_NextRevision()
-        return currentmode[list(currentmode.keys())[0]]['properties']['mode']
 
-    def GetLocation(self) -> str:
-        location = self._getCurrentMode_Location_NextRevision()
-        return list(location.keys())[0]
+    def GetLocations(self) -> list:
+        locations = self._getLocations()
+        locationList = {}
+        for location in locations.keys():
+            for locationId in range(len(locations[f'{location}'])):
+                locationList[locations[f'{location}'][locationId]['locationId']] = locations[f'{location}'][locationId]['locationName']
+        return locationList
 
-    def GetNextRevision(self) -> str:
-        nextRevision = self._getCurrentMode_Location_NextRevision()
-        return nextRevision[list(nextRevision.keys())[0]]['revision']
+    def GetCurrentMode(self, location: str) -> str:
+        currentmode = self._getCurrentMode_NextRevision()
+        return currentmode[f'{location}']['properties']['mode']
 
-    def _getCurrentMode_Location_NextRevision(self) -> dict:
+    def GetNextRevision(self, location: str) -> str:
+        nextRevision = self._getCurrentMode_NextRevision()
+        return nextRevision[f'{location}']['revision']
+
+    def _getLocations(self) -> dict:
+        return self.request.get(f'https://{self.BASE_URL}/hmsdevicemanagement/users/{self.user_id}/locations')
+
+    def _getCurrentMode_NextRevision(self) -> dict:
         device_id = str(uuid.uuid4())
         headers = {
             'Origin': f'https://{self.BASE_URL}',

@@ -117,6 +117,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     ]
 
     MODELS_WITH_SIP_STREAMING = [
+        "avd1001",
+        "avd2001",
         "avd3001",
         "avd4001",
         "vmc2050",
@@ -397,7 +399,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
     @property
     def uses_sip_push_to_talk(self) -> bool:
-        return "sip" in self.arlo_capabilities.get("Capabilities", {}).get("PushToTalk", {}).get("signal", [])
+        if any([self.arlo_device["modelId"].lower().startswith(model) for model in ArloCamera.MODELS_WITH_SIP_STREAMING]):
+            return True
+        else:
+            return "sip" in self.arlo_capabilities.get("Capabilities", {}).get("PushToTalk", {}).get("signal", [])
 
     @property
     def has_sip_webrtc_streaming(self) -> bool:

@@ -22,7 +22,7 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
 
     @property
     def location(self) -> str:
-        location = self.provider.arlo.GetLocation()
+        location = self.nativeId.replace('.smss', '')
         return location
 
     @location.setter
@@ -31,7 +31,7 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
 
     @property
     def next_revision(self) -> str:
-        next_revision = str(int(self.provider.arlo.GetNextRevision()) + 1)
+        next_revision = str(int(self.provider.arlo.GetNextRevision(self.location)) + 1)
         return next_revision
 
     @next_revision.setter
@@ -40,7 +40,7 @@ class ArloSecurityModeSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
 
     @property
     def mode(self) -> str:
-        mode = self.provider.arlo.GetCurrentMode()
+        mode = self.provider.arlo.GetCurrentMode(self.location)
 
         if mode == "armAway":
             mode = SecuritySystemMode.AwayArmed.value
