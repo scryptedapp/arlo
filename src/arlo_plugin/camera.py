@@ -129,6 +129,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         "vmc3060",
     ]
 
+    MODELS_WITH_SIP_PUSH_TO_TALK = [
+        "avd1001",
+        "avd2001",
+    ]
+
     timeout: int = 30
     intercom_session: ArloCameraIntercomSession = None
     light: ArloSpotlight = None
@@ -399,7 +404,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
     @property
     def uses_sip_push_to_talk(self) -> bool:
-        if any([self.arlo_device["modelId"].lower().startswith(model) for model in ArloCamera.MODELS_WITH_SIP_STREAMING]):
+        if any([self.arlo_device["modelId"].lower().startswith(model) for model in ArloCamera.MODELS_WITH_SIP_PUSH_TO_TALK]):
             return True
         else:
             return "sip" in self.arlo_capabilities.get("Capabilities", {}).get("PushToTalk", {}).get("signal", [])
@@ -1143,6 +1148,8 @@ class ArloCameraRTCSessionControl:
         self.logger.debug(f"setPlayback options {options}")
 
         if options["audio"]:
+            self.logger.info("Starting intercom")
             self.arlo_session.arlo_sip.StartTalk()
         else:
+            self.logger.info("Stopping intercom")
             self.arlo_session.arlo_sip.StopTalk()
