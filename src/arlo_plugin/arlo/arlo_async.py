@@ -856,7 +856,7 @@ class Arlo(object):
 
     def GetSIPInfoV2(self, camera):
         resp = self.request.get(
-            f'https://{self.BASE_URL}/hmsweb/users/devices/sipInfo/v2',
+            f'https://{self.BASE_URL}/hmsweb/users/devices/sipInfo/v2?cameraId={camera.get("deviceId")}&modelId={camera.get("modelId", "").upper()}&uniqueId={camera.get("uniqueId")}',
             headers={
                 "xcloudId": camera.get('xCloudId'),
                 "cameraId": camera.get('deviceId'),
