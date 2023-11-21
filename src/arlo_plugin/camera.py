@@ -28,6 +28,62 @@ if TYPE_CHECKING:
     from .provider import ArloProvider
 
 
+class LoggerServer:
+    logger_loop: asyncio.AbstractEventLoop = None
+    logger_server: asyncio.AbstractServer = None
+    logger_server_port: int = 0
+    log_fn: function = None
+    device: ArloDeviceBase
+
+    def __init__(self, device: ArloDeviceBase, log_fn: function) -> None:
+        self.device = device
+        self.log_fn = log_fn
+        self.device.create_task(self.create_tcp_logger_server())
+
+    def __del__(self) -> None:
+        def logger_exit_callback():
+            self.logger_server.close()
+            self.logger_loop.stop()
+            self.logger_loop.close()
+        self.logger_loop.call_soon_threadsafe(logger_exit_callback)
+
+    @async_print_exception_guard
+    async def create_tcp_logger_server(self) -> None:
+        self.logger_loop = asyncio.new_event_loop()
+
+        def thread_main():
+            asyncio.set_event_loop(self.logger_loop)
+            self.logger_loop.run_forever()
+
+        threading.Thread(target=thread_main).start()
+
+        # this is a bit convoluted since we need the async functions to run in the
+        # logger loop thread instead of in the current thread
+        def setup_callback():
+            async def callback(reader, writer):
+                try:
+                    while not reader.at_eof():
+                        line = await reader.readline()
+                        if not line:
+                            break
+                        line = str(line, 'utf-8')
+                        line = line.rstrip()
+                        self.log_fn(line)
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    self.device.logger.exception("Logger server callback raised an exception")
+
+            async def setup():
+                self.logger_server = await asyncio.start_server(callback, host='localhost', port=0, family=socket.AF_INET, flags=socket.SOCK_STREAM)
+                self.logger_server_port = self.logger_server.sockets[0].getsockname()[1]
+                self.device.logger.info(f"Started {self.log_fn.__name__} logging server at localhost:{self.logger_server_port}")
+
+            self.logger_loop.create_task(setup())
+
+        self.logger_loop.call_soon_threadsafe(setup_callback)
+
+
 class ArloCameraIntercomSession(BackgroundTaskMixin):
     def __init__(self, camera: ArloCamera) -> None:
         super().__init__()
@@ -145,13 +201,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     last_picture_time: datetime = datetime(1970, 1, 1)
 
     # socket logger
-    logger_loop: asyncio.AbstractEventLoop = None
-    logger_server: asyncio.AbstractServer = None
-    logger_server_port: int = 0
+    info_logger: LoggerServer
+    debug_logger: LoggerServer
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
         self.picture_lock = asyncio.Lock()
+
+        self.info_logger = LoggerServer(self, self.logger.info)
+        self.debug_logger = LoggerServer(self, self.logger.debug)
 
         self.start_error_subscription()
         self.start_motion_subscription()
@@ -159,17 +217,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         self.start_battery_subscription()
         self.create_task(self.delayed_init())
 
-    def __del__(self) -> None:
-        super().__del__()
-        def logger_exit_callback():
-            self.logger_server.close()
-            self.logger_loop.stop()
-            self.logger_loop.close()
-        self.logger_loop.call_soon_threadsafe(logger_exit_callback)
-
     async def delayed_init(self) -> None:
-        await self.create_tcp_logger_server()
-
         if not self.has_battery:
             return
 
@@ -186,43 +234,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                 self.logger.debug(f"Delayed init failed, will try again: {e}")
                 await asyncio.sleep(0.1)
             iterations += 1
-
-    @async_print_exception_guard
-    async def create_tcp_logger_server(self) -> None:
-        self.logger_loop = asyncio.new_event_loop()
-
-        def thread_main():
-            asyncio.set_event_loop(self.logger_loop)
-            self.logger_loop.run_forever()
-
-        threading.Thread(target=thread_main).start()
-
-        # this is a bit convoluted since we need the async functions to run in the
-        # logger loop thread instead of in the current thread
-        def setup_callback():
-            async def callback(reader, writer):
-                try:
-                    while not reader.at_eof():
-                        line = await reader.readline()
-                        if not line:
-                            break
-                        line = str(line, 'utf-8')
-                        line = line.rstrip()
-                        self.logger.info(line)
-                    writer.close()
-                    await writer.wait_closed()
-                except Exception:
-                    self.logger.exception("Logger server callback raised an exception")
-
-            async def setup():
-                self.logger_server = await asyncio.start_server(callback, host='localhost', port=0, family=socket.AF_INET, flags=socket.SOCK_STREAM)
-                self.logger_server_port = self.logger_server.sockets[0].getsockname()[1]
-                self.logger.info(f"Started logging server at localhost:{self.logger_server_port}")
-
-            self.logger_loop.create_task(setup())
-
-        self.logger_loop.call_soon_threadsafe(setup_callback)
-
 
     def start_error_subscription(self) -> None:
         def callback(code, message):
@@ -910,7 +921,11 @@ class ArloCameraWebRTCIntercomSession(ArloCameraIntercomSession):
             for ice in ice_servers
         ])
 
-        self.arlo_pc = scrypted_arlo_go.NewWebRTCManager(self.camera.logger_server_port, ice_servers)
+        self.arlo_pc = scrypted_arlo_go.NewWebRTCManager(
+            self.camera.info_logger.logger_server_port,
+            self.camera.debug_logger.logger_server_port,
+            ice_servers,
+        )
 
         ffmpeg_params = json.loads(await scrypted_sdk.mediaManager.convertMediaObjectToBuffer(media, ScryptedMimeTypes.FFmpegInput.value))
         self.logger.debug(f"Received ffmpeg params: {ffmpeg_params}")
@@ -943,7 +958,7 @@ class ArloCameraWebRTCIntercomSession(ArloCameraIntercomSession):
         ]
         self.logger.debug(f"Starting ffmpeg at {ffmpeg_path} with '{' '.join(ffmpeg_args)}'")
 
-        self.intercom_ffmpeg_subprocess = HeartbeatChildProcess("FFmpeg", self.camera.logger_server_port, ffmpeg_path, *ffmpeg_args)
+        self.intercom_ffmpeg_subprocess = HeartbeatChildProcess("FFmpeg", self.camera.info_logger.logger_server_port, ffmpeg_path, *ffmpeg_args)
         self.intercom_ffmpeg_subprocess.start()
 
         self.sdp_answered = False
@@ -1033,7 +1048,12 @@ class ArloCameraSIPIntercomSession(ArloCameraIntercomSession):
             WebsocketHeaders=scrypted_arlo_go.HeadersMap({"User-Agent": USER_AGENTS["arlo"]}),
         )
 
-        self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(self.camera.logger_server_port, ice_servers, sip_cfg)
+        self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(
+            self.camera.info_logger.logger_server_port,
+            self.camera.debug_logger.logger_server_port,
+            ice_servers,
+            sip_cfg,
+        )
 
         ffmpeg_params = json.loads(await scrypted_sdk.mediaManager.convertMediaObjectToBuffer(media, ScryptedMimeTypes.FFmpegInput.value))
         self.logger.debug(f"Received ffmpeg params: {ffmpeg_params}")
@@ -1066,7 +1086,7 @@ class ArloCameraSIPIntercomSession(ArloCameraIntercomSession):
         ]
         self.logger.debug(f"Starting ffmpeg at {ffmpeg_path} with '{' '.join(ffmpeg_args)}'")
 
-        self.intercom_ffmpeg_subprocess = HeartbeatChildProcess("FFmpeg", self.camera.logger_server_port, ffmpeg_path, *ffmpeg_args)
+        self.intercom_ffmpeg_subprocess = HeartbeatChildProcess("FFmpeg", self.camera.info_logger.logger_server_port, ffmpeg_path, *ffmpeg_args)
         self.intercom_ffmpeg_subprocess.start()
 
         def sip_start():
@@ -1131,7 +1151,12 @@ class ArloCameraRTCSignalingSession(BackgroundTaskMixin):
             SDP=description["sdp"],
         )
 
-        self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(self.camera.logger_server_port, ice_servers, sip_cfg)
+        self.arlo_sip = scrypted_arlo_go.NewSIPWebRTCManager(
+            self.camera.info_logger.logger_server_port,
+            self.camera.debug_logger.logger_server_port,
+            ice_servers,
+            sip_cfg,
+        )
 
 class ArloCameraRTCSessionControl:
     def __init__(self, arlo_session: ArloCameraRTCSignalingSession) -> None:
