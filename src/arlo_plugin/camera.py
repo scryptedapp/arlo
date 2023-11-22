@@ -1043,7 +1043,7 @@ class ArloCameraSIPIntercomSession(ArloCameraIntercomSession):
             CalleeURI=sip_call_info['calleeUri'],
             Password=sip_call_info['password'],
             UserAgent="SIP.js/0.20.1",
-            WebsocketURI="wss://livestream-z2-prod.arlo.com:7443",
+            WebsocketURI=f"wss://{sip_call_info['domain']}:7443",
             WebsocketOrigin="https://my.arlo.com",
             WebsocketHeaders=scrypted_arlo_go.HeadersMap({"User-Agent": USER_AGENTS["arlo"]}),
         )
@@ -1145,7 +1145,7 @@ class ArloCameraRTCSignalingSession(BackgroundTaskMixin):
             CalleeURI=sip_call_info['calleeUri'],
             Password=sip_call_info['password'],
             UserAgent="SIP.js/0.21.1",
-            WebsocketURI="wss://livestream-z2-prod.arlo.com:7443",
+            WebsocketURI=f"wss://{sip_call_info['domain']}:7443",
             WebsocketOrigin="https://my.arlo.com",
             WebsocketHeaders=scrypted_arlo_go.HeadersMap({"User-Agent": USER_AGENTS["firefox"]}),
             SDP=description["sdp"],
