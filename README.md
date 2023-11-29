@@ -48,6 +48,10 @@ Multiple Security Systems are created, one for each location. A location is defi
 
 Note that this will not set up or modify settings of the Security Modes in the Arlo App, only change which one is active.
 
+## WebRTC Separate RTSP Recording Stream
+
+If you enable WebRTC, all other streaming methods are disabled. If you choose to enable it, you can enable Cloud RTSP Stream to be used for HomeKit Recording. To do so, enable WebRTC for the Camera, then you will see a new option to Use WebRTC Separate RTSP Recording Stream. This will enable Cloud RTSP under the Streams Section. On the main Streams Section, you will see option drop down lists to choose the stream for each type, Local, Remote, Low Resolution, Local Recording, and Remote Recording. HomeKit is controled by the Remote Recording Stream, you will need to select Cloud RTSP in this option list, all others need to be WebRTC, do not leave them on default. Under the Cloud RTSP Stream Section, you will need to change the RTSP Parser to FFMPEG (TCP), set any arguments you desire and save. Under the HomeKit Plugin, the RTP Sender should remain Scrypted. The Cloud RTSP Stream should only be used for the Remote Recording Stream with WebRTC enabled.
+
 ## Video Clips
 
 The Arlo Plugin will show video clips available in Arlo Cloud for cameras with cloud recording enabled. These clips are not downloaded onto your Scrypted server, but rather streamed on-demand. Deleting clips is not available in Scrypted and should be done through the Arlo app or the Arlo web dashboard.

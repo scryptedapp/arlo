@@ -374,9 +374,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             return False
 
     @property
-    def use_separate_recording_stream(self) -> bool:
+    def webrtc_separate_rtsp_recording_stream(self) -> bool:
         if self.storage:
-            return True if self.storage.getItem("use_separate_recording_stream") else False
+            return True if self.storage.getItem("webrtc_separate_rtsp_recording_stream") else False
         else:
             return False
 
@@ -465,11 +465,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             result.append(
                 {
                     "group": "General",
-                    "key": "use_separate_recording_stream",
-                    "title": "Use separate recording stream",
-                    "value": self.use_separate_recording_stream,
+                    "key": "webrtc_separate_rtsp_recording_stream",
+                    "title": "WebRTC Separate RTSP Recording Stream",
+                    "value": self.webrtc_separate_rtsp_recording_stream,
                     "description": "This will expose the Cloud RTSP Stream Option to use as a separate recording stream for use with " + \
-                                "downstream providers such as HomeKit.",
+                                "downstream providers such as HomeKit while WebRTC is enabled. See README for instructions!",
                     "type": "boolean",
                 }
             )
@@ -527,7 +527,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             return
 
-        if key in ["wired_to_power", "use_sip_webrtc_streaming", "use_separate_recording_stream"]:
+        if key in ["wired_to_power", "use_sip_webrtc_streaming", "webrtc_separate_rtsp_recording_stream"]:
             self.storage.setItem(key, value == "true" or value == True)
             await self.provider.discover_devices()
         elif key in ["eco_mode", "disable_eager_streams"]:
@@ -676,7 +676,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
 
     async def getVideoStreamOptions(self, id: str = None) -> List[ResponseMediaStreamOptions]:
         if self.use_sip_webrtc_streaming:
-            if self.use_separate_recording_stream:
+            if self.webrtc_separate_rtsp_recording_stream:
                 options = [
                     {
                         "id": 'default',
@@ -746,7 +746,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     async def getVideoStream(self, options: RequestMediaStreamOptions = {}) -> MediaObject:
         self.logger.debug("Entered getVideoStream")
 
-        if self.use_sip_webrtc_streaming:
+        if self.use_sip_webrtc_streaming and not self.webrtc_separate_rtsp_recording_stream:
             raise Exception("direct video stream urls are not available when SIP WebRTC is enabled")
 
         mso = await self.getVideoStreamOptions(id=options.get("id", "default"))
