@@ -285,7 +285,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             ScryptedInterface.Settings.value,
         ])
 
-        if self.has_sip_webrtc_streaming and self.use_sip_webrtc_streaming:
+        if self.has_sip_webrtc_streaming:
             results.add(ScryptedInterface.RTCSignalingChannel.value)
 
         if self.has_push_to_talk:
@@ -367,20 +367,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             return False
 
     @property
-    def use_sip_webrtc_streaming(self) -> bool:
-        if self.storage:
-            return True if self.storage.getItem("use_sip_webrtc_streaming") else False
-        else:
-            return False
-
-    @property
-    def webrtc_separate_rtsp_recording_stream(self) -> bool:
-        if self.storage:
-            return True if self.storage.getItem("webrtc_separate_rtsp_recording_stream") else False
-        else:
-            return False
-
-    @property
     def snapshot_throttle_interval(self) -> int:
         interval = self.storage.getItem("snapshot_throttle_interval")
         if interval is None:
@@ -449,30 +435,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                     "type": "boolean",
                 },
             )
-        if self.has_sip_webrtc_streaming:
-            result.append(
-                {
-                    "group": "General",
-                    "key": "use_sip_webrtc_streaming",
-                    "title": "Use SIP WebRTC Streaming",
-                    "value": self.use_sip_webrtc_streaming,
-                    "description": "This is Arlo's newest streaming protocol, which uses WebRTC over SIP to serve video and 2 way audio. " + \
-                                "If enabled, will disable RTSP and DASH streaming options.",
-                    "type": "boolean",
-                }
-            )
-        if self.use_sip_webrtc_streaming:
-            result.append(
-                {
-                    "group": "General",
-                    "key": "webrtc_separate_rtsp_recording_stream",
-                    "title": "WebRTC Separate RTSP Recording Stream",
-                    "value": self.webrtc_separate_rtsp_recording_stream,
-                    "description": "This will expose the Cloud RTSP Stream Option to use as a separate recording stream for use with " + \
-                                "downstream providers such as HomeKit while WebRTC is enabled. See README for instructions!",
-                    "type": "boolean",
-                }
-            )
         result.append(
             {
                 "group": "General",
@@ -484,18 +446,17 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
                 "type": "boolean",
             }
         )
-        if not self.use_sip_webrtc_streaming:
-            result.append(
-                {
-                    "group": "General",
-                    "key": "disable_eager_streams",
-                    "title": "Disable Eager Streams",
-                    "value": self.disable_eager_streams,
-                    "description": "If eager streams are disabled, Scrypted will wait for Arlo Cloud to report that " + \
-                                "the camera stream has started before passing the stream URL to downstream consumers.",
-                    "type": "boolean",
-                }
-            )
+        result.append(
+            {
+                "group": "General",
+                "key": "disable_eager_streams",
+                "title": "Disable Eager Streams",
+                "value": self.disable_eager_streams,
+                "description": "If eager streams are disabled, Scrypted will wait for Arlo Cloud to report that " + \
+                               "the camera stream has started before passing the stream URL to downstream consumers.",
+                "type": "boolean",
+            }
+        )
         if self.eco_mode:
             result.append(
                 {
@@ -527,7 +488,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             return
 
-        if key in ["wired_to_power", "use_sip_webrtc_streaming", "webrtc_separate_rtsp_recording_stream"]:
+        if key in ["wired_to_power"]:
             self.storage.setItem(key, value == "true" or value == True)
             await self.provider.discover_devices()
         elif key in ["eco_mode", "disable_eager_streams"]:
@@ -675,31 +636,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         return ret
 
     async def getVideoStreamOptions(self, id: str = None) -> List[ResponseMediaStreamOptions]:
-        if self.use_sip_webrtc_streaming:
-            if self.webrtc_separate_rtsp_recording_stream:
-                options = [
-                    {
-                        "id": 'default',
-                        "name": 'Cloud RTSP',
-                        "container": 'rtsp',
-                        "video": {
-                            "codec": 'h264',
-                        },
-                        "audio": None if self.arlo_device.get("modelId") == "VMC3030" else {
-                            "codec": 'aac',
-                        },
-                        "source": 'cloud',
-                        "tool": 'scrypted',
-                        "userConfigurable": False,
-                    },
-                ]
-
-                if id is None:
-                    return options
-
-                return next(iter([o for o in options if o['id'] == id]))
-            return []
-
         options = [
             {
                 "id": 'default',
@@ -746,9 +682,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     async def getVideoStream(self, options: RequestMediaStreamOptions = {}) -> MediaObject:
         self.logger.debug("Entered getVideoStream")
 
-        if self.use_sip_webrtc_streaming and not self.webrtc_separate_rtsp_recording_stream:
-            raise Exception("direct video stream urls are not available when SIP WebRTC is enabled")
-
         mso = await self.getVideoStreamOptions(id=options.get("id", "default"))
         mso['refreshAt'] = round(time.time() * 1000) + 30 * 60 * 1000
         container = mso["container"]
@@ -779,9 +712,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
     @async_print_exception_guard
     async def startIntercom(self, media: MediaObject) -> None:
         self.logger.info("Starting intercom")
-
-        if self.use_sip_webrtc_streaming:
-            raise Exception("direct intercom connections are not available when SIP WebRTC is enabled")
 
         if self.uses_sip_push_to_talk:
             # signaling happens over sip
