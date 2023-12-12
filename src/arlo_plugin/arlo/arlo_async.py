@@ -667,6 +667,35 @@ class Arlo(object):
             self.HandleEvents(basestation, resource, ['pushToTalk'], callbackwrapper)
         )
 
+    def SubscribeToSmartMotionEvents(self, basestation, camera, callback):
+        """
+        Use this method to subscribe to smart motion events. You must provide a callback function which will get called once per event.
+
+        The callback function should have the following signature:
+        def callback(event)
+
+        This is an example of handling a specific event, in reality, you'd probably want to write a callback for HandleEvents()
+        that has a big switch statement in it to handle all the various events Arlo produces.
+
+        Returns the Task object that contains the subscription loop.
+        """
+
+        resource = "feedNotification"
+        unique_id = f'{self.user_id}_{camera.get("deviceId")}'
+
+        def callbackwrapper(self, event):
+            if event.get("uniqueId") != unique_id:
+                return None
+
+            stop = callback(event)
+            if not stop:
+                return None
+            return stop
+
+        return asyncio.get_event_loop().create_task(
+            self.HandleEvents(basestation, resource, [None], callbackwrapper)
+        )
+
     async def HandleEvents(self, basestation, resource, actions, callback):
         """
         Use this method to subscribe to the event stream and provide a callback that will be called for event event received.
@@ -683,8 +712,8 @@ class Arlo(object):
             property = None
             if isinstance(action, tuple):
                 action, property = action
-            if not isinstance(action, str):
-                raise Exception('Actions must be either a tuple or a str')
+            if action is not None and not isinstance(action, str):
+                raise Exception('Actions must be either None, a tuple, or a str')
 
             seen_events = {}
             while self.event_stream.active:
