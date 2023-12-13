@@ -688,7 +688,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         smss_devices = []
         provider_to_device_map = {None: []}
 
-        basestations = self.arlo.GetDevices(['basestation', 'siren'])
+        basestations = self.arlo.GetDevices(['basestation', 'siren'], True)
         for basestation in basestations:
             nativeId = basestation["deviceId"]
             self.all_device_ids.add(f"{basestation['deviceName']} ({nativeId})")
@@ -733,7 +733,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         else:
             self.logger.info(f"Discovered {len(self.arlo_basestations)} basestations.")
 
-        cameras = self.arlo.GetDevices(['camera', "arloq", "arloqs", "doorbell"])
+        cameras = self.arlo.GetDevices(['camera', "arloq", "arloqs", "doorbell"], True)
         for camera in cameras:
             nativeId = camera["deviceId"]
             self.all_device_ids.add(f"{camera['deviceName']} ({nativeId})")
