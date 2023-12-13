@@ -13,7 +13,7 @@ from typing import List, TYPE_CHECKING
 import scrypted_arlo_go
 
 import scrypted_sdk
-from scrypted_sdk.types import Setting, Settings, SettingValue, Device, Camera, VideoCamera, RequestMediaStreamOptions, VideoClips, VideoClip, VideoClipOptions, MotionSensor, AudioSensor, Battery, Charger, ChargeState, DeviceProvider, MediaObject, ResponsePictureOptions, ResponseMediaStreamOptions, ScryptedMimeTypes, ScryptedInterface, ScryptedDeviceType
+from scrypted_sdk.types import Setting, Settings, SettingValue, Device, Camera, VideoCamera, ObjectDetector, ObjectDetectionTypes, RequestMediaStreamOptions, VideoClips, VideoClip, VideoClipOptions, MotionSensor, AudioSensor, Battery, Charger, ChargeState, DeviceProvider, MediaObject, ResponsePictureOptions, ResponseMediaStreamOptions, ScryptedMimeTypes, ScryptedInterface, ScryptedDeviceType
 
 from .experimental import EXPERIMENTAL
 from .arlo.arlo_async import USER_AGENTS
@@ -100,7 +100,7 @@ class ArloCameraIntercomSession(BackgroundTaskMixin):
         raise NotImplementedError("not implemented")
 
 
-class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger):
+class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger):
     MODELS_WITH_SPOTLIGHTS = [
         "vmc2030",
         "vmc2032",
@@ -215,6 +215,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
         self.start_motion_subscription()
         self.start_audio_subscription()
         self.start_battery_subscription()
+        self.start_smart_motion_subscription()
         self.create_task(self.delayed_init())
 
     async def delayed_init(self) -> None:
@@ -277,12 +278,33 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             self.provider.arlo.SubscribeToBatteryEvents(self.arlo_basestation, self.arlo_device, callback)
         )
 
+    def start_smart_motion_subscription(self) -> None:
+        def callback(event):
+            timestamp = event.get("utcCreatedDate")
+            detection = {
+                "detectionId": f"{timestamp}",
+                "timestamp": timestamp,
+                "detections": [
+                    {
+                        "className": cat.lower()
+                    }
+                    for cat in event.get("objCategories", [])
+                ]
+            }
+            self.create_task(self.onDeviceEvent(ScryptedInterface.ObjectDetector.value, detection))
+            return self.stop_subscriptions
+
+        self.register_task(
+            self.provider.arlo.SubscribeToSmartMotionEvents(self.arlo_basestation, self.arlo_device, callback)
+        )
+
     def get_applicable_interfaces(self) -> List[str]:
         results = set([
             ScryptedInterface.VideoCamera.value,
             ScryptedInterface.Camera.value,
             ScryptedInterface.MotionSensor.value,
             ScryptedInterface.Settings.value,
+            ScryptedInterface.ObjectDetector.value,
         ])
 
         if self.has_sip_webrtc_streaming:
@@ -823,6 +845,26 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, DeviceProvider, 
             if not self.vss:
                 self.vss = ArloSirenVirtualSecuritySystem(vss_id, self.arlo_device, self.arlo_basestation, self.provider, self)
         return self.vss
+
+    async def getDetectionInput(self, detectionId: str, eventId=None) -> MediaObject:
+        return await self.getVideoClipThumbnail(detectionId)
+
+    async def getObjectTypes(self) -> ObjectDetectionTypes:
+        return {
+            "classes": [
+                "person",
+                "vehicle",
+                "package",
+                "animal",
+                "car",
+                "truck",
+                "bus",
+                "motorbike",
+                "bicycle",
+                "dog",
+                "cat",
+            ]
+        }
 
 
 class ArloCameraWebRTCIntercomSession(ArloCameraIntercomSession):
