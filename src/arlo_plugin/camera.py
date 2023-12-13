@@ -215,6 +215,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, ObjectDetector, 
         self.start_motion_subscription()
         self.start_audio_subscription()
         self.start_battery_subscription()
+        self.start_smart_motion_subscription()
         self.create_task(self.delayed_init())
 
     async def delayed_init(self) -> None:
