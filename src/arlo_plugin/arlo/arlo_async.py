@@ -1111,13 +1111,19 @@ class Arlo(object):
                 locationList[locations[f'{location}'][locationId]['locationId']] = locations[f'{location}'][locationId]['locationName']
         return locationList
 
-    def GetCurrentMode(self, location: str) -> str:
+    def GetCurrentMode(self, location: str, one_location: bool) -> str:
         currentmode = self._getCurrentMode_NextRevision()
-        return currentmode[f'{location}']['properties']['mode']
+        if one_location:
+            return currentmode['properties']['mode']
+        else:
+            return currentmode[f'{location}']['properties']['mode']
 
-    def GetNextRevision(self, location: str) -> str:
+    def GetNextRevision(self, location: str, one_location:bool) -> str:
         nextRevision = self._getCurrentMode_NextRevision()
-        return nextRevision[f'{location}']['revision']
+        if one_location:
+            return nextRevision['revision']
+        else:
+            return nextRevision[f'{location}']['revision']
 
     def _getLocations(self) -> dict:
         return self.request.get(f'https://{self.BASE_URL}/hmsdevicemanagement/users/{self.user_id}/locations')

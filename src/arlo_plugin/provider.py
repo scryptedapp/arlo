@@ -186,6 +186,14 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         return securitymode
 
     @property
+    def one_location(self) -> bool:
+        one_location = self.storage.getItem("one_location")
+        if one_location is None:
+            one_location = False
+            self.storage.setItem("one_location", one_location)
+        return one_location
+
+    @property
     def arlo(self) -> Arlo:
         if self._arlo is not None:
             if self._arlo_mfa_complete_auth is not None:
@@ -793,6 +801,12 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
         if self.mode_enabled:
             locations = self.arlo.GetLocations()
+
+            if len(locations) > 1:
+                self.storage.setItem("one_location", False)
+            else:
+                self.storage.setItem("one_location", True)
+
             for location in locations:
                 nativeId = f'{location}.smss'
                 self.all_device_ids.add(f"Arlo Security Mode Security System - {locations[location]} ({nativeId})")
