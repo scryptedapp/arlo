@@ -88,6 +88,10 @@ MEDIA_USER_AGENTS = {
     "android": "ijkplayer-android-4.5_28538"
 }
 
+VALID_DEVICE_STATES = [
+    'provisioned',
+    'synced',
+]
 
 class Arlo(object):
     BASE_URL = 'my.arlo.com'
@@ -762,22 +766,19 @@ class Arlo(object):
         # NOTE: Calling HandleEvents() calls Subscribe() again, which basically turns into a no-op. Hackie I know, but it cleans up the code a bit.
         return await self.HandleEvents(basestation, resource, actions, callback)
 
-    def GetDevices(self, device_type=None, filter_provisioned=None):
+    def GetDevices(self, device_type=None, device_state=None):
         """
         This method returns an array that contains the basestation, cameras, etc. and their metadata.
         If you pass in a valid device type, as a string or a list, this method will return an array of just those devices that match that type. An example would be ['basestation', 'camera']
-        To filter provisioned or unprovisioned devices pass in a True/False value for filter_provisioned. By default both types are returned.
+        To filter only provisioned and synced devices pass in a True value for device_state. By default all types and states are returned.
         """
         devices = self._getDevicesImpl()
         if device_type:
-            devices = [ device for device in devices if device.get('deviceType') in device_type]
+            devices = [device for device in devices if device.get('deviceType') in device_type]
 
-        if filter_provisioned is not None:
-            if filter_provisioned:
-                devices = [ device for device in devices if device.get("state") == 'provisioned']
-            else:
-                devices = [ device for device in devices if device.get("state") != 'provisioned']
-
+        if device_state is not None:
+            if device_state:
+                devices = [device for device in devices if device.get("state") in VALID_DEVICE_STATES]
         return devices
 
     @cached(cache=TTLCache(maxsize=1, ttl=60))
