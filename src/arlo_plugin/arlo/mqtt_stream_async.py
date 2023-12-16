@@ -44,14 +44,14 @@ class MQTTStream(Stream):
             if response.get('resource') is not None:
                 self.event_loop.call_soon_threadsafe(self._queue_response, response)
 
-        self.event_stream = mqtt.Client(client_id=f"user_{self.arlo.user_id}_{self._gen_client_number()}", transport="websockets", clean_session=False)
+        self.event_stream = mqtt.Client(client_id=f"user_{self.arlo.user_id}_{self._gen_client_number()}", transport="tcp", clean_session=False)
         self.event_stream.username_pw_set(self.arlo.user_id, password=self.arlo.request.session.headers.get('Authorization'))
         self.event_stream.ws_set_options(path="/mqtt", headers={"Origin": "https://my.arlo.com"})
         self.event_stream.on_connect = on_connect
         self.event_stream.on_disconnect = on_disconnect
         self.event_stream.on_message = on_message
         self.event_stream.tls_set()
-        self.event_stream.connect_async("mqtt-cluster.arloxcld.com", port=443)
+        self.event_stream.connect_async("mqtt-cluster-z1.arloxcld.com", port=443)
         self.event_stream.loop_start()
 
         while not self.connected and not self.event_stream_stop_event.is_set():
