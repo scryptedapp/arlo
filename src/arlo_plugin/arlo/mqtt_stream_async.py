@@ -3,7 +3,7 @@ import json
 import random
 import paho.mqtt.client as mqtt
 
-from .stream_async import Stream 
+from .stream_async import Stream
 from .logging import logger
 
 class MQTTStream(Stream):
@@ -71,6 +71,7 @@ class MQTTStream(Stream):
         self.reconnecting = False
 
     def subscribe(self, topics):
+        logger.debug(f"Subscribing to topics:\n{json.dumps(topics, indent=2)}")
         if topics:
             new_subscriptions = [(topic, 0) for topic in topics]
             self.event_stream.subscribe(new_subscriptions)

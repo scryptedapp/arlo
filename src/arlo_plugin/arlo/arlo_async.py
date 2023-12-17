@@ -333,7 +333,7 @@ class Arlo(object):
 
             # subscribe to all camera topics
             topics = [
-                f"d/{basestation['xCloudId']}/out/cameras/{camera['deviceId']}/#"
+                f"d/{basestation['xCloudId']}/out/doorbells/{camera['deviceId']}/#" if camera['deviceType'] == 'doorbell' else f"d/{basestation['xCloudId']}/out/cameras/{camera['deviceId']}/#"
                 for basestation, camera in basestation_camera_tuples
             ]
 
@@ -346,6 +346,7 @@ class Arlo(object):
                     f"d/{x_cloud_id}/out/audioPlayback/#",
                     f"d/{x_cloud_id}/out/modes/#",
                     f"d/{x_cloud_id}/out/basestation/#",
+                    f"d/{x_cloud_id}/out/cameras/#",
                     f"d/{x_cloud_id}/out/doorbells/#",
                     f"d/{x_cloud_id}/out/siren/#",
                     f"d/{x_cloud_id}/out/devices/#",
@@ -357,6 +358,11 @@ class Arlo(object):
                     f"d/{x_cloud_id}/out/activeAutomations/#",
                     f"d/{x_cloud_id}/out/lte/#",
                 ]
+
+            # subscribe to user topics
+            topics += [
+                f"u/{self.user_id}/#"
+            ]
 
             self.event_stream.subscribe(topics)
 
