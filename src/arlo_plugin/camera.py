@@ -886,6 +886,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ]
         }
 
+    @async_print_exception_guard
     async def setBrightness(self, brightness: float) -> None:
         """We map brightness to Arlo's video brightness according to the following:
         0: -2
