@@ -585,6 +585,35 @@ class Arlo(object):
             self.HandleEvents(basestation, resource, [('is', 'batteryLevel')], callbackwrapper)
         )
 
+    def SubscribeToBrightnessEvents(self, basestation, camera, callback):
+        """
+        Use this method to subscribe to video brightness events. You must provide a callback function which will get called once per brightness event.
+
+        Technically speaking, Arlo doesn't produce brightness events. This is used as a callback for when brightness is modified by the user.
+
+        The callback function should have the following signature:
+        def callback(event)
+
+        This is an example of handling a specific event, in reality, you'd probably want to write a callback for HandleEvents()
+        that has a big switch statement in it to handle all the various events Arlo produces.
+
+        Returns the Task object that contains the subscription loop.
+        """
+        resource = f"cameras/{camera.get('deviceId')}"
+
+        def callbackwrapper(self, event):
+            properties = event.get('properties', {})
+            stop = None
+            if 'brightness' in properties:
+                stop = callback(properties['brightness'])
+            if not stop:
+                return None
+            return stop
+
+        return asyncio.get_event_loop().create_task(
+            self.HandleEvents(basestation, resource, [('is', 'brightness')], callbackwrapper)
+        )
+
     def SubscribeToDoorbellEvents(self, basestation, doorbell, callback):
         """
         Use this method to subscribe to doorbell events. You must provide a callback function which will get called once per doorbell event.
@@ -1216,3 +1245,29 @@ class Arlo(object):
     @cached(cache=TTLCache(maxsize=1, ttl=60))
     def _getSmartFeaturesCached(self) -> dict:
         return self.request.get(f'https://{self.BASE_URL}/hmsweb/users/subscription/smart/features')
+
+    def AdjustBrightness(self, basestation, camera, brightness=0):
+        """
+        NOTE: Brightness is between -2 and 2 in increments of 1 (-2, -1, 0, 1, 2).
+        Setting it to an invalid value has no effect.
+
+        Returns:
+        {
+          "action": "is",
+          "from": "XXXXXXXXXXXXX",
+          "properties": {
+              "brightness": -2
+          },
+          "resource": "cameras/XXXXXXXXXXXXX",
+          "to": "336-XXXXXXX_web",
+          "transId": "web!XXXXXXXX.389518!1514956240683"
+        }
+        """
+        return self.Notify(basestation, {
+            "action": "set",
+            "resource": "cameras/"+camera.get('deviceId'),
+            "publishResponse": True,
+            "properties": {
+                "brightness": brightness
+            }
+        })
