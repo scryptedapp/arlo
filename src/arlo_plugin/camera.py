@@ -298,8 +298,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         )
 
     def start_smart_motion_subscription(self) -> None:
+        # keep track of the last seen timestamp so we do not trigger the same event multiple times
+        last_seen_timestamp = 0
+
         def callback(event):
-            timestamp = event.get("utcCreatedDate")
+            nonlocal last_seen_timestamp
+            timestamp = event.get("utcCreatedDate", 0)
+            if timestamp <= last_seen_timestamp:
+                return self.stop_subscriptions
+            last_seen_timestamp = timestamp
             detection = {
                 "detectionId": f"{timestamp}",
                 "timestamp": timestamp,
@@ -787,14 +794,14 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         self.logger.warn(f"Clip {videoId} not found")
         return None
 
-    async def getVideoClipThumbnail(self, thumbnailId: str) -> MediaObject:
+    async def getVideoClipThumbnail(self, thumbnailId: str, no_cache=False) -> MediaObject:
         self.logger.info(f"Getting video clip thumbnail {thumbnailId}")
 
         id_as_time = int(thumbnailId) / 1000.0
         start = datetime.fromtimestamp(id_as_time) - timedelta(seconds=10)
         end = datetime.fromtimestamp(id_as_time) + timedelta(seconds=10)
 
-        library = self.provider.arlo.GetLibrary(self.arlo_device, start, end)
+        library = self.provider.arlo.GetLibrary(self.arlo_device, start, end, no_cache=no_cache)
         for recording in library:
             if thumbnailId == recording["name"]:
                 return await scrypted_sdk.mediaManager.createMediaObjectFromUrl(recording["presignedThumbnailUrl"])
@@ -867,7 +874,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return self.vss
 
     async def getDetectionInput(self, detectionId: str, eventId=None) -> MediaObject:
-        return await self.getVideoClipThumbnail(detectionId)
+        return await self.getVideoClipThumbnail(detectionId, no_cache=True)
 
     async def getObjectTypes(self) -> ObjectDetectionTypes:
         return {

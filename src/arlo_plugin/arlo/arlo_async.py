@@ -1188,7 +1188,7 @@ class Arlo(object):
         self.request.put(f'https://{self.BASE_URL}/hmsweb/automation/v3/activeMode?locationId={location}&revision={nextrevision}', params=params, headers=headers)
         return
 
-    def GetLibrary(self, device, from_date: datetime, to_date: datetime):
+    def GetLibrary(self, device, from_date: datetime, to_date: datetime, no_cache=False):
         """
         This call returns the following:
         presignedContentUrl is a link to the actual video in Amazon AWS.
@@ -1217,18 +1217,27 @@ class Arlo(object):
         # give the query range a bit of buffer
         from_date_internal = from_date - timedelta(days=1)
         to_date_internal = to_date + timedelta(days=1)
+        library_results = (
+            self._getLibraryImpl(from_date_internal.strftime("%Y%m%d"), to_date_internal.strftime("%Y%m%d"))
+            if no_cache
+            else
+            self._getLibraryCached(from_date_internal.strftime("%Y%m%d"), to_date_internal.strftime("%Y%m%d"))
+        )
 
         return [
             result for result in
-            self._getLibraryCached(from_date_internal.strftime("%Y%m%d"), to_date_internal.strftime("%Y%m%d"))
+            library_results
             if result["deviceId"] == device["deviceId"]
             and datetime.fromtimestamp(int(result["name"]) / 1000.0) <= to_date
             and datetime.fromtimestamp(int(result["name"]) / 1000.0) >= from_date
         ]
 
-    @cached(cache=TTLCache(maxsize=512, ttl=60))
+    @cached(cache=TTLCache(maxsize=512, ttl=10))
     def _getLibraryCached(self, from_date: str, to_date: str):
         logger.debug(f"Library cache miss for {from_date}, {to_date}")
+        return self._getLibraryImpl(from_date, to_date)
+
+    def _getLibraryImpl(self, from_date: str, to_date: str):
         return self.request.post(
             f'https://{self.BASE_URL}/hmsweb/users/library',
             params={
