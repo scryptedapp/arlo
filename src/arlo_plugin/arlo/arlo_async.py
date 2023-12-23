@@ -777,7 +777,7 @@ class Arlo(object):
                         del seen_events[uuid]
 
         if self.event_stream and self.event_stream.active:
-            listeners = [loop_action_listener(action) for action in actions]
+            listeners = [asyncio.create_task(loop_action_listener(action)) for action in actions]
             done, pending = await asyncio.wait(listeners, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()

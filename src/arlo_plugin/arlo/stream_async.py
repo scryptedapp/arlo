@@ -64,9 +64,10 @@ class Stream:
 
             interval = self.refresh * 60  # interval in seconds from refresh in minutes
             signal_task = asyncio.create_task(self.refresh_loop_signal.get())
+            sleep_task = asyncio.create_task(asyncio.sleep(interval))
 
             # wait until either we receive a signal or the refresh interval expires
-            done, pending = await asyncio.wait([signal_task, asyncio.sleep(interval)], return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait([signal_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
 
@@ -116,8 +117,8 @@ class Stream:
                 for item in items:
                     q.put_nowait(item)
 
-                if num_dropped > 0:
-                    logger.debug(f"Cleaned {num_dropped} events from queue {key}")
+                #if num_dropped > 0:
+                #    logger.debug(f"Cleaned {num_dropped} events from queue {key}")
 
                 # cleanup is not urgent, so give other tasks a chance
                 await asyncio.sleep(0.1)
