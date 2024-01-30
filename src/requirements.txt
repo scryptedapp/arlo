@@ -1,5 +1,5 @@
 paho-mqtt==1.6.1
-aiohttp==3.9.1
+aiohttp==3.9.3
 requests==2.31.0
 urllib3==2.1.0
 cachetools==5.3.2
