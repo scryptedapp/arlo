@@ -1,7 +1,7 @@
 paho-mqtt==1.6.1
 aiohttp==3.9.3
 requests==2.31.0
-urllib3==2.1.0
+urllib3==2.2.0
 cachetools==5.3.2
 scrypted-arlo-go==0.7.6
 cloudscraper==1.2.71
