@@ -96,8 +96,8 @@ VALID_DEVICE_STATES = [
 class Arlo(object):
     BASE_URL = 'my.arlo.com'
     AUTH_URL = 'ocapi-app.arlo.com'
-    BACKUP_AUTH_HOSTS = ["NTIuMzEuMTU3LjE4MQ==","MzQuMjQ4LjE1My42OQ==","My4yNDguMTI4Ljc3","MzQuMjQ2LjE0LjI5"]
-    #BACKUP_AUTH_HOSTS = BACKUP_AUTH_HOSTS[2:3]
+    BACKUP_AUTH_HOSTS = ['MzQuMjQxLjU0LjE3MQ==', 'NjMuMzIuMjcuNjk=']
+    #BACKUP_AUTH_HOSTS = BACKUP_AUTH_HOSTS[1:2]
     TRANSID_PREFIX = 'web'
 
     random.shuffle(BACKUP_AUTH_HOSTS)
