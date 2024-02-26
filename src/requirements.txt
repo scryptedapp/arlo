@@ -5,7 +5,7 @@ urllib3==2.2.1
 cachetools==5.3.3
 scrypted-arlo-go==0.7.6
 cloudscraper==1.2.71
-curl-cffi==0.5.10
+curl-cffi==0.6.1
 async-timeout==4.0.3
 beautifulsoup4==4.12.3
 --extra-index-url=https://bjia56.github.io/armv7l-wheels/
