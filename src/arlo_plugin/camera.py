@@ -429,6 +429,13 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return int(interval)
 
     @property
+    def terminate_local_stream_on_motion_end(self) -> bool:
+        if self.storage:
+            return True if self.storage.getItem("terminate_local_stream_on_motion_end") else False
+        else:
+            return False
+
+    @property
     def has_cloud_recording(self) -> bool:
         return self.has_feature("eventRecording")
 
@@ -576,6 +583,18 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                     "type": "number",
                 }
             )
+            if self.has_local_live_streaming:
+                result.append(
+                    {
+                        "group": "Eco Mode",
+                        "key": "terminate_local_stream_on_motion_end",
+                        "title": "Terminate Local Stream On Motion End",
+                        "value": self.terminate_local_stream_on_motion_end,
+                        "description": "When using the Local RTSP stream, terminate the stream when motion ends. Otherwise, " + \
+                                       "the stream will continue until downstream consumers (e.g. HomeKit) stops using it.",
+                        "type": "boolean",
+                    }
+                )
         result.append(
             {
                 "group": "General",
@@ -609,7 +628,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         elif key in ["wired_to_power", "disable_sip_webrtc_streaming"]:
             self.storage.setItem(key, value == "true" or value == True)
             await self.provider.discover_devices()
-        elif key in ["eco_mode", "disable_eager_streams"]:
+        elif key in ["eco_mode", "disable_eager_streams", "terminate_local_stream_on_motion_end"]:
             self.storage.setItem(key, value == "true" or value == True)
         elif key == "print_debug":
             self.logger.info(f"Device Capabilities: {json.dumps(self.arlo_capabilities)}")
@@ -687,9 +706,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if self.arlo_properties.get('sipCallActive', False) is not False and self.arlo_properties['sipCallActive'] != False:
             self.logger.info("Camera is busy, not starting stream")
             return None
-        
+
         self.logger.debug("Entered startRTCSignalingSession")
-        
+
         plugin_session = ArloCameraRTCSignalingSession(self)
 
         ice_servers = [
@@ -883,6 +902,16 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             elif self.local_live_streaming_codec == "h.265":
                 url = f"rtsp://localhost:{port}/{self.nativeId}/tcp/hevc"
             self.logger.debug(f"Constructed local stream URL at {url}")
+
+            if self.terminate_local_stream_on_motion_end:
+                def motion_callback(motionDetected):
+                    if not motionDetected:
+                        self.logger.debug("Motion ended, terminating local stream")
+                        proxy.Stop()
+
+                scrypted_device = await scrypted_sdk.systemManager.api.getDeviceById(self.getScryptedProperty("id"))
+                scrypted_device.listen(ScryptedInterface.MotionSensor.value, motion_callback)
+
         else:
             self.logger.info(f"Requesting {container} stream")
             url = await asyncio.wait_for(self.provider.arlo.StartStream(self.arlo_basestation, self.arlo_device, mode=container, eager=not self.disable_eager_streams), timeout=self.timeout)
@@ -894,7 +923,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if self.arlo_properties['activityState'] != "idle":
             self.logger.info("Camera is busy, not starting stream")
             return None
-        
+
         self.logger.debug("Entered getVideoStream")
 
         mso = await self.getVideoStreamOptions(id=options.get("id", "default"))
