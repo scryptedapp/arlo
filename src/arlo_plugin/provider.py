@@ -242,7 +242,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 if self._arlo_mfa_complete_auth is NO_MFA:
                     self.logger.info(f"Initialized Arlo client")
                     # go back to the top of the function to complete the login
-                    _ = self.arlo
+                    return self.arlo
                 else:
                     self.logger.info(f"Initialized Arlo client, waiting for MFA code")
                 return None
@@ -357,14 +357,14 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
             # initialize login and prompt for MFA
             try:
-                _ = self.arlo
+                arlo_init = self.arlo
             except Exception:
                 self.logger.exception("Unrecoverable login error")
                 self.logger.error("Will request a plugin restart")
                 await scrypted_sdk.deviceManager.requestRestart()
                 return
 
-            if self._arlo_mfa_complete_auth is not NO_MFA:
+            if arlo_init is None:
                 # do imap lookup
                 # adapted from https://github.com/twrecked/pyaarlo/blob/77c202b6f789c7104a024f855a12a3df4fc8df38/pyaarlo/tfa.py
                 try:
