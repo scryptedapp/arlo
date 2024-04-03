@@ -364,94 +364,98 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 await scrypted_sdk.deviceManager.requestRestart()
                 return
 
-            # do imap lookup
-            # adapted from https://github.com/twrecked/pyaarlo/blob/77c202b6f789c7104a024f855a12a3df4fc8df38/pyaarlo/tfa.py
-            try:
-                try_count = 0
-                while True:
-                    try_count += 1
+            if self._arlo_mfa_complete_auth is not NO_MFA:
+                # do imap lookup
+                # adapted from https://github.com/twrecked/pyaarlo/blob/77c202b6f789c7104a024f855a12a3df4fc8df38/pyaarlo/tfa.py
+                try:
+                    try_count = 0
+                    while True:
+                        try_count += 1
 
-                    sleep_duration = 1
-                    if try_count > 5:
-                        sleep_duration = 2
-                    elif try_count > 10:
-                        sleep_duration = 5
-                    elif try_count > 20:
-                        sleep_duration = 10
+                        sleep_duration = 1
+                        if try_count > 5:
+                            sleep_duration = 2
+                        elif try_count > 10:
+                            sleep_duration = 5
+                        elif try_count > 20:
+                            sleep_duration = 10
 
-                    self.logger.info(f"Checking IMAP for MFA codes (attempt {try_count})")
+                        self.logger.info(f"Checking IMAP for MFA codes (attempt {try_count})")
 
-                    self.imap.check()
-                    res, emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
-                    if res.lower() != "ok":
-                        raise Exception("IMAP error: {res}")
-
-                    if emails == self.imap_skip_emails:
-                        self.logger.info("No new emails found, will sleep and retry")
-                        await asyncio.sleep(sleep_duration)
-                        continue
-
-                    skip_emails = self.imap_skip_emails[0].split()
-                    def search_email(msg_id):
-                        if msg_id in skip_emails:
-                            return None
-
-                        res, msg = self.imap.fetch(msg_id, "(BODY.PEEK[])")
+                        self.imap.check()
+                        res, emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
                         if res.lower() != "ok":
                             raise Exception("IMAP error: {res}")
 
-                        if isinstance(msg[0][1], bytes):
-                            for part in email.message_from_bytes(msg[0][1]).walk():
-                                if part.get_content_type() != "text/html":
-                                    continue
-                                try:
-                                    soup = BeautifulSoup(part.get_payload(decode=True), 'html.parser')
-                                    for line in soup.get_text().splitlines():
-                                        code = re.match(r"^\W*(\d{6})\W*$", line)
-                                        if code is not None:
-                                            return code.group(1)
-                                except:
-                                    continue
-                        return None
+                        if emails == self.imap_skip_emails:
+                            self.logger.info("No new emails found, will sleep and retry")
+                            await asyncio.sleep(sleep_duration)
+                            continue
 
-                    for msg_id in emails[0].split():
-                        res = search_email(msg_id)
-                        if res is not None:
-                            self._arlo_mfa_code = res
+                        skip_emails = self.imap_skip_emails[0].split()
+                        def search_email(msg_id):
+                            if msg_id in skip_emails:
+                                return None
+
+                            res, msg = self.imap.fetch(msg_id, "(BODY.PEEK[])")
+                            if res.lower() != "ok":
+                                raise Exception("IMAP error: {res}")
+
+                            if isinstance(msg[0][1], bytes):
+                                for part in email.message_from_bytes(msg[0][1]).walk():
+                                    if part.get_content_type() != "text/html":
+                                        continue
+                                    try:
+                                        soup = BeautifulSoup(part.get_payload(decode=True), 'html.parser')
+                                        for line in soup.get_text().splitlines():
+                                            code = re.match(r"^\W*(\d{6})\W*$", line)
+                                            if code is not None:
+                                                return code.group(1)
+                                    except:
+                                        continue
+                            return None
+
+                        for msg_id in emails[0].split():
+                            res = search_email(msg_id)
+                            if res is not None:
+                                self._arlo_mfa_code = res
+                                break
+
+                        # update previously seen emails list
+                        self.imap_skip_emails = emails
+
+                        if self._arlo_mfa_code is not None:
+                            self.logger.info("Found MFA code")
                             break
 
-                    # update previously seen emails list
-                    self.imap_skip_emails = emails
-
-                    if self._arlo_mfa_code is not None:
-                        self.logger.info("Found MFA code")
-                        break
-
-                    self.logger.info("No MFA code found, will sleep and retry")
-                    await asyncio.sleep(sleep_duration)
-            except Exception:
-                self.logger.exception("Error while checking for MFA codes")
-
-                self._arlo = old_arlo
-                self.storage.setItem("arlo_auth_headers", old_headers)
-                self.storage.setItem("arlo_user_id", old_user_id)
-                self._arlo_mfa_code = None
-                self._arlo_mfa_complete_auth = None
-
-                self.logger.error("Will reload IMAP connection")
-                asyncio.get_event_loop().call_soon(self.initialize_imap)
-            else:
-                # finish login
-                if old_arlo:
-                    old_arlo.Unsubscribe()
-
-                try:
-                    _ = self.arlo
+                        self.logger.info("No MFA code found, will sleep and retry")
+                        await asyncio.sleep(sleep_duration)
                 except Exception:
-                    self.logger.exception("Unrecoverable login error")
-                    self.logger.error("Will request a plugin restart")
-                    await scrypted_sdk.deviceManager.requestRestart()
-                    return
+                    self.logger.exception("Error while checking for MFA codes")
+
+                    self._arlo = old_arlo
+                    self.storage.setItem("arlo_auth_headers", old_headers)
+                    self.storage.setItem("arlo_user_id", old_user_id)
+                    self._arlo_mfa_code = None
+                    self._arlo_mfa_complete_auth = None
+
+                    self.logger.error("Will reload IMAP connection")
+                    asyncio.get_event_loop().call_soon(self.initialize_imap)
+                else:
+                    # finish login
+                    if old_arlo:
+                        old_arlo.Unsubscribe()
+
+                    try:
+                        _ = self.arlo
+                    except Exception:
+                        self.logger.exception("Unrecoverable login error")
+                        self.logger.error("Will request a plugin restart")
+                        await scrypted_sdk.deviceManager.requestRestart()
+                        return
+            else:
+                # MFA disabled
+                _ = self.arlo
 
             # continue by sleeping/waiting for a signal
             interval = self.imap_mfa_interval * 24 * 60 * 60  # convert interval days to seconds
