@@ -13,7 +13,7 @@ import scrypted_sdk
 from scrypted_sdk import ScryptedDeviceBase
 from scrypted_sdk.types import Setting, SettingValue, Settings, DeviceProvider, ScryptedInterface
 
-from .arlo import Arlo
+from .arlo import Arlo, NO_MFA
 from .arlo.arlo_async import change_stream_class
 from .arlo.logging import logger as arlo_lib_logger
 from .logging import ScryptedDeviceLoggerMixin
@@ -197,7 +197,16 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     @property
     def arlo(self) -> Arlo:
         if self._arlo is not None:
-            if self._arlo_mfa_complete_auth is not None:
+            if self._arlo_mfa_complete_auth is NO_MFA:
+                self.logger.info("Arlo MFA skipped")
+                self._arlo_mfa_complete_auth = None
+                self._arlo_mfa_code = None
+
+                self.storage.setItem("arlo_auth_headers", json.dumps(dict(self._arlo.request.session.headers.items())))
+                self.storage.setItem("arlo_user_id", self._arlo.user_id)
+
+                self.create_task(self.do_arlo_setup())
+            elif self._arlo_mfa_complete_auth is not None:
                 if not self._arlo_mfa_code:
                     return None
 
@@ -230,7 +239,12 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 return self._arlo
             else:
                 self._arlo_mfa_complete_auth = self._arlo.LoginMFA()
-                self.logger.info(f"Initialized Arlo client, waiting for MFA code")
+                if self._arlo_mfa_complete_auth is NO_MFA:
+                    self.logger.info(f"Initialized Arlo client")
+                    # go back to the top of the function to complete the login
+                    _ = self.arlo
+                else:
+                    self.logger.info(f"Initialized Arlo client, waiting for MFA code")
                 return None
         except Exception:
             self.logger.exception("Error initializing Arlo client")

@@ -93,6 +93,9 @@ VALID_DEVICE_STATES = [
     'synced',
 ]
 
+# Sentinel object to indicate that MFA is not active
+NO_MFA = object()
+
 class Arlo(object):
     BASE_URL = 'my.arlo.com'
     AUTH_URL = 'ocapi-app.arlo.com'
@@ -210,65 +213,79 @@ class Arlo(object):
             raw=True
         )
         self.user_id = auth_body['data']['userId']
-        self.request.session.headers.update({'Authorization': base64.b64encode(auth_body['data']['token'].encode('utf-8')).decode()})
 
-        # Retrieve MFA factor id
-        factors_body = self.request.get(
-            f'https://{auth_host}/api/getFactors',
-            params={'data': auth_body['data']['issued']},
-            headers=headers,
-            raw=True
-        )
-        factor_id = next(
-            iter([
-                i for i in factors_body['data']['items']
-                if (i['factorType'] == 'EMAIL' or i['factorType'] == 'SMS')
-                and i['factorRole'] == "PRIMARY"
-            ]),
-            {}
-        ).get('factorId')
-        if not factor_id:
-            raise Exception("Could not find valid 2FA method - is the primary 2FA set to either Email or SMS?")
+        if auth_body['data'].get("MFA_State") != "DISABLED":
+            self.request.session.headers.update({'Authorization': base64.b64encode(auth_body['data']['token'].encode('utf-8')).decode()})
 
-        # Start factor auth
-        start_auth_body = self.request.post(
-            f'https://{auth_host}/api/startAuth',
-            params={'factorId': factor_id},
-            headers=headers,
-            raw=True
-        )
-        factor_auth_code = start_auth_body['data']['factorAuthCode']
-
-        def complete_auth(code):
-            nonlocal self, factor_auth_code, headers
-
-            finish_auth_body = self.request.post(
-                f'https://{auth_host}/api/finishAuth',
-                params={
-                    'factorAuthCode': factor_auth_code,
-                    'otp': code
-                },
+            # Retrieve MFA factor id
+            factors_body = self.request.get(
+                f'https://{auth_host}/api/getFactors',
+                params={'data': auth_body['data']['issued']},
                 headers=headers,
                 raw=True
             )
+            factor_id = next(
+                iter([
+                    i for i in factors_body['data']['items']
+                    if (i['factorType'] == 'EMAIL' or i['factorType'] == 'SMS')
+                    and i['factorRole'] == "PRIMARY"
+                ]),
+                {}
+            ).get('factorId')
+            if not factor_id:
+                raise Exception("Could not find valid 2FA method - is the primary 2FA set to either Email or SMS?")
 
-            if finish_auth_body.get('data', {}).get('token') is None:
-                raise Exception("Could not complete 2FA, maybe invalid token? If the error persists, please try reloading the plugin and logging in again.")
+            # Start factor auth
+            start_auth_body = self.request.post(
+                f'https://{auth_host}/api/startAuth',
+                params={'factorId': factor_id},
+                headers=headers,
+                raw=True
+            )
+            factor_auth_code = start_auth_body['data']['factorAuthCode']
 
-            self.request = Request(mode="cloudscraper")
+            def complete_auth(code):
+                nonlocal self, factor_auth_code, headers
 
-            # Update Authorization code with new code
+                finish_auth_body = self.request.post(
+                    f'https://{auth_host}/api/finishAuth',
+                    params={
+                        'factorAuthCode': factor_auth_code,
+                        'otp': code
+                    },
+                    headers=headers,
+                    raw=True
+                )
+
+                if finish_auth_body.get('data', {}).get('token') is None:
+                    raise Exception("Could not complete 2FA, maybe invalid token? If the error persists, please try reloading the plugin and logging in again.")
+
+                self.request = Request(mode="cloudscraper")
+
+                # Update Authorization code with new code
+                headers = {
+                    'Auth-Version': '2',
+                    'Authorization': finish_auth_body['data']['token'],
+                    'User-Agent': USER_AGENTS['arlo'],
+                    'Content-Type': 'application/json; charset=UTF-8',
+                }
+                self.request.session.headers.update(headers)
+                self.BASE_URL = 'myapi.arlo.com'
+                self.logged_in = True
+
+            return complete_auth
+        else:
+            # MFA has been disabled
             headers = {
                 'Auth-Version': '2',
-                'Authorization': finish_auth_body['data']['token'],
+                'Authorization': auth_body['data']['token'],
                 'User-Agent': USER_AGENTS['arlo'],
                 'Content-Type': 'application/json; charset=UTF-8',
             }
             self.request.session.headers.update(headers)
             self.BASE_URL = 'myapi.arlo.com'
             self.logged_in = True
-
-        return complete_auth
+            return NO_MFA
 
     def Logout(self):
         self.Unsubscribe()
