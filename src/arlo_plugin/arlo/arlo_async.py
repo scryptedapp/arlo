@@ -26,7 +26,7 @@ limitations under the License.
 from .request import Request
 from .host_picker import pick_host
 from .mqtt_stream_async import MQTTStream
-from .sse_stream_async import EventStream
+from .sse_stream_async import GoEventStream, PyEventStream
 from .logging import logger
 
 # Import all of the other stuff.
@@ -50,7 +50,7 @@ def change_stream_class(s_class):
     if s_class == "MQTT":
         stream_class = MQTTStream
     elif s_class == "SSE":
-        stream_class = EventStream
+        stream_class = PyEventStream
     else:
         raise NotImplementedError(s_class)
 
@@ -159,7 +159,7 @@ class Arlo(object):
         self.user_id = user_id
         headers['Content-Type'] = 'application/json; charset=UTF-8'
         headers['User-Agent'] = USER_AGENTS['arlo']
-        self.request = Request(mode="cloudscraper")
+        self.request = Request() #Request(mode="cloudscraper")
         self.request.session.headers.update(headers)
         self.BASE_URL = 'myapi.arlo.com'
         self.logged_in = True
@@ -260,7 +260,7 @@ class Arlo(object):
                 if finish_auth_body.get('data', {}).get('token') is None:
                     raise Exception("Could not complete 2FA, maybe invalid token? If the error persists, please try reloading the plugin and logging in again.")
 
-                self.request = Request(mode="cloudscraper")
+                self.request = Request() #Request(mode="cloudscraper")
 
                 # Update Authorization code with new code
                 headers = {
