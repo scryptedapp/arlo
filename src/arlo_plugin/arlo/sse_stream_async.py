@@ -92,34 +92,38 @@ class PyEventStream(Stream):
         if self.event_stream is not None:
             return
 
-        def thread_main(self):
+        def thread_main(self: PyEventStream):
             event_stream = self.event_stream
-            for event in event_stream:
-                logger.debug(f"Received event: {event}")
-                if event is None:
-                    logger.info(f"SSE {id(event_stream)} appears to be broken")
-                    return None
-
-                if event.data.strip() == "":
-                    continue
-
-                try:
-                    response = json.loads(event.data)
-                except json.JSONDecodeError:
-                    continue
-
-                if response.get('action') == 'logout':
-                    if self.event_stream_stop_event.is_set() or \
-                        self.shutting_down_stream is event_stream:
-                        logger.info(f"SSE {id(event_stream)} disconnected")
+            try:
+                for event in event_stream:
+                    logger.debug(f"Received event: {event}")
+                    if event is None:
+                        logger.info(f"SSE {id(event_stream)} appears to be broken")
                         return None
-                elif response.get('status') == 'connected':
-                    if not self.connected:
-                        logger.info(f"SSE {id(event_stream)} connected")
-                        self.initializing = False
-                        self.connected = True
-                else:
-                    self.event_loop.call_soon_threadsafe(self._queue_response, response)
+
+                    if event.data.strip() == "":
+                        continue
+
+                    try:
+                        response = json.loads(event.data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if response.get('action') == 'logout':
+                        if self.event_stream_stop_event.is_set() or \
+                            self.shutting_down_stream is event_stream:
+                            logger.info(f"SSE {id(event_stream)} disconnected")
+                            return None
+                    elif response.get('status') == 'connected':
+                        if not self.connected:
+                            logger.info(f"SSE {id(event_stream)} connected")
+                            self.initializing = False
+                            self.connected = True
+                    else:
+                        self.event_loop.call_soon_threadsafe(self._queue_response, response)
+            except Exception:
+                logger.exception(f"Error in SSE {id(event_stream)}")
+                self.event_loop.call_soon_threadsafe(self.event_loop.create_task, self.restart())
 
         self.event_stream = sseclient.SSEClient('https://myapi.arlo.com/hmsweb/client/subscribe?token='+self.arlo.request.session.headers.get('Authorization'), session=self.arlo.request.session)
         self.event_stream_thread = threading.Thread(name="PyEventStream", target=thread_main, args=(self, ))
