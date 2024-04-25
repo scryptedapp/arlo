@@ -224,6 +224,16 @@ class Arlo(object):
                 headers=headers,
                 raw=True
             )
+
+            logger.debug(factors_body['meta'])
+
+            factorTypes = [i['factorType'] for i in factors_body['data']['items']]
+            factorRoles = [i['factorRole'] for i in factors_body['data']['items']]
+            factorDictKeys = [list(i.keys()) for i in factors_body['data']['items']]
+            logger.debug(f"factorTypes: {factorTypes}")
+            logger.debug(f"factorRoles: {factorRoles}")
+            logger.debug(f"factorDictKeys: {factorDictKeys}")
+
             factor_id = next(
                 iter([
                     i for i in factors_body['data']['items']
