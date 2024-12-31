@@ -1,6 +1,6 @@
 {
    "name": "@scrypted/arlo",
-   "version": "0.11.22",
+   "version": "0.11.23",
    "description": "Arlo Plugin for Scrypted",
    "license": "Apache",
    "keywords": [
@@ -26,7 +26,7 @@
       "name": "Arlo Camera Plugin",
       "runtime": "python",
       "pythonVersion": {
-         "default": "3.10"
+         "default": "3.12"
       },
       "type": "DeviceProvider",
       "interfaces": [
