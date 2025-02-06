@@ -57,10 +57,12 @@ def change_stream_class(s_class):
 
 # https://github.com/twrecked/pyaarlo/blob/03c99b40b67529d81c0ba399fe91a3e6d1a35a80/pyaarlo/constant.py#L265-L285
 USER_AGENTS = {
+    # appears to be broken after 2025-02-05
     "arlo":
         "Mozilla/5.0 (iPhone; CPU iPhone OS 11_1_2 like Mac OS X) "
         "AppleWebKit/604.3.5 (KHTML, like Gecko) Mobile/15B202 NETGEAR/v1 "
         "(iOS Vuezone)",
+
     "iphone":
         "Mozilla/5.0 (iPhone; CPU iPhone OS 13_1_3 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.1 Mobile/15E148 Safari/604.1",
@@ -158,7 +160,7 @@ class Arlo(object):
     def UseExistingAuth(self, user_id, headers):
         self.user_id = user_id
         headers['Content-Type'] = 'application/json; charset=UTF-8'
-        headers['User-Agent'] = USER_AGENTS['arlo']
+        headers['User-Agent'] = USER_AGENTS['linux']
         self.request = Request() #Request(mode="cloudscraper")
         self.request.session.headers.update(headers)
         self.BASE_URL = 'myapi.arlo.com'
@@ -276,7 +278,7 @@ class Arlo(object):
                 headers = {
                     'Auth-Version': '2',
                     'Authorization': finish_auth_body['data']['token'],
-                    'User-Agent': USER_AGENTS['arlo'],
+                    'User-Agent': USER_AGENTS['linux'],
                     'Content-Type': 'application/json; charset=UTF-8',
                 }
                 self.request.session.headers.update(headers)
@@ -289,7 +291,7 @@ class Arlo(object):
             headers = {
                 'Auth-Version': '2',
                 'Authorization': auth_body['data']['token'],
-                'User-Agent': USER_AGENTS['arlo'],
+                'User-Agent': USER_AGENTS['linux'],
                 'Content-Type': 'application/json; charset=UTF-8',
             }
             self.request.session.headers.update(headers)
@@ -881,7 +883,7 @@ class Arlo(object):
             stream_url_dict = None
 
         def trigger(self):
-            ua = USER_AGENTS['arlo'] if mode == "rtsp" else USER_AGENTS["firefox"]
+            ua = USER_AGENTS['android'] if mode == "rtsp" else USER_AGENTS["firefox"]
             nl.stream_url_dict = self.request.post(
                 f'https://{self.BASE_URL}/hmsweb/users/devices/startStream',
                 params={
