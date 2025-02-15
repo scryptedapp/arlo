@@ -555,7 +555,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                     "group": "IMAP 2FA",
                     "key": "imap_mfa_interval",
                     "title": "Refresh Login Interval",
-                    "description": "Interval, in minutes, to refresh the login session to Arlo Cloud. "
+                    "description": "Interval, in days, to refresh the login session to Arlo Cloud. "
                                    "Must be a value greater than 0 and less than 14.",
                     "type": "number",
                     "value": self.imap_mfa_interval,
