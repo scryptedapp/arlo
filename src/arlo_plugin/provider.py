@@ -157,7 +157,10 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     def imap_mfa_interval(self) -> int:
         interval = self.storage.getItem("imap_mfa_interval")
         if interval is None:
-            interval = 7
+            interval = 90
+            self.storage.setItem("imap_mfa_interval", interval)
+        if interval < 30:
+            interval = 30
             self.storage.setItem("imap_mfa_interval", interval)
         return int(interval)
 
@@ -458,7 +461,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 _ = self.arlo
 
             # continue by sleeping/waiting for a signal
-            interval = self.imap_mfa_interval * 24 * 60 * 60  # convert interval days to seconds
+            interval = self.imap_mfa_interval * 60  # convert interval minutes to seconds
             signal_task = asyncio.create_task(imap_signal.get())
 
             # wait until either we receive a signal or the refresh interval expires
@@ -552,8 +555,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                     "group": "IMAP 2FA",
                     "key": "imap_mfa_interval",
                     "title": "Refresh Login Interval",
-                    "description": "Interval, in days, to refresh the login session to Arlo Cloud. "
-                                   "Must be a value greater than 0.",
+                    "description": "Interval, in minutes, to refresh the login session to Arlo Cloud. "
+                                   "Must be a value greater than 30.",
                     "type": "number",
                     "value": self.imap_mfa_interval,
                 }
@@ -690,8 +693,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             except ValueError:
                 self.logger.error(f"Invalid IMAP interval '{val}' - must be an integer")
                 return False
-            if val < 1:
-                self.logger.error(f"Invalid IMAP interval '{val}' - must be positive")
+            if val < 30:
+                self.logger.error(f"Invalid IMAP interval '{val}' - must be 30 or greater")
                 return False
         return True
 
