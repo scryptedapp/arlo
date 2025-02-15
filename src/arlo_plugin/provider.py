@@ -157,10 +157,10 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     def imap_mfa_interval(self) -> int:
         interval = self.storage.getItem("imap_mfa_interval")
         if interval is None:
-            interval = 90
+            interval = 10
             self.storage.setItem("imap_mfa_interval", interval)
-        if int(interval) < 30:
-            interval = 30
+        if int(interval) > 13:
+            interval = 13
             self.storage.setItem("imap_mfa_interval", interval)
         return int(interval)
 
@@ -461,7 +461,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 _ = self.arlo
 
             # continue by sleeping/waiting for a signal
-            interval = self.imap_mfa_interval * 60  # convert interval minutes to seconds
+            interval = self.imap_mfa_interval * 24 * 60 * 60  # convert interval days to seconds
             signal_task = asyncio.create_task(imap_signal.get())
 
             # wait until either we receive a signal or the refresh interval expires
@@ -556,7 +556,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                     "key": "imap_mfa_interval",
                     "title": "Refresh Login Interval",
                     "description": "Interval, in minutes, to refresh the login session to Arlo Cloud. "
-                                   "Must be a value greater than 30.",
+                                   "Must be a value greater than 0 and less than 14.",
                     "type": "number",
                     "value": self.imap_mfa_interval,
                 }
@@ -693,8 +693,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             except ValueError:
                 self.logger.error(f"Invalid IMAP interval '{val}' - must be an integer")
                 return False
-            if val < 30:
-                self.logger.error(f"Invalid IMAP interval '{val}' - must be 30 or greater")
+            if val < 0 or val > 13:
+                self.logger.error(f"Invalid IMAP interval '{val}' - must be between 1 and 13")
                 return False
         return True
 

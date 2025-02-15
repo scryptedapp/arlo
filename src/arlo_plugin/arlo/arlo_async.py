@@ -263,7 +263,8 @@ class Arlo(object):
                     f'https://{auth_host}/api/finishAuth',
                     params={
                         'factorAuthCode': factor_auth_code,
-                        'otp': code
+                        'otp': code,
+                        'isBrowserTrusted': True
                     },
                     headers=headers,
                     raw=True
