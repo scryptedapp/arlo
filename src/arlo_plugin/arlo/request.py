@@ -36,7 +36,7 @@ class Request(object):
     def __init__(self, timeout=5, mode="curl"):
         if mode == "curl":
             logger.debug("HTTP helper using curl_cffi")
-            self.session = curl_cffi_requests.Session(impersonate="chrome110")
+            self.session = curl_cffi_requests.Session(impersonate="chrome")
         elif mode == "cloudscraper":
             logger.debug("HTTP helper using cloudscraper")
             from .arlo_async import USER_AGENTS
