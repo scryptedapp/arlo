@@ -273,6 +273,24 @@ class Arlo(object):
                 if finish_auth_body.get('data', {}).get('token') is None:
                     raise Exception("Could not complete 2FA, maybe invalid token? If the error persists, please try reloading the plugin and logging in again.")
 
+                if finish_auth_body.get('data', {}).get('browserAuthCode') is None:
+                    raise Exception("Missing browser auth code!")
+
+                browser_auth_code = finish_auth_body['data']['browserAuthCode']
+                pair_browser_body = self.request.post(
+                    f'https://{auth_host}/api/startPairingFactor',
+                    params={
+                        'factorAuthCode': browser_auth_code,
+                        'factorData': '',
+                        'factorType': 'BROWSER'
+                    },
+                    headers=headers,
+                    raw=True
+                )
+
+                if pair_browser_body.get('meta', {}).get('code') != 200:
+                    raise Exception("Could not pair browser")
+
                 self.request = Request() #Request(mode="cloudscraper")
 
                 # Update Authorization code with new code
