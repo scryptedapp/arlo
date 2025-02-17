@@ -22,6 +22,7 @@ import cloudscraper
 from curl_cffi import requests as curl_cffi_requests
 import time
 import uuid
+from http.cookiejar import Cookie
 
 from .logging import logger
 
@@ -34,6 +35,7 @@ class Request(object):
     """HTTP helper class"""
 
     def __init__(self, timeout=5, mode="curl"):
+        self.mode = mode
         if mode == "curl":
             logger.debug("HTTP helper using curl_cffi")
             self.session = curl_cffi_requests.Session(impersonate="chrome")
@@ -113,3 +115,44 @@ class Request(object):
 
     def options(self, url, **kwargs):
         return self._request(url, 'OPTIONS', **kwargs)
+
+    def cookies_as_list(self):
+        assert self.mode == "curl"
+        cookie_jar = self.session.cookies.jar
+        cookies_list = [
+            {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path,
+                "secure": cookie.secure,
+                "expires": cookie.expires,
+            }
+            for cookie in cookie_jar
+        ]
+        return cookies_list
+
+    def cookies_from_list(self, cookies_list):
+        assert self.mode == "curl"
+        cookie_jar = self.session.cookies.jar
+        for cookie_dict in cookies_list:
+            cookie = Cookie(
+                version=0,
+                name=cookie_dict["name"],
+                value=cookie_dict["value"],
+                port=None,
+                port_specified=False,
+                domain=cookie_dict["domain"],
+                domain_specified=True,
+                domain_initial_dot=cookie_dict["domain"].startswith("."),
+                path=cookie_dict["path"],
+                path_specified=True,
+                secure=cookie_dict["secure"],
+                expires=cookie_dict["expires"],
+                discard=False,
+                comment=None,
+                comment_url=None,
+                rest={},
+                rfc2109=False,
+            )
+            cookie_jar.set_cookie(cookie)
