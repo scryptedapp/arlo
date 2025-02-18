@@ -162,7 +162,7 @@ class Arlo(object):
         headers['Content-Type'] = 'application/json; charset=UTF-8'
         headers['User-Agent'] = USER_AGENTS['linux']
         self.request = Request() #Request(mode="cloudscraper")
-        self.request.cookies_from_list(cookies)
+        self.request.loads_cookies(cookies)
         self.request.session.headers.update(headers)
         self.BASE_URL = 'myapi.arlo.com'
         self.logged_in = True
@@ -206,7 +206,7 @@ class Arlo(object):
             self.request = Request(mode="ip")
 
         if cookies:
-            self.request.cookies_from_list(cookies)
+            self.request.loads_cookies(cookies)
 
         # Authenticate
         self.request.options(f'https://{auth_host}/api/auth', headers=headers)
@@ -338,9 +338,9 @@ class Arlo(object):
                     if pair_browser_body.get('meta', {}).get('code') != 200:
                         raise Exception("Could not pair browser")
 
-                    cookies = self.request.cookies_as_list()
+                    cookies = self.request.dumps_cookies()
                     self.request = Request() #Request(mode="cloudscraper")
-                    self.request.cookies_from_list(cookies)
+                    self.request.loads_cookies(cookies)
 
                     # Update Authorization code with new code
                     headers = {

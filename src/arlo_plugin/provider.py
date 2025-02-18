@@ -210,7 +210,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self._arlo_mfa_code = None
 
                 self.storage.setItem("arlo_auth_headers", json.dumps(dict(self._arlo.request.session.headers.items())))
-                self.storage.setItem("arlo_cookies", json.dumps(self._arlo.request.cookies_as_list()))
+                self.storage.setItem("arlo_cookies", self._arlo.request.dumps_cookies())
                 self.storage.setItem("arlo_user_id", self._arlo.user_id)
 
                 self.create_task(self.do_arlo_setup())
@@ -242,7 +242,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             headers = self.arlo_auth_headers
             cookies = self.arlo_cookies
             if headers and cookies:
-                self._arlo.UseExistingAuth(self.arlo_user_id, json.loads(headers), json.loads(cookies))
+                self._arlo.UseExistingAuth(self.arlo_user_id, json.loads(headers), cookies)
                 self.logger.info(f"Initialized Arlo client, reusing stored auth headers")
                 self.create_task(self.do_arlo_setup())
                 return self._arlo
