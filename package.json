@@ -3,6 +3,14 @@
    "version": "0.11.25",
    "description": "Arlo Plugin for Scrypted",
    "license": "Apache",
+   "repository": {
+      "type": "git",
+      "url": "git+https://github.com/scryptedapp/arlo.git"
+   },
+   "bugs": {
+      "url": "https://github.com/scryptedapp/arlo/issues"
+   },
+   "homepage": "https://github.com/scryptedapp/arlo",
    "keywords": [
       "scrypted",
       "plugin",
