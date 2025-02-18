@@ -240,7 +240,7 @@ class Arlo(object):
                 skip_event_id=True,
             )
 
-            logger.debug(browser_factor_body['meta'])
+            logger.debug("getFactorId: {}".format(browser_factor_body['meta']))
 
             if browser_factor_body.get('meta', {}).get('code') != 200:
                 # need MFA
@@ -254,7 +254,7 @@ class Arlo(object):
                     skip_event_id=True,
                 )
 
-                logger.debug(factors_body['meta'])
+                logger.debug("getFactors: {}".format(factors_body['meta']))
 
                 factorTypes = [i['factorType'] for i in factors_body['data']['items']]
                 factorRoles = [i['factorRole'] for i in factors_body['data']['items']]
@@ -318,7 +318,7 @@ class Arlo(object):
                         skip_event_id=True
                     )
 
-                    logger.debug(validate_body['meta'])
+                    logger.debug("validateAccessToken: {}".format(validate_body['meta']))
 
                     browser_auth_code = finish_auth_body['data']['browserAuthCode']
                     pair_browser_body = self.request.post(
@@ -333,13 +333,13 @@ class Arlo(object):
                         skip_event_id=True,
                     )
 
-                    logger.debug(pair_browser_body['meta'])
+                    logger.debug("startPairingFactor: {}".format(pair_browser_body['meta']))
 
                     if pair_browser_body.get('meta', {}).get('code') != 200:
                         raise Exception("Could not pair browser")
 
                     cookies = self.request.dumps_cookies()
-                    self.request = Request() #Request(mode="cloudscraper")
+                    self.request = Request()
                     self.request.loads_cookies(cookies)
 
                     # Update Authorization code with new code
@@ -355,7 +355,56 @@ class Arlo(object):
 
                 return complete_auth
 
-        # MFA disabled or trusted browser succeeded
+            else:
+                # trusted browser
+                browser_factor_id = browser_factor_body['data']['factorId']
+
+                # Start factor auth
+                start_auth_body = self.request.post(
+                    f'https://{auth_host}/api/startAuth',
+                    params={
+                        'factorId': browser_factor_id,
+                        'factorType': 'BROWSER',
+                        'userId': self.user_id
+                    },
+                    headers=headers,
+                    raw=True,
+                    skip_event_id=True,
+                )
+
+                logger.debug("startAuth: {}".format(start_auth_body['meta']))
+
+                if start_auth_body.get('data', {}).get('accessToken', {}).get('token') is None:
+                    raise Exception("Missing browser access token!")
+
+                headers['Authorization'] = base64.b64encode(start_auth_body['data']['accessToken']['token'].encode('utf-8')).decode()
+
+                validate_body = self.request.get(
+                    f"https://{auth_host}/api/validateAccessToken?data = {int(time.time())}",
+                    headers=headers,
+                    raw=True,
+                    skip_event_id=True
+                )
+
+                logger.debug("validateAccessToken: {}".format(validate_body['meta']))
+
+                cookies = self.request.dumps_cookies()
+                self.request = Request()
+                self.request.loads_cookies(cookies)
+
+                # Update Authorization code with new code
+                headers = {
+                    'Auth-Version': '2',
+                    'Authorization': start_auth_body['data']['accessToken']['token'],
+                    'User-Agent': USER_AGENTS['linux'],
+                    'Content-Type': 'application/json; charset=UTF-8',
+                }
+                self.request.session.headers.update(headers)
+                self.BASE_URL = 'myapi.arlo.com'
+                self.logged_in = True
+                return NO_MFA
+
+        # MFA disabled
         headers = {
             'Auth-Version': '2',
             'Authorization': auth_body['data']['token'],

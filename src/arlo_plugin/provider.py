@@ -250,7 +250,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.create_task(self.do_arlo_setup())
                 return self._arlo
             else:
-                self._arlo_mfa_complete_auth = self._arlo.LoginMFA()
+                self._arlo_mfa_complete_auth = self._arlo.LoginMFA(cookies=cookies)
                 if self._arlo_mfa_complete_auth is NO_MFA:
                     self.logger.info(f"Initialized Arlo client")
                     # go back to the top of the function to complete the login
@@ -373,7 +373,10 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
             # clear cookies when it's time to refresh the MFA code
             if last_mfa is None or time.time() - last_mfa > self.imap_mfa_interval * 24 * 60 * 60:
+                self.logger.info("Clearing cookies to force re-authentication")
                 self.storage.setItem("arlo_cookies", "")
+            else:
+                self.logger.info("Will re-use existing cookies")
 
             # initialize login and prompt for MFA
             try:
