@@ -5,8 +5,10 @@ import functools
 import imaplib
 import json
 import logging
+import random
 import re
 import requests
+import time
 from typing import List
 
 import scrypted_sdk
@@ -352,6 +354,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     async def imap_relogin_loop(self) -> None:
         imap_signal = self.imap_signal
         self.logger.info(f"Starting IMAP refresh loop {id(imap_signal)}")
+        last_mfa = None
         while True:
             self.logger.info("Performing IMAP login flow")
 
@@ -366,8 +369,11 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self._arlo_mfa_code = None
             self._arlo_mfa_complete_auth = None
             self.storage.setItem("arlo_auth_headers", "")
-            self.storage.setItem("arlo_cookies", "")
             self.storage.setItem("arlo_user_id", "")
+
+            # clear cookies when it's time to refresh the MFA code
+            if last_mfa is None or time.time() - last_mfa > self.imap_mfa_interval * 24 * 60 * 60:
+                self.storage.setItem("arlo_cookies", "")
 
             # initialize login and prompt for MFA
             try:
@@ -468,12 +474,15 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                         self.logger.error("Will request a plugin restart")
                         await scrypted_sdk.deviceManager.requestRestart()
                         return
+
+                    last_mfa = time.time()
             else:
                 # MFA disabled
                 _ = self.arlo
 
             # continue by sleeping/waiting for a signal
-            interval = self.imap_mfa_interval * 24 * 60 * 60  # convert interval days to seconds
+            # 60 minutes, +/- a random amount of time
+            interval = 60 * 60 + random.randint(-300, 300)
             signal_task = asyncio.create_task(imap_signal.get())
 
             # wait until either we receive a signal or the refresh interval expires
