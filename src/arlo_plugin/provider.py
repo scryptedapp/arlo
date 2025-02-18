@@ -227,6 +227,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.logger.info("Arlo MFA done")
 
                 self.storage.setItem("arlo_auth_headers", json.dumps(dict(self._arlo.request.session.headers.items())))
+                self.storage.setItem("arlo_cookies", self._arlo.request.dumps_cookies())
                 self.storage.setItem("arlo_user_id", self._arlo.user_id)
 
                 self.create_task(self.do_arlo_setup())

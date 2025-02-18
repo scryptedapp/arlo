@@ -20,6 +20,7 @@ from requests.exceptions import HTTPError
 from requests_toolbelt.adapters import host_header_ssl
 import cloudscraper
 from curl_cffi import requests as curl_cffi_requests
+import base64
 import pickle
 import time
 import uuid
@@ -116,10 +117,12 @@ class Request(object):
     def options(self, url, **kwargs):
         return self._request(url, 'OPTIONS', **kwargs)
 
-    def dumps_cookies(self):
+    def dumps_cookies(self) -> str:
         assert self.mode == "curl"
-        return pickle.dumps(self.session.cookies.jar._cookies)
+        pickled = pickle.dumps(self.session.cookies.jar._cookies)
+        return base64.b64encode(pickled).decode()
 
-    def loads_cookies(self, cookies):
+    def loads_cookies(self, cookies: str):
         assert self.mode == "curl"
-        self.session.cookies.jar._cookies.update(pickle.loads(cookies))
+        b64ed = base64.b64decode(cookies)
+        self.session.cookies.jar._cookies.update(pickle.loads(b64ed))
