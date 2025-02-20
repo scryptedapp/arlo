@@ -8,3 +8,4 @@ src
 dist/*.js
 dist/*.txt
 __pycache__
+venv
