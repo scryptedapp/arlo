@@ -174,6 +174,14 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         return int(interval)
 
     @property
+    def imap_mfa_use_local_index(self) -> bool:
+        use_local_index = self.storage.getItem("imap_mfa_use_local_index")
+        if use_local_index is None:
+            use_local_index = False
+            self.storage.setItem("imap_mfa_use_local_index", use_local_index)
+        return use_local_index
+
+    @property
     def hidden_devices(self) -> List[str]:
         hidden = self.storage.getItem("hidden_devices")
         if hidden is None:
@@ -384,7 +392,11 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 raise Exception(f"IMAP failed to fetch INBOX: {res}")
 
             # fetch existing arlo emails so we skip them going forward
-            res, self.imap_skip_emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
+            self.imap.check()
+            if self.imap_mfa_use_local_index:
+                res, self.imap_skip_emails = self.imap.search(None, 'ALL')
+            else:
+                res, self.imap_skip_emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
             if res.lower() != "ok":
                 raise Exception(f"IMAP failed to fetch old Arlo emails: {res}")
         except Exception:
@@ -462,11 +474,15 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                         self.logger.info(f"Checking IMAP for MFA codes (attempt {try_count})")
 
                         self.imap.check()
-                        res, emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
+                        use_local_index = self.imap_mfa_use_local_index
+                        if use_local_index:
+                            res, emails = self.imap.search(None, 'ALL')
+                        else:
+                            res, emails = self.imap.search(None, "FROM", self.imap_mfa_sender)
                         if res.lower() != "ok":
                             raise Exception("IMAP error: {res}")
 
-                        if emails == self.imap_skip_emails:
+                        if not emails or emails == self.imap_skip_emails:
                             self.logger.info("No new emails found, will sleep and retry")
                             await asyncio.sleep(sleep_duration)
                             continue
@@ -475,6 +491,13 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                         def search_email(msg_id):
                             if msg_id in skip_emails:
                                 return None
+
+                            if use_local_index:
+                                res, data = self.imap.fetch(msg_id, '(BODY[HEADER.FIELDS (FROM)])')
+                                if res.lower() != "ok":
+                                    raise Exception("IMAP error: {res}")
+                                if self.imap_mfa_sender not in data[0][1].decode('utf-8'):
+                                    return None
 
                             res, msg = self.imap.fetch(msg_id, "(BODY.PEEK[])")
                             if res.lower() != "ok":
@@ -640,7 +663,17 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                                    "Must be a value greater than 0 and less than 14.",
                     "type": "number",
                     "value": self.imap_mfa_interval,
-                }
+                },
+                {
+                    "group": "IMAP 2FA",
+                    "key": "imap_mfa_use_local_index",
+                    "title": "Search Emails Locally",
+                    "description": "Enable this option to fetch all emails and search for 2FA codes locally. "
+                                   "This is useful when the IMAP server does not support searching for emails, or takes too long "
+                                   "to index new emails.",
+                    "value": self.imap_mfa_use_local_index,
+                    "type": "boolean",
+                },
             ])
 
         results.extend([
