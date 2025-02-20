@@ -182,6 +182,18 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         return use_local_index
 
     @property
+    def last_mfa(self) -> int: # not exposed to settings
+        last_mfa = self.storage.getItem("last_mfa")
+        if last_mfa is None:
+            last_mfa = 0
+            self.storage.setItem("last_mfa", last_mfa)
+        return int(last_mfa)
+
+    @last_mfa.setter
+    def last_mfa(self, value: int):
+        self.storage.setItem("last_mfa", value)
+
+    @property
     def hidden_devices(self) -> List[str]:
         hidden = self.storage.getItem("hidden_devices")
         if hidden is None:
@@ -327,8 +339,10 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.create_task(self.manual_mfa_loop())
 
     async def manual_mfa_loop(self) -> None:
+        max_duration = 14 * 24 * 60 * 60
         manual_mfa_signal = self.manual_mfa_signal
-        last_mfa = time.time()
+        if time.time() - self.last_mfa > max_duration:
+            self.last_mfa = time.time()
         self.logger.info(f"Starting manual refresh loop {id(manual_mfa_signal)}")
         while True:
             # continue by sleeping/waiting for a signal
@@ -348,7 +362,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.logger.info(f"Exiting manual refresh loop {id(manual_mfa_signal)}")
                 return
 
-            if time.time() - last_mfa > 14 * 24 * 60 * 60:
+            if time.time() - self.last_mfa > max_duration:
                 self.logger.info("Clearing cookies to force re-authentication")
                 self.storage.setItem("arlo_cookies", "")
 
@@ -422,7 +436,6 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     async def imap_relogin_loop(self) -> None:
         imap_signal = self.imap_signal
         self.logger.info(f"Starting IMAP refresh loop {id(imap_signal)}")
-        last_mfa = None
         while True:
             self.logger.info("Performing IMAP login flow")
 
@@ -440,7 +453,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.storage.setItem("arlo_user_id", "")
 
             # clear cookies when it's time to refresh the MFA code
-            if last_mfa is None or time.time() - last_mfa > self.imap_mfa_interval * 24 * 60 * 60:
+            if time.time() - self.last_mfa > self.imap_mfa_interval * 24 * 60 * 60:
                 self.logger.info("Clearing cookies to force re-authentication")
                 self.storage.setItem("arlo_cookies", "")
             else:
@@ -557,7 +570,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                         await scrypted_sdk.deviceManager.requestRestart()
                         return
 
-                    last_mfa = time.time()
+                    self.last_mfa = time.time()
             else:
                 # MFA disabled
                 _ = self.arlo
@@ -658,8 +671,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 {
                     "group": "IMAP 2FA",
                     "key": "imap_mfa_interval",
-                    "title": "Refresh Login Interval",
-                    "description": "Interval, in days, to refresh the login session to Arlo Cloud. "
+                    "title": "Refresh MFA Interval",
+                    "description": "Interval, in days, to refresh the MFA login session to Arlo Cloud. "
                                    "Must be a value greater than 0 and less than 14.",
                     "type": "number",
                     "value": self.imap_mfa_interval,
