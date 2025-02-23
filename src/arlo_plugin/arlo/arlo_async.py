@@ -157,6 +157,7 @@ class Arlo(object):
         now = datetime.today()
         return trans_type+"!" + float2hex(random.random() * math.pow(2, 32)).lower() + "!" + str(int((time.mktime(now.timetuple())*1e3 + now.microsecond/1e3)))
 
+    # probably no longer needed after trusted browser change
     def UseExistingAuth(self, user_id, headers, cookies):
         self.user_id = user_id
         headers['Content-Type'] = 'application/json; charset=UTF-8'
