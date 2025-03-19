@@ -51,7 +51,7 @@ class MQTTStream(Stream):
         self.event_stream.on_disconnect = on_disconnect
         self.event_stream.on_message = on_message
         self.event_stream.tls_set()
-        self.event_stream.connect_async("mqtt-cluster-z1.arloxcld.com", port=443)
+        self.event_stream.connect_async("mqtt-cluster-z2-1.arloxcld.com", port=443)
         self.event_stream.loop_start()
 
         while not self.connected and not self.event_stream_stop_event.is_set():
