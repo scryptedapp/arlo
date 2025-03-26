@@ -505,6 +505,13 @@ class Arlo(object):
                     f"d/{x_cloud_id}/out/activeAutomations/#",
                     f"d/{x_cloud_id}/out/lte/#",
                 ]
+                if "allowedMqttTopics" in basestation:
+                    topics += basestation["allowedMqttTopics"]
+
+            # subscribe to camera topics
+            for camera in cameras.values():
+                if "allowedMqttTopics" in camera:
+                    topics += camera["allowedMqttTopics"]
 
             # subscribe to user topics
             topics += [
