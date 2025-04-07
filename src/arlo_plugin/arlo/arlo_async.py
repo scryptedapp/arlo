@@ -110,6 +110,8 @@ class Arlo(object):
         self.username = username
         self.password = password
         self.device_id = device_id
+        self.mqtt_url = 'mqtt-cluster.arloxcld.com'
+        self.mqtt_port = 443
         self.event_stream = None
         self.request = None
         self.logged_in = False
@@ -352,6 +354,7 @@ class Arlo(object):
                     self.request.session.headers.update(headers)
                     self.BASE_URL = 'myapi.arlo.com'
                     self.logged_in = True
+                    self.userSession(headers)
 
                 return complete_auth
 
@@ -402,6 +405,7 @@ class Arlo(object):
                 self.request.session.headers.update(headers)
                 self.BASE_URL = 'myapi.arlo.com'
                 self.logged_in = True
+                self.userSession(headers)
                 return NO_MFA
 
         # MFA disabled
@@ -414,7 +418,27 @@ class Arlo(object):
         self.request.session.headers.update(headers)
         self.BASE_URL = 'myapi.arlo.com'
         self.logged_in = True
+        self.userSession(headers)
         return NO_MFA
+    
+    def userSession(self, headers):
+        session_response = self.request.get(
+            f'https://{self.BASE_URL}/hmsweb/users/session/v3',
+            params={},
+            headers=headers,
+            raw=True,
+            skip_event_id=False,
+        )
+
+        if session_response.get('success'):
+            session_data = session_response['data']
+            mqtt_url = session_data.get("mqttUrl")
+            if mqtt_url:
+                parsed_url = urlparse(mqtt_url)
+                self.mqtt_url = f"{parsed_url.hostname}"
+                self.mqtt_port = parsed_url.port
+        else:
+            logger.warning("Failed to fetch session details")
 
     def Logout(self):
         self.Unsubscribe()
