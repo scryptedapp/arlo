@@ -110,13 +110,15 @@ class Arlo(object):
     def __init__(self, username, password):
         self.username = username
         self.password = password
+        self.mqtt_url = 'mqtt-cluster.arloxcld.com'
+        self.mqtt_port = 443
         self.event_stream = None
         self.request = None
         self.logged_in = False
 
     def to_timestamp(self, dt):
         if sys.version[0] == '2':
-            epoch = datetime.utcfromtimestamp(0)
+            epoch = datetime.fromtimestamp(0)
             return int((dt - epoch).total_seconds() * 1e3)
         else:
             return int(dt.timestamp() * 1e3)
@@ -353,6 +355,7 @@ class Arlo(object):
                     self.request.session.headers.update(headers)
                     self.BASE_URL = 'myapi.arlo.com'
                     self.logged_in = True
+                    self.userSession(headers)
 
                 return complete_auth
 
@@ -403,6 +406,7 @@ class Arlo(object):
                 self.request.session.headers.update(headers)
                 self.BASE_URL = 'myapi.arlo.com'
                 self.logged_in = True
+                self.userSession(headers)
                 return NO_MFA
 
         # MFA disabled
@@ -415,7 +419,27 @@ class Arlo(object):
         self.request.session.headers.update(headers)
         self.BASE_URL = 'myapi.arlo.com'
         self.logged_in = True
+        self.userSession(headers)
         return NO_MFA
+    
+    def userSession(self, headers):
+        session_response = self.request.get(
+            f'https://{self.BASE_URL}/hmsweb/users/session/v3',
+            params={},
+            headers=headers,
+            raw=True,
+            skip_event_id=False,
+        )
+
+        if session_response.get('success'):
+            session_data = session_response['data']
+            mqtt_url = session_data.get("mqttUrl")
+            if mqtt_url:
+                parsed_url = urlparse(mqtt_url)
+                self.mqtt_url = f"{parsed_url.hostname}"
+                self.mqtt_port = parsed_url.port
+        else:
+            logger.warning("Failed to fetch session details")
 
     def Logout(self):
         self.Unsubscribe()
@@ -1308,7 +1332,7 @@ class Arlo(object):
         else:
             return currentmode[f'{location}']['properties']['mode']
 
-    def GetNextRevision(self, location: str, one_location:bool) -> str:
+    def GetNextRevision(self, location: str, one_location: bool) -> str:
         nextRevision = self._getCurrentMode_NextRevision()
         if one_location:
             return nextRevision['revision']
