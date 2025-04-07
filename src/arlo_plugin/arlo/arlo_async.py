@@ -112,6 +112,7 @@ class Arlo(object):
         self.password = password
         self.mqtt_url = 'mqtt-cluster.arloxcld.com'
         self.mqtt_port = 443
+        self.mqtt_transport = 'tcp'
         self.event_stream = None
         self.request = None
         self.logged_in = False
@@ -438,6 +439,9 @@ class Arlo(object):
                 parsed_url = urlparse(mqtt_url)
                 self.mqtt_url = f"{parsed_url.hostname}"
                 self.mqtt_port = parsed_url.port
+                if self.mqtt_port != 443:
+                    self.mqtt_transport = 'websockets'
+                logger.debug(f"MQTT URL: {self.mqtt_url}, Port: {self.mqtt_port}, Transport: {self.mqtt_transport}")
         else:
             logger.warning("Failed to fetch session details")
 

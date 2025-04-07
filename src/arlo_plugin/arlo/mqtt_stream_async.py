@@ -10,10 +10,6 @@ class MQTTStream(Stream):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.cached_topics = []
-        if self.arlo.mqtt_port != 443:
-            self.mqtt_transport = "websockets"
-        else:
-            self.mqtt_transport = "tcp"
 
     def _gen_client_number(self):
         return random.randint(1000000000, 9999999999)
@@ -48,7 +44,7 @@ class MQTTStream(Stream):
             if response.get('resource') is not None:
                 self.event_loop.call_soon_threadsafe(self._queue_response, response)
 
-        self.event_stream = mqtt.Client(client_id=f"user_{self.arlo.user_id}_{self._gen_client_number()}", transport=self.mqtt_transport, clean_session=False)
+        self.event_stream = mqtt.Client(client_id=f"user_{self.arlo.user_id}_{self._gen_client_number()}", transport=self.arlo.mqtt_transport, clean_session=False)
         self.event_stream.username_pw_set(self.arlo.user_id, password=self.arlo.request.session.headers.get('Authorization'))
         self.event_stream.ws_set_options(path="/mqtt", headers={"Host": f"{self.arlo.mqtt_url}:{self.arlo.mqtt_port}", "Origin": "https://my.arlo.com"})
         self.event_stream.on_connect = on_connect
