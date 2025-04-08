@@ -112,6 +112,7 @@ class Arlo(object):
         self.mqtt_url = 'mqtt-cluster.arloxcld.com'
         self.mqtt_port = 443
         self.mqtt_transport = 'tcp'
+        self.mqtt_insecure_tls = True
         self.event_stream = None
         self.request = None
         self.logged_in = False

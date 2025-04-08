@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import ssl
 import paho.mqtt.client as mqtt
 
 from .stream_async import Stream
@@ -90,8 +91,15 @@ class MQTTStream(Stream):
                 }
             )
 
-            self.event_stream.tls_set()
+            if self.arlo.mqtt_insecure_tls:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                self.event_stream.tls_set_context(ssl_context)
+            else:
+                self.event_stream.tls_set()
             self.event_stream.on_log = on_log
+            self.event_stream.enable_logger(logger)
             self.event_stream.on_connect = on_connect
             self.event_stream.on_disconnect = on_disconnect
             self.event_stream.on_message = on_message
