@@ -26,13 +26,12 @@ limitations under the License.
 from .request import Request
 from .host_picker import pick_host
 from .mqtt_stream_async import MQTTStream
-from .sse_stream_async import GoEventStream, PyEventStream
+from .sse_stream_async import PySSEStream
 from .logging import logger
 
 # Import all of the other stuff.
 from datetime import datetime, timedelta
 from cachetools import cached, TTLCache
-import scrypted_arlo_go
 
 import asyncio
 import sys
@@ -50,7 +49,7 @@ def change_stream_class(s_class):
     if s_class == "MQTT":
         stream_class = MQTTStream
     elif s_class == "SSE":
-        stream_class = PyEventStream
+        stream_class = PySSEStream
     else:
         raise NotImplementedError(s_class)
 
@@ -441,7 +440,6 @@ class Arlo(object):
                 self.mqtt_port = parsed_url.port
                 if self.mqtt_port != 443:
                     self.mqtt_transport = 'websockets'
-                logger.debug(f"MQTT URL: {self.mqtt_url}, Port: {self.mqtt_port}, Transport: {self.mqtt_transport}")
         else:
             logger.warning("Failed to fetch session details")
 
@@ -506,33 +504,10 @@ class Arlo(object):
             # start heartbeat loop with only pingable devices
             asyncio.get_event_loop().create_task(heartbeat(self, list(devices_to_ping.values())))
 
-            # subscribe to all camera topics
-            topics = [
-                f"d/{basestation['xCloudId']}/out/doorbells/{camera['deviceId']}/#" if camera['deviceType'] == 'doorbell' else f"d/{basestation['xCloudId']}/out/cameras/{camera['deviceId']}/#"
-                for basestation, camera in basestation_camera_tuples
-            ]
+            topics = []
 
             # subscribe to basestation topics
             for basestation in basestations.values():
-                x_cloud_id = basestation['xCloudId']
-                topics += [
-                    f"d/{x_cloud_id}/out/wifi/#",
-                    f"d/{x_cloud_id}/out/subscriptions/#",
-                    f"d/{x_cloud_id}/out/audioPlayback/#",
-                    f"d/{x_cloud_id}/out/modes/#",
-                    f"d/{x_cloud_id}/out/basestation/#",
-                    f"d/{x_cloud_id}/out/cameras/#",
-                    f"d/{x_cloud_id}/out/doorbells/#",
-                    f"d/{x_cloud_id}/out/siren/#",
-                    f"d/{x_cloud_id}/out/devices/#",
-                    f"d/{x_cloud_id}/out/storage/#",
-                    f"d/{x_cloud_id}/out/schedule/#",
-                    f"d/{x_cloud_id}/out/diagnostics/#",
-                    f"d/{x_cloud_id}/out/automaticRevisionUpdate/#",
-                    f"d/{x_cloud_id}/out/audio/#",
-                    f"d/{x_cloud_id}/out/activeAutomations/#",
-                    f"d/{x_cloud_id}/out/lte/#",
-                ]
                 if "allowedMqttTopics" in basestation:
                     topics += basestation["allowedMqttTopics"]
 
@@ -540,11 +515,6 @@ class Arlo(object):
             for camera in cameras.values():
                 if "allowedMqttTopics" in camera:
                     topics += camera["allowedMqttTopics"]
-
-            # subscribe to user topics
-            topics += [
-                f"u/{self.user_id}/#"
-            ]
 
             self.event_stream.subscribe(topics)
 
