@@ -65,9 +65,6 @@ class MQTTStream(Stream):
             except Exception as e:
                 logger.error(f"Unexpected MQTT message handling error: {e}")
 
-        def on_log(client, userdata, level, buf):
-            logger.debug(f"[MQTT Log] {buf}")
-
         logger.debug(f"MQTT Setup for user: {self.arlo.user_id}")
         logger.debug(f"MQTT Host: {self.arlo.mqtt_url}:{self.arlo.mqtt_port}")
 
@@ -91,15 +88,9 @@ class MQTTStream(Stream):
                 }
             )
 
-            if self.arlo.mqtt_insecure_tls:
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                self.event_stream.tls_set_context(ssl_context)
-            else:
-                self.event_stream.tls_set()
-            self.event_stream.on_log = on_log
-            self.event_stream.enable_logger(logger)
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            self.event_stream.tls_set_context(ssl_context)
             self.event_stream.on_connect = on_connect
             self.event_stream.on_disconnect = on_disconnect
             self.event_stream.on_message = on_message
