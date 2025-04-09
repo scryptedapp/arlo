@@ -19,7 +19,13 @@ class MQTTStream(Stream):
     def _add_and_subscribe(self, client, topics):
         if not topics:
             return
-        new_subs = [(topic, 0) for topic in topics if topic]
+        seen = set()
+        deduped_topics = []
+        for topic in topics:
+            if topic and topic not in seen:
+                seen.add(topic)
+                deduped_topics.append(topic)
+        new_subs = [(topic, 0) for topic in deduped_topics]
         unique_new_subs = [t for t in new_subs if t not in self.cached_topics]
         if unique_new_subs:
             self.cached_topics.extend(unique_new_subs)
