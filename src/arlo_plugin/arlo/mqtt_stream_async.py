@@ -74,6 +74,30 @@ class MQTTStream(Stream):
         logger.debug(f"MQTT Setup for user: {self.arlo.user_id}")
         logger.debug(f"MQTT Host: {self.arlo.mqtt_url}:{self.arlo.mqtt_port}")
 
+        async def connect_with_timeout(client, host, port, timeout=10):
+            loop = asyncio.get_running_loop()
+            done = asyncio.Event()
+
+            def on_connect_timeout(client, userdata, flags, rc):
+                if rc == 0:
+                    on_connect(client, userdata, flags, rc)
+                    done.set()
+                else:
+                    logger.error(f"MQTT connect failed with rc={rc}")
+                    done.set()
+
+            client.on_connect = on_connect_timeout
+            client.connect_async(host, port)
+            client.loop_start()
+
+            try:
+                await asyncio.wait_for(done.wait(), timeout=timeout)
+                return client.is_connected()
+            except asyncio.TimeoutError:
+                logger.error(f"MQTT connect to {host}:{port} timed out after {timeout} seconds")
+                client.loop_stop()
+                return False
+
         try:
             self.event_stream = mqtt.Client(
                 client_id=self._gen_client_id(),
@@ -95,15 +119,18 @@ class MQTTStream(Stream):
             )
 
             ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
+            ssl_context.check_hostname = True
             ssl_context.verify_mode = ssl.CERT_REQUIRED
             self.event_stream.tls_set_context(ssl_context)
             self.event_stream.on_connect = on_connect
             self.event_stream.on_disconnect = on_disconnect
             self.event_stream.on_message = on_message
 
-            self.event_stream.connect_async(self.arlo.mqtt_url, port=self.arlo.mqtt_port)
-            self.event_stream.loop_start()
+            if not await connect_with_timeout(self.event_stream, self.arlo.mqtt_url, self.arlo.mqtt_port):
+                logger.warning(f"Failed to connect to {self.arlo.mqtt_url}. Trying fallback...")
+                if not await connect_with_timeout(self.event_stream, "mqtt-cluster-z1-1.arloxcld.com", self.arlo.mqtt_port):
+                    logger.error("Failed to connect to both primary and fallback MQTT hosts.")
+                    return
         except Exception as e:
             logger.error(f"Error initializing MQTT client: {e}")
             return
