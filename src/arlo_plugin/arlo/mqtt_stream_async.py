@@ -72,7 +72,6 @@ class MQTTStream(Stream):
                 logger.error(f"Unexpected MQTT message handling error: {e}")
 
         logger.debug(f"MQTT Setup for user: {self.arlo.user_id}")
-        logger.debug(f"MQTT Host: {self.arlo.mqtt_url}:{self.arlo.mqtt_port}")
 
         async def connect_with_timeout(client, host, port, timeout=10):
             loop = asyncio.get_running_loop()
@@ -85,6 +84,8 @@ class MQTTStream(Stream):
                 else:
                     logger.error(f"MQTT connect failed with rc={rc}")
                     done.set()
+
+            logger.debug(f"MQTT Host: {host}:{port}")
 
             client.on_connect = on_connect_timeout
             client.connect_async(host, port)
