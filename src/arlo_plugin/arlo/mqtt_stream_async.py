@@ -90,6 +90,7 @@ class MQTTStream(Stream):
 
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
             self.event_stream.tls_set_context(ssl_context)
             self.event_stream.on_connect = on_connect
             self.event_stream.on_disconnect = on_disconnect
