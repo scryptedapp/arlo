@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import ssl
 import paho.mqtt.client as mqtt
 
 from .stream_async import Stream
@@ -18,7 +19,13 @@ class MQTTStream(Stream):
     def _add_and_subscribe(self, client, topics):
         if not topics:
             return
-        new_subs = [(topic, 0) for topic in topics if topic]
+        seen = set()
+        deduped_topics = []
+        for topic in topics:
+            if topic and topic not in seen:
+                seen.add(topic)
+                deduped_topics.append(topic)
+        new_subs = [(topic, 0) for topic in deduped_topics]
         unique_new_subs = [t for t in new_subs if t not in self.cached_topics]
         if unique_new_subs:
             self.cached_topics.extend(unique_new_subs)
@@ -28,7 +35,7 @@ class MQTTStream(Stream):
             except Exception as e:
                 logger.error(f"MQTT subscription error: {e}")
 
-    async def start(self):
+    async def start(self, retry_limit=3):
         if self.event_stream is not None:
             logger.debug("MQTT event stream already initialized. Skipping start.")
             return
@@ -65,37 +72,81 @@ class MQTTStream(Stream):
                 logger.error(f"Unexpected MQTT message handling error: {e}")
 
         logger.debug(f"MQTT Setup for user: {self.arlo.user_id}")
-        logger.debug(f"MQTT Host: {self.arlo.mqtt_url}:{self.arlo.mqtt_port}")
 
-        try:
-            self.event_stream = mqtt.Client(
-                client_id=self._gen_client_id(),
-                transport=self.arlo.mqtt_transport,
-                clean_session=False
-            )
+        async def connect_with_timeout(client, host, port, timeout=10):
+            loop = asyncio.get_running_loop()
+            done = asyncio.Event()
 
-            self.event_stream.username_pw_set(
-                self.arlo.user_id,
-                password=self.arlo.request.session.headers.get('Authorization')
-            )
+            def on_connect_timeout(client, userdata, flags, rc):
+                if rc == 0:
+                    on_connect(client, userdata, flags, rc)
+                    done.set()
+                else:
+                    logger.error(f"MQTT connect failed with rc={rc}")
+                    done.set()
 
-            self.event_stream.ws_set_options(
-                path="/mqtt",
-                headers={
-                    "Host": f"{self.arlo.mqtt_url}:{self.arlo.mqtt_port}",
-                    "Origin": "https://my.arlo.com"
-                }
-            )
+            logger.debug(f"MQTT Host: {host}:{port}")
 
-            self.event_stream.tls_set()
-            self.event_stream.on_connect = on_connect
-            self.event_stream.on_disconnect = on_disconnect
-            self.event_stream.on_message = on_message
+            client.on_connect = on_connect_timeout
+            client.connect_async(host, port)
+            client.loop_start()
 
-            self.event_stream.connect_async(self.arlo.mqtt_url, port=self.arlo.mqtt_port)
-            self.event_stream.loop_start()
-        except Exception as e:
-            logger.error(f"Error initializing MQTT client: {e}")
+            try:
+                await asyncio.wait_for(done.wait(), timeout=timeout)
+                return client.is_connected()
+            except asyncio.TimeoutError:
+                logger.error(f"MQTT connect to {host}:{port} timed out after {timeout} seconds")
+                client.loop_stop()
+                return False
+
+        async def try_connect():
+            retries = 0
+            base_delay = 2
+
+            while retries < retry_limit and not self.event_stream_stop_event.is_set():
+                try:
+                    self.event_stream = mqtt.Client(
+                        client_id=self._gen_client_id(),
+                        transport=self.arlo.mqtt_transport,
+                        clean_session=False
+                    )
+                    self.event_stream.username_pw_set(
+                        self.arlo.user_id,
+                        password=self.arlo.request.session.headers.get('Authorization')
+                    )
+                    self.event_stream.ws_set_options(
+                        path="/mqtt",
+                        headers={
+                            "Host": f"{self.arlo.mqtt_url}:{self.arlo.mqtt_port}",
+                            "Origin": "https://my.arlo.com"
+                        }
+                    )
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = True
+                    ssl_context.verify_mode = ssl.CERT_REQUIRED
+                    self.event_stream.tls_set_context(ssl_context)
+                    self.event_stream.on_disconnect = on_disconnect
+                    self.event_stream.on_message = on_message
+                    if await connect_with_timeout(self.event_stream, self.arlo.mqtt_url, self.arlo.mqtt_port):
+                        return True
+                    logger.warning(f"Failed to connect to {self.arlo.mqtt_url}. Trying fallback...")
+                    if await connect_with_timeout(self.event_stream, "mqtt-cluster-z1-1.arloxcld.com", self.arlo.mqtt_port):
+                        return True
+                    logger.error("Failed to connect to both primary and fallback MQTT hosts.")
+                except Exception as e:
+                    logger.error(f"Error initializing MQTT client: {e}")
+                retries += 1
+                if retries < retry_limit:
+                    delay = base_delay * (2 ** retries)
+                    jitter = random.uniform(0, 1)
+                    total_delay = delay + jitter
+                    logger.info(f"Retrying MQTT connection in {total_delay:.2f} seconds ({retries}/{retry_limit})...")
+                    await asyncio.sleep(total_delay)
+            return False
+
+        if not await try_connect():
+            logger.error("MQTTStream start failed: could not establish connection after retries.")
+            self.event_stream = None
             return
 
         while not self.connected and not self.event_stream_stop_event.is_set():

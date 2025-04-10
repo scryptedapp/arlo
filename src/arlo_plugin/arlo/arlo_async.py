@@ -473,6 +473,9 @@ class Arlo(object):
         while not self.event_stream.connected:
             await asyncio.sleep(0.5)
 
+        if not self.event_stream or not self.event_stream.connected:
+            raise RuntimeError("MQTT event stream failed to initialize or connect.")
+
         # if tuples are provided, then this is the Subscribe initiated
         # by the top level plugin, and we should add mqtt subscriptions
         # and register basestation heartbeats
