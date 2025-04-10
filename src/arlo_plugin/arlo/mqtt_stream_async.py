@@ -35,7 +35,7 @@ class MQTTStream(Stream):
             except Exception as e:
                 logger.error(f"MQTT subscription error: {e}")
 
-    async def start(self):
+    async def start(self, retry_limit=3):
         if self.event_stream is not None:
             logger.debug("MQTT event stream already initialized. Skipping start.")
             return
@@ -99,40 +99,54 @@ class MQTTStream(Stream):
                 client.loop_stop()
                 return False
 
-        try:
-            self.event_stream = mqtt.Client(
-                client_id=self._gen_client_id(),
-                transport=self.arlo.mqtt_transport,
-                clean_session=False
-            )
+        async def try_connect():
+            retries = 0
+            base_delay = 2
 
-            self.event_stream.username_pw_set(
-                self.arlo.user_id,
-                password=self.arlo.request.session.headers.get('Authorization')
-            )
-
-            self.event_stream.ws_set_options(
-                path="/mqtt",
-                headers={
-                    "Host": f"{self.arlo.mqtt_url}:{self.arlo.mqtt_port}",
-                    "Origin": "https://my.arlo.com"
-                }
-            )
-
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = True
-            ssl_context.verify_mode = ssl.CERT_REQUIRED
-            self.event_stream.tls_set_context(ssl_context)
-            self.event_stream.on_disconnect = on_disconnect
-            self.event_stream.on_message = on_message
-
-            if not await connect_with_timeout(self.event_stream, self.arlo.mqtt_url, self.arlo.mqtt_port):
-                logger.warning(f"Failed to connect to {self.arlo.mqtt_url}. Trying fallback...")
-                if not await connect_with_timeout(self.event_stream, "mqtt-cluster-z1-1.arloxcld.com", self.arlo.mqtt_port):
+            while retries < retry_limit and not self.event_stream_stop_event.is_set():
+                try:
+                    self.event_stream = mqtt.Client(
+                        client_id=self._gen_client_id(),
+                        transport=self.arlo.mqtt_transport,
+                        clean_session=False
+                    )
+                    self.event_stream.username_pw_set(
+                        self.arlo.user_id,
+                        password=self.arlo.request.session.headers.get('Authorization')
+                    )
+                    self.event_stream.ws_set_options(
+                        path="/mqtt",
+                        headers={
+                            "Host": f"{self.arlo.mqtt_url}:{self.arlo.mqtt_port}",
+                            "Origin": "https://my.arlo.com"
+                        }
+                    )
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = True
+                    ssl_context.verify_mode = ssl.CERT_REQUIRED
+                    self.event_stream.tls_set_context(ssl_context)
+                    self.event_stream.on_disconnect = on_disconnect
+                    self.event_stream.on_message = on_message
+                    if await connect_with_timeout(self.event_stream, self.arlo.mqtt_url, self.arlo.mqtt_port):
+                        return True
+                    logger.warning(f"Failed to connect to {self.arlo.mqtt_url}. Trying fallback...")
+                    if await connect_with_timeout(self.event_stream, "mqtt-cluster-z1-1.arloxcld.com", self.arlo.mqtt_port):
+                        return True
                     logger.error("Failed to connect to both primary and fallback MQTT hosts.")
-                    return
-        except Exception as e:
-            logger.error(f"Error initializing MQTT client: {e}")
+                except Exception as e:
+                    logger.error(f"Error initializing MQTT client: {e}")
+                retries += 1
+                if retries < retry_limit:
+                    delay = base_delay * (2 ** retries)
+                    jitter = random.uniform(0, 1)
+                    total_delay = delay + jitter
+                    logger.info(f"Retrying MQTT connection in {total_delay:.2f} seconds ({retries}/{retry_limit})...")
+                    await asyncio.sleep(total_delay)
+            return False
+
+        if not await try_connect():
+            logger.error("MQTTStream start failed: could not establish connection after retries.")
+            self.event_stream = None
             return
 
         while not self.connected and not self.event_stream_stop_event.is_set():

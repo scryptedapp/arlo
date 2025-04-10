@@ -284,13 +284,26 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     async def do_arlo_setup(self) -> None:
         try:
             await self.discover_devices()
-            await self.arlo.Subscribe([
-                (self.arlo_basestations[camera["parentId"]], camera) for camera in self.arlo_cameras.values()
-            ])
-
+            try:
+                await self.arlo.Subscribe([
+                    (self.arlo_basestations[camera["parentId"]], camera)
+                    for camera in self.arlo_cameras.values()
+                ])
+            except RuntimeError as e:
+                self.logger.warning(f"Stream failed to connect: {e}")
+                self.logger.info("Retrying stream setup after short delay...")
+                await asyncio.sleep(5)
+                try:
+                    await self.arlo.Subscribe([
+                        (self.arlo_basestations[camera["parentId"]], camera)
+                        for camera in self.arlo_cameras.values()
+                    ])
+                except RuntimeError as e:
+                    self.logger.error("Stream still failed to connect after retry.")
+                    raise
             self.arlo.event_stream.set_refresh_interval(self.refresh_interval)
         except requests.exceptions.HTTPError:
-            self.logger.exception("Error logging in")
+            self.logger.exception("HTTP error during Arlo login")
             self.logger.error("Will retry with fresh login")
             self._arlo = None
             self._arlo_mfa_code = None
@@ -298,7 +311,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             self.storage.setItem("arlo_cookies", None)
             _ = self.arlo
         except Exception:
-            self.logger.exception("Error logging in")
+            self.logger.exception("Unexpected error during Arlo setup")
 
     def invalidate_arlo_client(self) -> None:
         if self._arlo is not None:
