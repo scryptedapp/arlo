@@ -42,7 +42,7 @@ import time
 from urllib.parse import urlparse, parse_qs
 
 
-stream_class = PyEventStream
+stream_class = MQTTStream
 
 def change_stream_class(s_class):
     global stream_class

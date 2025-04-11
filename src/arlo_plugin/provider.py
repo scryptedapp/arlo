@@ -361,6 +361,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 except RuntimeError as e:
                     self.logger.error("Stream still failed to connect after retry.")
                     raise
+            await self.create_devices()
             self.arlo.event_stream.set_refresh_interval(self.refresh_interval)
         except requests.exceptions.HTTPError:
             self.logger.exception("HTTP error during Arlo login")
