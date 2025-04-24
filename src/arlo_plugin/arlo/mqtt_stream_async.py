@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import scrypted_sdk
 import ssl
 import paho.mqtt.client as mqtt
 
@@ -35,7 +36,7 @@ class MQTTStream(Stream):
             except Exception as e:
                 logger.error(f"MQTT subscription error: {e}")
 
-    async def start(self, retry_limit=3):
+    async def start(self, retry_limit=4):
         if self.event_stream is not None:
             logger.debug("MQTT event stream already initialized. Skipping start.")
             return
@@ -140,13 +141,17 @@ class MQTTStream(Stream):
                     delay = base_delay * (2 ** retries)
                     jitter = random.uniform(0, 1)
                     total_delay = delay + jitter
-                    logger.info(f"Retrying MQTT connection in {total_delay:.2f} seconds ({retries}/{retry_limit})...")
+                    logger.info(f"Retrying MQTT connection in {total_delay:.2f} seconds ({retries}/{retry_limit - 1})...")
                     await asyncio.sleep(total_delay)
             return False
 
         if not await try_connect():
-            logger.error("MQTTStream start failed: could not establish connection after retries.")
+            logger.error(f"MQTTStream start failed: could not establish connection after {retry_limit - 1} retries. Restarting plugin.")
             self.event_stream = None
+            try:
+                await scrypted_sdk.deviceManager.requestRestart()
+            except Exception as e:
+                logger.error(f"Failed to request plugin restart: {e}")
             return
 
         while not self.connected and not self.event_stream_stop_event.is_set():
