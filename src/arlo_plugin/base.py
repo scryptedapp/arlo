@@ -79,7 +79,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
 
         return {
             "info": {
-                "model": f"{self.arlo_device.get('modelId', '')} {self.arlo_properties.get('hwVersion', '').replace(self.arlo_device.get('modelId', ''), '').strip() if self.arlo_properties else ''}".strip(),
+                "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '').replace(self.arlo_device.get('modelId', ''), '') if self.arlo_device.get('properties') else ''}".strip(),
                 "manufacturer": "Arlo",
                 "serialNumber": self.arlo_device["deviceId"],
                 "firmware": self.arlo_properties.get("swVersion", "") if self.arlo_properties else "",
