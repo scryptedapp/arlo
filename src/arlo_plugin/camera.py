@@ -365,7 +365,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             light = self.get_or_create_light()
             results.append({
                 "info": {
-                    "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '')}".strip(),
+                    "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '').replace(self.arlo_device.get('modelId', ''), '') if self.arlo_device.get('properties') else ''}".strip(),
                     "manufacturer": "Arlo",
                     "firmware": self.arlo_device.get("firmwareVersion"),
                     "serialNumber": self.arlo_device["deviceId"],
@@ -381,7 +381,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             results.extend([
                 {
                     "info": {
-                        "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '')}".strip(),
+                        "model": f"{self.arlo_device['modelId']} {self.arlo_device['properties'].get('hwVersion', '').replace(self.arlo_device.get('modelId', ''), '') if self.arlo_device.get('properties') else ''}".strip(),
                         "manufacturer": "Arlo",
                         "firmware": self.arlo_device.get("firmwareVersion"),
                         "serialNumber": self.arlo_device["deviceId"],
