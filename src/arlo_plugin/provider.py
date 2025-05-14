@@ -1,10 +1,12 @@
 import asyncio
+import base64
 from bs4 import BeautifulSoup
 import email
 import functools
 import imaplib
 import json
 import logging
+import pickle
 import random
 import re
 import requests
@@ -78,6 +80,34 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         """Overrides the print() from ScryptedDeviceBase to avoid double-printing in the main plugin console."""
         print(*args, **kwargs)
 
+    def _check_cookies(self, cookies: str) -> str:
+        if cookies:
+            self.logger.debug("No cookies found in storage.")
+            return
+        self.logger.debug(f"Loaded cookies from storage...")
+        valid = self._is_valid_cookie_format(cookies)
+        self.logger.debug(f"Cookie format valid? {valid}")
+        if not valid:
+            self.logger.debug("Invalid cookie format detected, clearing cookies.")
+            return ""
+        self.logger.debug("Valid cookie format detected, using cookies.")
+        return cookies
+
+    def _is_valid_cookie_format(self, cookies: str) -> bool:
+        try:
+            decoded = base64.b64decode(cookies)
+            cookies_dict = pickle.loads(decoded)
+            if not isinstance(cookies_dict, dict):
+                return False
+            for k, v in cookies_dict.items():
+                if not isinstance(v, dict):
+                    self.logger.debug(f"Cookie value for {k} is not a string: {type(v)}")
+                    return False
+            return True
+        except Exception as e:
+            self.logger.debug(f"Cookie validation failed: {e}")
+            return False
+
     @property
     def arlo_username(self) -> str:
         return self.storage.getItem("arlo_username")
@@ -92,7 +122,13 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
     @property
     def arlo_cookies(self) -> str:
-        return self.storage.getItem("arlo_cookies")
+        cookies = self.storage.getItem("arlo_cookies")
+        if cookies is None:
+            cookies = ""
+        else:
+            cookies = self._check_cookies(cookies)
+        self.storage.setItem("arlo_cookies", cookies)
+        return cookies
 
     @property
     def arlo_user_id(self) -> str:
@@ -106,7 +142,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         # Re-enabled and working again as of 12/15/2023
         transport = self.storage.getItem("arlo_transport")
         if transport is None or transport not in ArloProvider.arlo_transport_choices:
-            transport = "SSE"
+            transport = "MQTT"
             self.storage.setItem("arlo_transport", transport)
         return transport
 
