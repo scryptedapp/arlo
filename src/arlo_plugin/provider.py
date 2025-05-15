@@ -81,7 +81,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         print(*args, **kwargs)
 
     def _check_cookies(self, cookies: str) -> str:
-        if cookies:
+        if not cookies:
             self.logger.debug("No cookies found in storage.")
             return
         self.logger.debug(f"Loaded cookies from storage...")
@@ -101,7 +101,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 return False
             for k, v in cookies_dict.items():
                 if not isinstance(v, dict):
-                    self.logger.debug(f"Cookie value for {k} is not a string: {type(v)}")
+                    self.logger.debug(f"Cookie value for {k} is not a dict: {type(v)}")
                     return False
             return True
         except Exception as e:
@@ -122,13 +122,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
     @property
     def arlo_cookies(self) -> str:
-        cookies = self.storage.getItem("arlo_cookies")
-        if cookies is None:
-            cookies = ""
-        else:
-            cookies = self._check_cookies(cookies)
-        self.storage.setItem("arlo_cookies", cookies)
-        return cookies
+        return self.storage.getItem("arlo_cookies")
 
     @property
     def arlo_user_id(self) -> str:
@@ -301,7 +295,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.logger.info("Trying to initialize Arlo client...")
         try:
             self._arlo = Arlo(self.arlo_username, self.arlo_password)
-            cookies = self.arlo_cookies
+            cookies = self._check_cookies(self.arlo_cookies)
             self._arlo_mfa_complete_auth = self._arlo.LoginMFA(cookies=cookies)
             if self._arlo_mfa_complete_auth is NO_MFA:
                 self.logger.info(f"Initialized Arlo client")
