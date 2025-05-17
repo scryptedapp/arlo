@@ -1,0 +1,205 @@
+import asyncio
+import base64
+import http.client
+import logging
+import pickle
+import time
+import uuid
+
+from curl_cffi.requests import Session as CurlCffiSession
+from json import JSONDecodeError
+from logging import Handler, Logger
+from requests import Response, Session
+from requests.exceptions import HTTPError, RequestException
+from requests_toolbelt.adapters import host_header_ssl
+from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
+from typing import Any
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+from ..logging import StdoutLoggerFactory
+
+def _should_retry(exception: Exception) -> bool:
+    if isinstance(exception, RequestException):
+        response: Response | None = getattr(exception, 'response', None)
+        if response and hasattr(response, 'status_code'):
+            return response.status_code in {429, 500, 502, 503, 504}
+        return True
+    return False
+
+
+class Request:
+    logger: Logger = StdoutLoggerFactory.get_logger(name='Client')
+
+    def __init__(
+        self,
+        timeout: int = 5,
+        mode: str = 'curl',
+        max_retries: int = 3,
+        extra_debug_logging: bool = False
+    ):
+        self.extra_debug_logging: bool = extra_debug_logging
+        self.timeout: int = timeout
+        self.max_retries: int = max_retries
+        self.mode: str = mode.lower()
+
+        if self.extra_debug_logging:
+            http.client.HTTPConnection.debuglevel = 1
+            self._configure_logging()
+        else:
+            http.client.HTTPConnection.debuglevel = 0
+            self._reset_logging()
+        try:
+            self.session: CurlCffiSession | Session = self._initialize_session()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize HTTP session for mode '{self.mode}': {e}")
+
+    def _configure_logging(self):
+        request_logger: Logger = logging.getLogger('requests.packages.urllib3')
+        handler: Handler = None
+        for handler in list(request_logger.handlers):
+            request_logger.removeHandler(handler)
+        for handler in list(self.logger.handlers):
+            request_logger.addHandler(handler)
+        request_logger.setLevel(self.logger.level)
+        request_logger.propagate = False
+
+    def _reset_logging(self):
+        request_logger: Logger = logging.getLogger('requests.packages.urllib3')
+        for handler in list(request_logger.handlers):
+            request_logger.removeHandler(handler)
+        request_logger.setLevel(logging.WARNING)
+        request_logger.propagate = True
+
+    def _initialize_session(self) -> CurlCffiSession | Session:
+        if self.mode == 'curl':
+            self.logger.debug('HTTP helper using curl_cffi with impersonation: chrome')
+            try:
+                return CurlCffiSession(impersonate='chrome')
+            except Exception as e:
+                self.logger.warning(f'HTTP helper using curl_cffi with chrome impersonation failed, falling back to firefox impersonation: {e}')
+                return CurlCffiSession(impersonate='firefox')
+        elif self.mode == 'ip':
+            self.logger.debug('HTTP helper using requests with HostHeaderSSLAdapter')
+            session = Session()
+            session.mount('https://', host_header_ssl.HostHeaderSSLAdapter())
+            return session
+        else:
+            self.logger.debug('HTTP helper using default requests')
+            return Session()
+
+    def gen_event_id(self) -> str:
+        return f'FE!{uuid.uuid4()}'
+
+    def get_time(self) -> int:
+        return int(time.time_ns() / 1_000_000)
+
+    def _add_query_params(self, url: str, params: dict[str, Any]) -> str:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        for k, v in params.items():
+            query[k] = [str(v)]
+        new_query = urlencode(query, doseq=True)
+        return urlunparse(parsed._replace(query=new_query))
+
+    def _is_success(self, body: dict[str, Any]) -> bool:
+        meta: dict[str, Any] = body.get('meta', {})
+        if meta:
+            return meta.get('code') == 200
+        if body.get('success') is True:
+            return True
+        return False
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(_should_retry),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True
+    )
+    def _request(
+        self,
+        url: str,
+        method: str = 'GET',
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        raw: bool = False,
+        skip_event_id: bool = False
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        params = params or {}
+        headers = headers or {}
+
+        if not skip_event_id:
+            event_params = {
+                'eventId': self.gen_event_id(),
+                'time': self.get_time()
+            }
+            url = self._add_query_params(url, event_params)
+
+        method = method.upper()
+        if self.extra_debug_logging:
+            self.logger.debug(f'Performing HTTP {method} to {url} with params={params} headers={headers}')
+
+        try:
+            response = self._send_request(url, method, params, headers)
+            response.raise_for_status()
+        except RequestException as e:
+            self.logger.error(f'HTTP {method} request to {url} failed: {e}')
+            raise
+
+        if method == 'OPTIONS':
+            return {}
+
+        try:
+            body: dict[str, Any] = response.json()
+        except JSONDecodeError as e:
+            self.logger.error(f'JSON decode error from {url}: {e}')
+            raise HTTPError(f'Invalid JSON response from {url}', response=response)
+
+        if raw:
+            return body
+
+        if self._is_success(body):
+            return body.get('data', body)
+        else:
+            raise HTTPError(f'Request ({method} {url}) failed: {body}', response=response)
+
+    def _send_request(self, url: str, method: str, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> Response:
+        if method == 'GET':
+            return self.session.get(url, params=params, headers=headers, timeout=self.timeout)
+        elif method == 'OPTIONS':
+            return self.session.options(url, headers=headers, timeout=self.timeout)
+        elif method == 'POST':
+            return self.session.post(url, json=params, headers=headers, timeout=self.timeout)
+        elif method == 'PUT':
+            return self.session.put(url, json=params, headers=headers, timeout=self.timeout)
+        else:
+            raise ValueError(f'Unsupported HTTP method: {method}')
+
+    async def get(self, url: str, **kwargs) -> dict[str, Any] | list[dict[str, Any]]:
+        return await asyncio.to_thread(self._request, url, 'GET', **kwargs)
+
+    async def options(self, url: str, **kwargs) -> dict[str, Any] | list[dict[str, Any]]:
+        return await asyncio.to_thread(self._request, url, 'OPTIONS', **kwargs)
+
+    async def post(self, url: str, **kwargs) -> dict[str, Any] | list[dict[str, Any]]:
+        return await asyncio.to_thread(self._request, url, 'POST', **kwargs)
+
+    async def put(self, url: str, **kwargs) -> dict[str, Any] | list[dict[str, Any]]:
+        return await asyncio.to_thread(self._request, url, 'PUT', **kwargs)
+
+    def dumps_cookies(self) -> str:
+        if self.mode != 'curl':
+            raise RuntimeError("Cookie serialization only supported in 'curl' mode.")
+        pickled = pickle.dumps(self.session.cookies.get_dict())
+        return base64.b64encode(pickled).decode()
+
+    def loads_cookies(self, cookies: str) -> None:
+        if self.mode != 'curl':
+            raise RuntimeError("Cookie deserialization only supported in 'curl' mode.")
+        decoded = base64.b64decode(cookies)
+        cookie_dict = pickle.loads(decoded)
+        self.session.cookies.update(cookie_dict)
+
+    def close(self) -> None:
+        if hasattr(self.session, 'close'):
+            self.session.close()
