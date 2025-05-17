@@ -15,7 +15,7 @@ from typing import List
 
 import scrypted_sdk
 from scrypted_sdk import ScryptedDeviceBase
-from scrypted_sdk.types import Setting, SettingValue, Settings, DeviceProvider, ScryptedInterface
+from scrypted_sdk.types import ScryptedDevice, Setting, SettingValue, Settings, DeviceProvider, ScryptedInterface
 
 from .arlo import Arlo, NO_MFA
 from .arlo.arlo_async import change_stream_class
@@ -62,6 +62,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.manual_mfa_signal = None
         self.device_discovery_lock = asyncio.Lock()
 
+        self._migrate_storage()
         self.propagate_verbosity()
         self.propagate_transport()
 
@@ -79,6 +80,32 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
     def print(self, *args, **kwargs) -> None:
         """Overrides the print() from ScryptedDeviceBase to avoid double-printing in the main plugin console."""
         print(*args, **kwargs)
+
+    def _migrate_storage(self) -> None:
+        migrations = [
+            ('arlo_event_stream_transport', 'arlo_transport', None),
+            ('event_stream_refresh_interval', 'refresh_interval', None),
+            ('mvss_enabled', 'mode_enabled', lambda v: v is True or v == 'true'),
+            ('plugin_log_level', 'plugin_verbosity', lambda v: {'Info': 'Normal', 'Debug': 'Verbose', 'Extra Debug': 'Verbose'}.get(v, 'Normal')),
+        ]
+        for new_key, old_key, map_fn in migrations:
+            value = self.storage.getItem(new_key)
+            if value is not None:
+                new_value = map_fn(value) if map_fn else value
+                self.logger.info(f"Migrating {new_key}='{value}' to {old_key}='{new_value}'")
+                self.storage.setItem(old_key, new_value)
+                self.storage.removeItem(new_key)
+        defaults = {
+            'arlo_transport': 'MQTT',
+            'plugin_verbosity': 'Normal',
+            'refresh_interval': 90,
+            'mode_enabled': False,
+            'one_location': False,
+            'hidden_devices': [],
+        }
+        for key, default in defaults.items():
+            if self.storage.getItem(key) is None:
+                self.storage.setItem(key, default)
 
     def _check_cookies(self, cookies: str) -> str:
         if not cookies:
@@ -888,6 +915,8 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         smss_devices = []
         provider_to_device_map = {None: []}
 
+        await self._cleanup_old_devices()
+
         basestations = self.arlo.GetDevices(['basestation', 'siren'], True)
         for basestation in basestations:
             nativeId = basestation["deviceId"]
@@ -1072,6 +1101,25 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
 
         # force a settings refresh so the hidden devices list can be updated
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
+
+    async def _cleanup_old_devices(self) -> None:
+        device_ids: list[str] = list(scrypted_sdk.systemManager.getSystemState().keys())
+        devices: list[ScryptedDevice] = []
+        for device_id in device_ids:
+            devices.append(scrypted_sdk.systemManager.getDeviceById(device_id))
+        for device in devices:
+            if getattr(device, 'nativeId', None) and str(device.nativeId).endswith('.svss'):
+                child_siren = next(
+                    (d for d in devices
+                    if getattr(d, 'providerId', None) == device.id and
+                        getattr(d, 'nativeId', '').endswith('.siren')),
+                    None
+                )
+                if child_siren:
+                    self.logger.debug(f'Cleaning up old siren device {child_siren.nativeId} (child of {device.nativeId})')
+                    await scrypted_sdk.systemManager.removeDevice(child_siren.id)
+                self.logger.debug(f'Cleaning up old device {device.nativeId}')
+                await scrypted_sdk.systemManager.removeDevice(device.id)
 
     async def getDevice(self, nativeId: str) -> ArloDeviceBase:
         self.logger.debug(f"Scrypted requested to load device {nativeId}")
