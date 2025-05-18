@@ -57,6 +57,8 @@ class MQTTEventStream(Stream):
                 if self.arlo.mvss_enabled:
                     session_topics.append(f'u/{self.arlo.user_id}/in/automation/activeMode/#')
                 self._add_and_subscribe(client, session_topics)
+                if not self.reconnecting:
+                    self.cached_topics.clear()
             else:
                 self.logger.error(f'MQTT Event Stream {id(client)} failed to connect with return code {rc}.')
 

@@ -450,9 +450,6 @@ class ArloClient(object):
     async def restart(self) -> None:
         logger.info('Restarting Arlo client: performing full logout and reset and preparing for new login.')
         await self._logout()
-        self._init_persistent()
-        self._init_session()
-        await self.login()
 
     async def _logout(self) -> None:
         logger.info('Logging out of Arlo client.')

@@ -369,7 +369,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         interval_days = self.imap_mfa_interval if self.mfa_strategy == 'IMAP' else 14
         await asyncio.sleep(interval_days * 24 * 60 * 60)
         self.logger.info('MFA refresh interval reached, resetting client and re-logging in.')
-        await self.arlo.restart()
+        await self.reset_arlo_client()
         self.initialize_plugin()
 
     def imap_settings_ready(self) -> bool:
@@ -733,13 +733,14 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.storage.setItem(key, value)
             if self.arlo is not None and self.arlo.logged_in:
                 await self.reset_arlo_client()
-                await self.do_arlo_setup()
+                self.initialize_plugin()
             skip_plugin_reset = True
         elif key == 'mvss_enabled':
             self.storage.setItem(key, 'true' if value else 'false')
             if self.arlo is not None and self.arlo.logged_in:
                 await self.reset_arlo_client()
-                await self.do_arlo_setup()
+                self.initialize_plugin()
+            skip_plugin_reset = True
         else:
             self.storage.setItem(key, value)
         if not skip_plugin_reset:
