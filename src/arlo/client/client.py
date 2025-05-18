@@ -231,9 +231,10 @@ class ArloClient(object):
         get_factor_id_meta: dict[str, Any] = get_factor_id_response.get('meta')
         get_factor_id_meta_code: int = get_factor_id_meta.get('code')
         if get_factor_id_meta_code == 200 and self.browser_authenticated and not self.browser_authenticated.done():
-                self.browser_authenticated.set_result(True)
+            self.browser_authenticated.set_result(True)
         else:
-            self.browser_authenticated.set_result(False)
+            if self.browser_authenticated and not self.browser_authenticated.done():
+                self.browser_authenticated.set_result(False)
         if get_factor_id_meta_code != 200:
             logger.debug('Browser not authenticated, starting browser authentication...')
             get_factors_response: dict[str, Any] = await self._get_factors(issued)
@@ -451,6 +452,7 @@ class ArloClient(object):
         await self._logout()
         self._init_persistent()
         self._init_session()
+        await self.login()
 
     async def _logout(self) -> None:
         logger.info('Logging out of Arlo client.')

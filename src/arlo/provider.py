@@ -732,13 +732,13 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         elif key == 'hidden_devices':
             self.storage.setItem(key, value)
             if self.arlo is not None and self.arlo.logged_in:
-                await self.arlo.unsubscribe()
+                await self.reset_arlo_client()
                 await self.do_arlo_setup()
             skip_plugin_reset = True
         elif key == 'mvss_enabled':
             self.storage.setItem(key, 'true' if value else 'false')
             if self.arlo is not None and self.arlo.logged_in:
-                await self.arlo.unsubscribe()
+                await self.reset_arlo_client()
                 await self.do_arlo_setup()
         else:
             self.storage.setItem(key, value)

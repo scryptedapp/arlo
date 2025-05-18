@@ -26,7 +26,11 @@ class BackgroundTaskMixin:
         assert task is not None
 
         def print_exception(task: asyncio.Task):
-            if task.exception():
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc:
                 self.logger.error(f'task exception: {task.exception()}')
 
         self.background_tasks.add(task)
