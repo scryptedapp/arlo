@@ -198,8 +198,7 @@ class AuthHeader:
         return AuthHeader(SIP_DIGEST, params)
 
 class SIPWebRTCManager:
-    def __init__(self, logger: logging.Logger, ice_servers: list[dict[str, str]], sip_cfg: dict[str, Any], full_sip_webrtc: bool = False):
-        self.full_sip_webrtc = full_sip_webrtc
+    def __init__(self, logger: logging.Logger, ice_servers: list[dict[str, str]], sip_cfg: dict[str, Any]):
         logger.debug('>>> Entered SIPWebRTCManager.__init__')
         self.logger = logger
         self.sip_cfg = sip_cfg
@@ -242,9 +241,6 @@ class SIPWebRTCManager:
 
     async def make_local_sdp(self, replace_audio: bool = False) -> str:
         self.logger.debug('Creating local SDP offer.')
-        if self.full_sip_webrtc:
-            self.webrtc.pc.addTransceiver("audio", direction="sendrecv")
-            self.webrtc.pc.addTransceiver("video", direction="sendonly")
         await self.webrtc.create_offer(replace_audio=replace_audio)
         await self.webrtc.wait_for_local_description()
         while self.webrtc.pc.iceGatheringState != 'complete':
@@ -351,7 +347,11 @@ class SIPWebRTCManager:
         self.logger.debug('Starting SIPWebRTCManager session.')
         await self.connect_websocket()
         try:
-            local_sdp = await self.make_local_sdp(replace_audio=replace_audio)
+            local_sdp = self.sip_cfg.get('SDP')
+            if local_sdp:
+                await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=local_sdp, type='offer'))
+            else:
+                local_sdp = await self.make_local_sdp(replace_audio=replace_audio)
             self.call_id = _rand_string(16)
             self.cseq = 1
             self.branch = _gen_branch()
@@ -396,7 +396,10 @@ class SIPWebRTCManager:
             self.logger.debug(f'Received remote SDP:\n{sdp}')
             sdp = clean_sdp(sdp)
             self.logger.debug(f'Cleaned remote SDP:\n{sdp}')
-            await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='answer'))
+            if self.sip_cfg.get('SDP'):
+                await self.webrtc.pc.setLocalDescription(RTCSessionDescription(sdp=sdp, type='answer'))
+            else:
+                await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='answer'))
             await self.send_ack()
             if not self.sip_cfg.get('SDP'):
                 self.logger.debug('Starting talk session.')
