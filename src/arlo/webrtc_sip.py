@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from aiortc import RTCSessionDescription
 from typing import Callable, Protocol, TYPE_CHECKING
 
-from .client import SIPWebRTCManager, USER_AGENTS, WebRTCManager
+from .client import SIPWebRTCManager, USER_AGENTS
 from .util import BackgroundTaskMixin
 
 if TYPE_CHECKING:
@@ -158,10 +157,8 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
     def __init__(self, intercom: ArloIntercom) -> None:
         super().__init__(intercom)
         self.arlo_basestation: dict = intercom.arlo_basestation
-        self.arlo_webrtc: WebRTCManager = None
         self.session_id: str = None
-        self.answer: RTCSessionDescription = None
-        self.local_description_set: bool = False
+        self.answer: dict = None
         self.stop_subscriptions: bool | None = None
 
     def __del__(self) -> None:
@@ -173,10 +170,6 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
             self.logger.debug("Starting push-to-talk session for intercom WebRTC.")
             self.session_id, self.ice_servers = await self.provider.arlo.start_push_to_talk(self.arlo_device)
             self._format_ice_servers()
-            self.arlo_webrtc = WebRTCManager(
-                logger=self.logger,
-                ice_servers=self.ice_servers,
-            )
             self._start_sdp_answer_subscription()
             self._start_candidate_answer_subscription()
             self.logger.debug("Intercom WebRTC session initialized.")
@@ -188,9 +181,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
         def callback(sdp):
             async def async_callback():
                 try:
-                    self.answer = RTCSessionDescription(sdp=sdp, type='answer')
-                    await self.arlo_webrtc.set_local_description(self.answer)
-                    self.local_description_set = True
+                    self.answer = {'sdp': sdp, 'type': 'answer'}
                 except Exception as e:
                     self.logger.error(f"Error in SDP answer subscription: {e}", exc_info=True)
                 return self.stop_subscriptions
@@ -229,8 +220,6 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
     async def setRemoteDescription(self, offer) -> None:
         try:
             self.logger.debug("Setting remote description for intercom WebRTC session.")
-            description = RTCSessionDescription(sdp=offer['sdp'], type='offer')
-            await self.arlo_webrtc.set_remote_description(description)
             await self.provider.arlo.notify_push_to_talk_offer_sdp(
                 self.arlo_basestation, self.arlo_device,
                 self.session_id, offer['sdp']
@@ -240,19 +229,8 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
             self.logger.error(f"Error in setRemoteDescription: {e}", exc_info=True)
             raise
 
-    async def addIceCandidate(self, candidate) -> None:
-        try:
-            await self.arlo_webrtc.add_ice_candidate(candidate)
-        except Exception as e:
-            self.logger.error(f"Error in addIceCandidate: {e}", exc_info=True)
-            raise
-
     async def close(self) -> None:
         try:
-            self.logger.debug("Closing intercom WebRTC session.")
-            if self.arlo_webrtc is not None:
-                await self.arlo_webrtc.close()
-                self.arlo_webrtc = None
             self.logger.debug("Intercom WebRTC session closed.")
         except Exception as e:
             self.logger.error(f"Error in close: {e}", exc_info=True)

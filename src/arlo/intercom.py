@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from typing import TYPE_CHECKING
 
@@ -45,7 +44,7 @@ class ArloIntercom(ArloDeviceBase):
             plugin_session.scrypted_session = scrypted_session
             scrypted_setup = {
                 'type': 'offer',
-                'audio': {'direction': 'recvonly'},
+                'audio': {'direction': 'sendonly'},
                 'configuration': {
                     'iceServers': plugin_session.ice_servers,
                     'iceCandidatePoolSize': 0,
@@ -74,7 +73,7 @@ class ArloIntercom(ArloDeviceBase):
                         scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
                     await plugin_session.setRemoteDescription(scrypted_offer)
                     self.logger.debug("Waiting for local description to be set by plugin session.")
-                    while not plugin_session.local_description_set:
+                    while not plugin_session.answer:
                         await asyncio.sleep(0.1)
                     await scrypted_session.setRemoteDescription(plugin_session.answer, scrypted_setup)
                     self.logger.debug("WebRTC signaling session established.")

@@ -6,7 +6,6 @@ import random
 import re
 import websockets
 
-from aiortc import RTCSessionDescription
 from typing import Any
 
 from .webrtc import WebRTCManager
@@ -404,7 +403,7 @@ class SIPWebRTCManager:
         await self.connect_websocket()
         try:
             local_sdp = self.sip_cfg.get('SDP')
-            await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=local_sdp, type='offer'))
+            await self.webrtc.set_remote_description(local_sdp)
             self.call_id = _rand_string(16)
             self.cseq = 1
             self.branch = _gen_branch()
@@ -449,7 +448,7 @@ class SIPWebRTCManager:
             self.logger.debug(f'Received remote SDP:\n{sdp}')
             sdp = clean_sdp(sdp)
             self.logger.debug(f'Cleaned remote SDP:\n{sdp}')
-            await self.webrtc.pc.setLocalDescription(RTCSessionDescription(sdp=sdp, type='answer'))
+            await self.webrtc.set_local_description(sdp)
             await self.send_ack()
             if self.auto_start_talk:
                 self.logger.debug('Auto-starting talk.')

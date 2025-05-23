@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer
+from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from aiortc import RTCIceCandidate, RTCSessionDescription
+    from aiortc import RTCIceCandidate
 
 class WebRTCManager:
     def __init__(self, logger: logging.Logger, ice_servers: list[dict[str, Any]]) -> None:
@@ -61,25 +61,25 @@ class WebRTCManager:
         except Exception as e:
             self.logger.error(f"Error printing time since creation: {e}", exc_info=True)
 
-    async def set_remote_description(self, description: 'RTCSessionDescription'):
+    async def set_remote_description(self, sdp: str):
         try:
-            self.logger.debug(f'Setting remote description: {description}')
-            await self.pc.setRemoteDescription(description)
+            self.logger.debug(f'Setting remote description with offer sdp: {sdp}')
+            await self.pc.setRemoteDescription(RTCSessionDescription(sdp, 'offer'))
             self.logger.debug('Remote description set.')
         except Exception as e:
             self.logger.error(f"Error setting remote description: {e}", exc_info=True)
             raise
 
-    async def set_local_description(self, description: 'RTCSessionDescription'):
+    async def set_local_description(self, sdp: str):
         try:
-            self.logger.debug(f'Setting local description: {description}')
-            await self.pc.setLocalDescription(description)
+            self.logger.debug(f'Setting local description with answer adp: {sdp}')
+            await self.pc.setLocalDescription(RTCSessionDescription(sdp, 'answer'))
             self.logger.debug('Local description set.')
         except Exception as e:
             self.logger.error(f"Error setting local description: {e}", exc_info=True)
             raise
 
-    async def add_ice_candidate(self, candidate: 'RTCIceCandidate'):
+    async def add_ice_candidate(self, candidate: RTCIceCandidate):
         try:
             self.logger.debug(f'Adding ICE candidate: {candidate}')
             await self.pc.addIceCandidate(candidate)
