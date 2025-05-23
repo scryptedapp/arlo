@@ -89,67 +89,89 @@ class SIPMessage:
         return f'<SIPMessage method={self.method} status_code={self.status_code} uri={self.uri}>'
 
     def parse(self, raw: str):
-        lines = raw.split('\r\n')
-        first = lines[0]
-        if first.startswith('SIP/2.0'):
-            m = re.match(r'SIP/2.0 (\d+) (.+)', first)
-            if m:
-                self.status_code = int(m.group(1))
-                self.reason = m.group(2)
-        else:
-            m = re.match(r'(\w+) (.+) SIP/2.0', first)
-            if m:
-                self.method = m.group(1)
-                self.uri = m.group(2)
-        idx = 1
-        while idx < len(lines):
-            line = lines[idx]
-            if line == '':
+        try:
+            lines = raw.split('\r\n')
+            first = lines[0]
+            if first.startswith('SIP/2.0'):
+                m = re.match(r'SIP/2.0 (\d+) (.+)', first)
+                if m:
+                    self.status_code = int(m.group(1))
+                    self.reason = m.group(2)
+            else:
+                m = re.match(r'(\w+) (.+) SIP/2.0', first)
+                if m:
+                    self.method = m.group(1)
+                    self.uri = m.group(2)
+            idx = 1
+            while idx < len(lines):
+                line = lines[idx]
+                if line == '':
+                    idx += 1
+                    break
+                if ':' in line:
+                    k, v = line.split(':', 1)
+                    k = k.strip()
+                    v = v.strip()
+                    self.headers[k].append(v)
                 idx += 1
-                break
-            if ':' in line:
-                k, v = line.split(':', 1)
-                k = k.strip()
-                v = v.strip()
-                self.headers[k].append(v)
-            idx += 1
-        self.body = '\r\n'.join(lines[idx:])
+            self.body = '\r\n'.join(lines[idx:])
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error parsing SIP message: {e}", exc_info=True)
+            raise
 
     def get_header(self, name: str) -> str | None:
-        vals = self.headers.get(name)
-        if vals:
-            return vals[0]
-        for k, v in self.headers.items():
-            if k.lower() == name.lower():
-                return v[0]
-        return None
+        try:
+            vals = self.headers.get(name)
+            if vals:
+                return vals[0]
+            for k, v in self.headers.items():
+                if k.lower() == name.lower():
+                    return v[0]
+            return None
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error getting SIP header '{name}': {e}", exc_info=True)
+            return None
 
     def get_headers(self, name: str) -> list[str]:
-        vals = []
-        for k, v in self.headers.items():
-            if k.lower() == name.lower():
-                vals.extend(v)
-        return vals
+        try:
+            vals = []
+            for k, v in self.headers.items():
+                if k.lower() == name.lower():
+                    vals.extend(v)
+            return vals
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error getting SIP headers '{name}': {e}", exc_info=True)
+            return []
 
     def set_header(self, name: str, value: str):
-        self.headers[name] = [value]
+        try:
+            self.headers[name] = [value]
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error setting SIP header '{name}': {e}", exc_info=True)
 
     def add_header(self, name: str, value: str):
-        self.headers[name].append(value)
+        try:
+            self.headers[name].append(value)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error adding SIP header '{name}': {e}", exc_info=True)
 
     def build(self) -> str:
-        if self.method:
-            start = f'{self.method} {self.uri} SIP/2.0'
-        else:
-            start = f'SIP/2.0 {self.status_code} {self.reason}'
-        lines = [start]
-        for k, vals in self.headers.items():
-            for v in vals:
-                lines.append(f'{k}: {v}')
-        lines.append('')
-        if self.body:
-            lines.append(self.body)
-        return '\r\n'.join(lines)
+        try:
+            if self.method:
+                start = f'{self.method} {self.uri} SIP/2.0'
+            else:
+                start = f'SIP/2.0 {self.status_code} {self.reason}'
+            lines = [start]
+            for k, vals in self.headers.items():
+                for v in vals:
+                    lines.append(f'{k}: {v}')
+            lines.append('')
+            if self.body:
+                lines.append(self.body)
+            return '\r\n'.join(lines)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error building SIP message: {e}", exc_info=True)
+            raise
 
 class AuthHeader:
     def __init__(self, mode: str, params: dict[str, str]):
@@ -157,201 +179,232 @@ class AuthHeader:
         self.params = params
 
     def update_response_digest(self, method: str, password: str):
-        if self.params.get('algorithm') != SIP_MD5:
-            raise Exception(f'cannot compute response digest with algorithm {self.params.get("algorithm")!r}')
-        if self.params.get('qop') != 'auth':
-            raise Exception(f'cannot compute response digest with qop {self.params.get("qop")!r}')
-        for k in ['username', 'realm', 'uri', 'nonce', 'cnonce', 'nc']:
-            if k not in self.params:
-                raise Exception(f'missing {k} in auth header')
-        ha1 = _md5_digest(self.params['username'], self.params['realm'], password)
-        ha2 = _md5_digest(method, self.params['uri'])
-        response = _md5_digest(ha1, self.params['nonce'], self.params['nc'], self.params['cnonce'], self.params['qop'], ha2)
-        self.params['response'] = response
+        try:
+            if self.params.get('algorithm') != SIP_MD5:
+                raise Exception(f'cannot compute response digest with algorithm {self.params.get("algorithm")!r}')
+            if self.params.get('qop') != 'auth':
+                raise Exception(f'cannot compute response digest with qop {self.params.get("qop")!r}')
+            for k in ['username', 'realm', 'uri', 'nonce', 'cnonce', 'nc']:
+                if k not in self.params:
+                    raise Exception(f'missing {k} in auth header')
+            ha1 = _md5_digest(self.params['username'], self.params['realm'], password)
+            ha2 = _md5_digest(method, self.params['uri'])
+            response = _md5_digest(ha1, self.params['nonce'], self.params['nc'], self.params['cnonce'], self.params['qop'], ha2)
+            self.params['response'] = response
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error updating response digest: {e}", exc_info=True)
+            raise
 
     def __str__(self):
-        params = []
-        for k, v in self.params.items():
-            if k in ('algorithm', 'qop', 'nc'):
-                params.append(f'{k}={v}')
-            else:
-                params.append(f'{k}="{v}"')
-        return f'{self.mode} {", ".join(params)}'
+        try:
+            params = []
+            for k, v in self.params.items():
+                if k in ('algorithm', 'qop', 'nc'):
+                    params.append(f'{k}={v}')
+                else:
+                    params.append(f'{k}="{v}"')
+            return f'{self.mode} {", ".join(params)}'
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error stringifying AuthHeader: {e}", exc_info=True)
+            raise
 
     @staticmethod
     def parse(header: str):
-        if not header.startswith(SIP_DIGEST):
-            raise Exception('unsupported header mode, expected "Digest"')
-        kvs = header[len(SIP_DIGEST):].split(',')
-        params = {}
-        for kv in kvs:
-            kv = kv.strip()
-            tokens = kv.split('=')
-            if len(tokens) < 2:
-                raise Exception(f'could not parse header param {kv}')
-            k, v = tokens[0], tokens[1]
-            if '="' in kv:
-                v = v[1:-1]
-            params[k] = v
-        if params.get('algorithm') != SIP_MD5:
-            raise Exception(f'unsupported auth digest {params.get("algorithm")}')
-        return AuthHeader(SIP_DIGEST, params)
+        try:
+            if not header.startswith(SIP_DIGEST):
+                raise Exception('unsupported header mode, expected "Digest"')
+            kvs = header[len(SIP_DIGEST):].split(',')
+            params = {}
+            for kv in kvs:
+                kv = kv.strip()
+                tokens = kv.split('=')
+                if len(tokens) < 2:
+                    raise Exception(f'could not parse header param {kv}')
+                k, v = tokens[0], tokens[1]
+                if '="' in kv:
+                    v = v[1:-1]
+                params[k] = v
+            if params.get('algorithm') != SIP_MD5:
+                raise Exception(f'unsupported auth digest {params.get("algorithm")}')
+            return AuthHeader(SIP_DIGEST, params)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error parsing AuthHeader: {e}", exc_info=True)
+            raise
 
 class SIPWebRTCManager:
-    def __init__(self, logger: logging.Logger, ice_servers: list[dict[str, str]], sip_cfg: dict[str, Any]):
-        logger.debug('>>> Entered SIPWebRTCManager.__init__')
-        self.logger = logger
-        self.sip_cfg = sip_cfg
-        self.rand_host = _rand_string(12) + '.invalid'
-        self.timeout = 5
-        self.ws = None
-        self.invite_resp = None
-        self.invite_resp_lock = asyncio.Lock()
-        self.call_id = None
-        self.cseq = None
-        self.branch = None
-        self.tag = None
-        self.to_tag = None
-        self.route_set = []
+    def __init__(self, logger: logging.Logger, ice_servers: list[dict[str, str]], sip_cfg: dict[str, Any], auto_start_talk: bool = False):
+        try:
+            logger.debug('>>> Entered SIPWebRTCManager.__init__')
+            self.logger = logger
+            self.sip_cfg = sip_cfg
+            self.auto_start_talk = auto_start_talk
+            self.keepalive_task = None
+            self.rand_host = _rand_string(12) + '.invalid'
+            self.timeout = 5
+            self.ws = None
+            self.invite_resp = None
+            self.invite_resp_lock = asyncio.Lock()
+            self.call_id = None
+            self.cseq = None
+            self.branch = None
+            self.tag = None
+            self.to_tag = None
+            self.route_set = []
 
-        self.logger.debug(f'SIPWebRTCManager initialized with SIP config: {sip_cfg}')
-        self.logger.debug(f'ICE servers: {ice_servers}')
+            self.logger.debug(f'SIPWebRTCManager initialized with SIP config: {sip_cfg}')
+            self.logger.debug(f'ICE servers: {ice_servers}')
 
-        self.webrtc = WebRTCManager(
-            logger=self.logger,
-            ice_servers=ice_servers,
-        )
-
-    async def initialize_audio_rtp_listener(self) -> int:
-        self.logger.debug('Initializing audio RTP listener.')
-        port = await self.webrtc.initialize_audio_rtp_listener()
-        self.logger.debug(f'Audio RTP listener initialized on port {port}')
-        return port
+            self.webrtc = WebRTCManager(
+                logger=self.logger,
+                ice_servers=ice_servers,
+            )
+        except Exception as e:
+            logger.error(f"Error initializing SIPWebRTCManager: {e}", exc_info=True)
+            raise
 
     async def connect_websocket(self):
-        self.logger.debug(f'Connecting to SIP websocket at {self.sip_cfg["WebsocketURI"]}')
-        self.ws = await websockets.connect(
-            self.sip_cfg['WebsocketURI'],
-            user_agent_header=self.sip_cfg['WebsocketHeaders'],
-            origin=self.sip_cfg['WebsocketOrigin'],
-            subprotocols=['sip'],
-            ping_interval=None,
-        )
-        self.logger.debug('SIP websocket connected.')
-
-    async def make_local_sdp(self, replace_audio: bool = False) -> str:
-        self.logger.debug('Creating local SDP offer.')
-        await self.webrtc.create_offer(replace_audio=replace_audio)
-        await self.webrtc.wait_for_local_description()
-        while self.webrtc.pc.iceGatheringState != 'complete':
-            await asyncio.sleep(0.1)
-        sdp = self.webrtc.pc.localDescription.sdp
-        self.logger.debug(f'Local SDP offer created:\n{sdp}')
-        return sdp
+        try:
+            self.logger.debug(f'Connecting to SIP websocket at {self.sip_cfg["WebsocketURI"]}')
+            self.ws = await websockets.connect(
+                self.sip_cfg['WebsocketURI'],
+                user_agent_header=self.sip_cfg['WebsocketHeaders'],
+                origin=self.sip_cfg['WebsocketOrigin'],
+                subprotocols=['sip'],
+                ping_interval=None,
+            )
+            self.logger.debug('SIP websocket connected.')
+        except Exception as e:
+            self.logger.error(f"Error connecting to SIP websocket: {e}", exc_info=True)
+            raise
 
     def build_invite(self, local_sdp: str, auth: str | None = None) -> SIPMessage:
-        self.logger.debug('Building SIP INVITE message.')
-        self.call_id = self.call_id or _rand_string(16)
-        self.cseq = self.cseq or 1
-        self.branch = self.branch or _gen_branch()
-        self.tag = self.tag or _rand_string(8)
-        msg = SIPMessage()
-        msg.method = 'INVITE'
-        msg.uri = self.sip_cfg['CalleeURI']
-        msg.set_header('Via', f'SIP/2.0/WSS {self.rand_host};branch={self.branch}')
-        msg.set_header('Max-Forwards', '70')
-        msg.set_header('To', f'<{self.sip_cfg["CalleeURI"]}>')
-        msg.set_header('From', f'<{self.sip_cfg["CallerURI"]}>;tag={self.tag}')
-        msg.set_header('Call-ID', self.call_id)
-        msg.set_header('CSeq', f'{self.cseq} INVITE')
-        msg.set_header('Contact', f'<sip:{self.sip_cfg["CallerURI"].split(":")[1].split("@")[0]}@{self.rand_host};transport=ws>')
-        msg.set_header('User-Agent', self.sip_cfg.get('UserAgent', 'PythonSIP/1.0'))
-        msg.set_header('Supported', 'outbound')
-        msg.set_header('Content-Type', 'application/sdp')
-        msg.set_header('Content-Length', str(len(local_sdp)))
-        if auth:
-            msg.set_header('Proxy-Authorization', auth)
-        msg.body = local_sdp
-        self.logger.debug(f'SIP INVITE message built:\n{msg.build()}')
-        return msg
+        try:
+            self.logger.debug('Building SIP INVITE message.')
+            self.call_id = self.call_id or _rand_string(16)
+            self.cseq = self.cseq or 1
+            self.branch = self.branch or _gen_branch()
+            self.tag = self.tag or _rand_string(8)
+            msg = SIPMessage()
+            msg.method = 'INVITE'
+            msg.uri = self.sip_cfg['CalleeURI']
+            msg.set_header('Via', f'SIP/2.0/WSS {self.rand_host};branch={self.branch}')
+            msg.set_header('Max-Forwards', '70')
+            msg.set_header('To', f'<{self.sip_cfg["CalleeURI"]}>')
+            msg.set_header('From', f'<{self.sip_cfg["CallerURI"]}>;tag={self.tag}')
+            msg.set_header('Call-ID', self.call_id)
+            msg.set_header('CSeq', f'{self.cseq} INVITE')
+            msg.set_header('Contact', f'<sip:{self.sip_cfg["CallerURI"].split(":")[1].split("@")[0]}@{self.rand_host};transport=ws>')
+            msg.set_header('User-Agent', self.sip_cfg.get('UserAgent', 'PythonSIP/1.0'))
+            msg.set_header('Supported', 'outbound')
+            msg.set_header('Content-Type', 'application/sdp')
+            msg.set_header('Content-Length', str(len(local_sdp)))
+            if auth:
+                msg.set_header('Proxy-Authorization', auth)
+            msg.body = local_sdp
+            self.logger.debug(f'SIP INVITE message built:\n{msg.build()}')
+            return msg
+        except Exception as e:
+            self.logger.error(f"Error building SIP INVITE: {e}", exc_info=True)
+            raise
 
     def build_ack(self) -> SIPMessage:
-        self.logger.debug('Building SIP ACK message.')
-        msg = SIPMessage()
-        msg.method = 'ACK'
-        msg.uri = self.sip_cfg['CalleeURI']
-        msg.set_header('Via', f'SIP/2.0/WSS {self.rand_host};branch={_gen_branch()}')
-        msg.set_header('Max-Forwards', '70')
-        to = f'<{self.sip_cfg["CalleeURI"]}>'
-        if self.to_tag:
-            to += f';tag={self.to_tag}'
-        msg.set_header('To', to)
-        msg.set_header('From', f'<{self.sip_cfg["CallerURI"]}>;tag={self.tag}')
-        msg.set_header('Call-ID', self.call_id)
-        msg.set_header('CSeq', f'{self.cseq} ACK')
-        msg.set_header('Contact', f'<sip:{self.sip_cfg["CallerURI"].split(":")[1].split("@")[0]}@{self.rand_host};transport=ws>')
-        msg.set_header('User-Agent', self.sip_cfg.get('UserAgent', 'PythonSIP/1.0'))
-        msg.set_header('Supported', 'outbound')
-        msg.set_header('Content-Length', '0')
-        for rr in self.route_set:
-            msg.add_header('Record-Route', rr)
-        self.logger.debug(f'SIP ACK message built:\n{msg.build()}')
-        return msg
+        try:
+            self.logger.debug('Building SIP ACK message.')
+            msg = SIPMessage()
+            msg.method = 'ACK'
+            msg.uri = self.sip_cfg['CalleeURI']
+            msg.set_header('Via', f'SIP/2.0/WSS {self.rand_host};branch={_gen_branch()}')
+            msg.set_header('Max-Forwards', '70')
+            to = f'<{self.sip_cfg["CalleeURI"]}>'
+            if self.to_tag:
+                to += f';tag={self.to_tag}'
+            msg.set_header('To', to)
+            msg.set_header('From', f'<{self.sip_cfg["CallerURI"]}>;tag={self.tag}')
+            msg.set_header('Call-ID', self.call_id)
+            msg.set_header('CSeq', f'{self.cseq} ACK')
+            msg.set_header('Contact', f'<sip:{self.sip_cfg["CallerURI"].split(":")[1].split("@")[0]}@{self.rand_host};transport=ws>')
+            msg.set_header('User-Agent', self.sip_cfg.get('UserAgent', 'PythonSIP/1.0'))
+            msg.set_header('Supported', 'outbound')
+            msg.set_header('Content-Length', '0')
+            for rr in self.route_set:
+                msg.add_header('Record-Route', rr)
+            self.logger.debug(f'SIP ACK message built:\n{msg.build()}')
+            return msg
+        except Exception as e:
+            self.logger.error(f"Error building SIP ACK: {e}", exc_info=True)
+            raise
 
     def build_bye(self) -> SIPMessage:
-        self.logger.debug('Building SIP BYE message.')
-        msg = self.build_ack()
-        msg.method = 'BYE'
-        msg.set_header('CSeq', f'{self.cseq + 1} BYE')
-        self.logger.debug(f'SIP BYE message built:\n{msg.build()}')
-        return msg
+        try:
+            self.logger.debug('Building SIP BYE message.')
+            msg = self.build_ack()
+            msg.method = 'BYE'
+            msg.set_header('CSeq', f'{self.cseq + 1} BYE')
+            self.logger.debug(f'SIP BYE message built:\n{msg.build()}')
+            return msg
+        except Exception as e:
+            self.logger.error(f"Error building SIP BYE: {e}", exc_info=True)
+            raise
 
     def build_message(self, payload: str) -> SIPMessage:
-        self.logger.debug(f'Building SIP MESSAGE with payload: {payload!r}')
-        msg = SIPMessage()
-        msg.method = 'MESSAGE'
-        msg.uri = self.sip_cfg['CalleeURI']
-        msg.set_header('Via', f'SIP/2.0/WSS {self.rand_host};branch={_gen_branch()}')
-        msg.set_header('Max-Forwards', '70')
-        msg.set_header('To', f'<{self.sip_cfg["CalleeURI"]}>')
-        msg.set_header('From', f'<{self.sip_cfg["CallerURI"]}>;tag={_rand_string(8)}')
-        msg.set_header('Call-ID', _rand_string(16))
-        msg.set_header('CSeq', '1 MESSAGE')
-        caller_user = str(self.sip_cfg['CallerURI']).split(':')[1].split('@')[0]
-        msg.set_header('Contact', f'<sip:{caller_user}@{self.rand_host};transport=ws>')
-        msg.set_header('User-Agent', self.sip_cfg.get('UserAgent', 'PythonSIP/1.0'))
-        msg.set_header('Supported', 'outbound')
-        msg.set_header('Content-Type', 'text/plain')
-        msg.set_header('Content-Length', str(len(payload)))
-        msg.body = payload
-        self.logger.debug(f'SIP MESSAGE built:\n{msg.build()}')
-        return msg
+        try:
+            self.logger.debug(f'Building SIP MESSAGE with payload: {payload!r}')
+            msg = SIPMessage()
+            msg.method = 'MESSAGE'
+            msg.uri = self.sip_cfg['CalleeURI']
+            msg.set_header('Via', f'SIP/2.0/WSS {self.rand_host};branch={_gen_branch()}')
+            msg.set_header('Max-Forwards', '70')
+            msg.set_header('To', f'<{self.sip_cfg["CalleeURI"]}>')
+            msg.set_header('From', f'<{self.sip_cfg["CallerURI"]}>;tag={_rand_string(8)}')
+            msg.set_header('Call-ID', _rand_string(16))
+            msg.set_header('CSeq', '1 MESSAGE')
+            caller_user = str(self.sip_cfg['CallerURI']).split(':')[1].split('@')[0]
+            msg.set_header('Contact', f'<sip:{caller_user}@{self.rand_host};transport=ws>')
+            msg.set_header('User-Agent', self.sip_cfg.get('UserAgent', 'PythonSIP/1.0'))
+            msg.set_header('Supported', 'outbound')
+            msg.set_header('Content-Type', 'text/plain')
+            msg.set_header('Content-Length', str(len(payload)))
+            msg.body = payload
+            self.logger.debug(f'SIP MESSAGE built:\n{msg.build()}')
+            return msg
+        except Exception as e:
+            self.logger.error(f"Error building SIP MESSAGE: {e}", exc_info=True)
+            raise
 
     async def write_websocket(self, msg: SIPMessage):
-        msg_str = msg.build().replace('WebRTC-UDP', '"WebRTC-UDP"')
-        self.logger.debug(f'Sending SIP message:\n{msg_str}')
-        await self.ws.send(msg_str)
+        try:
+            msg_str = msg.build().replace('WebRTC-UDP', '"WebRTC-UDP"')
+            self.logger.debug(f'Sending SIP message:\n{msg_str}')
+            await self.ws.send(msg_str)
+        except Exception as e:
+            self.logger.error(f"Error writing to SIP websocket: {e}", exc_info=True)
+            raise
 
     async def read_websocket(self) -> SIPMessage:
-        self.logger.debug('Waiting for SIP response from websocket...')
-        msg = await asyncio.wait_for(self.ws.recv(), timeout=self.timeout)
-        self.logger.debug(f'Got SIP response:\n{msg}')
-        return SIPMessage(msg)
+        try:
+            self.logger.debug('Waiting for SIP response from websocket...')
+            msg = await asyncio.wait_for(self.ws.recv(), timeout=self.timeout)
+            self.logger.debug(f'Got SIP response:\n{msg}')
+            return SIPMessage(msg)
+        except Exception as e:
+            self.logger.error(f"Error reading from SIP websocket: {e}", exc_info=True)
+            raise
 
     async def send_ack(self):
-        self.logger.debug('Sending SIP ACK.')
-        ack = self.build_ack()
-        await self.write_websocket(ack)
+        try:
+            self.logger.debug('Sending SIP ACK.')
+            ack = self.build_ack()
+            await self.write_websocket(ack)
+        except Exception as e:
+            self.logger.error(f"Error sending SIP ACK: {e}", exc_info=True)
+            raise
 
-    async def start(self, replace_audio: bool = False) -> str:
+    async def start(self) -> str:
         self.logger.debug('Starting SIPWebRTCManager session.')
         await self.connect_websocket()
         try:
             local_sdp = self.sip_cfg.get('SDP')
-            if local_sdp:
-                await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=local_sdp, type='offer'))
-            else:
-                local_sdp = await self.make_local_sdp(replace_audio=replace_audio)
+            await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=local_sdp, type='offer'))
             self.call_id = _rand_string(16)
             self.cseq = 1
             self.branch = _gen_branch()
@@ -396,15 +449,12 @@ class SIPWebRTCManager:
             self.logger.debug(f'Received remote SDP:\n{sdp}')
             sdp = clean_sdp(sdp)
             self.logger.debug(f'Cleaned remote SDP:\n{sdp}')
-            if self.sip_cfg.get('SDP'):
-                await self.webrtc.pc.setLocalDescription(RTCSessionDescription(sdp=sdp, type='answer'))
-            else:
-                await self.webrtc.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='answer'))
+            await self.webrtc.pc.setLocalDescription(RTCSessionDescription(sdp=sdp, type='answer'))
             await self.send_ack()
-            if not self.sip_cfg.get('SDP'):
-                self.logger.debug('Starting talk session.')
+            if self.auto_start_talk:
+                self.logger.debug('Auto-starting talk.')
                 await self.start_talk()
-                asyncio.create_task(self.keepalive_loop())
+                self.keepalive_task = asyncio.create_task(self.keepalive_loop())
             async with self.invite_resp_lock:
                 self.invite_resp = resp
             self.logger.debug('SIPWebRTCManager session started successfully.')
@@ -416,50 +466,77 @@ class SIPWebRTCManager:
 
     async def keepalive_loop(self):
         self.logger.debug('Starting SIP keepalive loop.')
-        while True:
-            await asyncio.sleep(30)
-            msg = self.build_message('keepAlive')
-            await self.write_websocket(msg)
-            resp = await self.read_websocket()
-            if resp.status_code != 202:
-                self.logger.warning('Did not receive 202 Accepted for keepAlive')
-                break
+        try:
+            while True:
+                await asyncio.sleep(30)
+                msg = self.build_message('keepAlive')
+                await self.write_websocket(msg)
+                resp = await self.read_websocket()
+                if resp.status_code != 202:
+                    self.logger.warning('Did not receive 202 Accepted for keepAlive')
+                    break
+        except Exception as e:
+            self.logger.error(f"Error in keepalive loop: {e}", exc_info=True)
 
     async def add_ice_candidate(self, candidate: dict):
-        await self.webrtc.add_ice_candidate(candidate)
+        try:
+            await self.webrtc.add_ice_candidate(candidate)
+        except Exception as e:
+            self.logger.error(f"Error adding ICE candidate: {e}", exc_info=True)
+            raise
 
     async def close(self):
         self.logger.debug('Closing SIPWebRTCManager session.')
-        async with self.invite_resp_lock:
-            if self.invite_resp:
-                bye = self.build_bye()
+        try:
+            if self.keepalive_task:
+                self.logger.debug('Cancelling keepalive loop.')
+                self.keepalive_task.cancel()
                 try:
-                    await self.write_websocket(bye)
-                    self.logger.debug('Sent BYE message.')
-                except Exception as e:
-                    self.logger.warning(f'Exception sending BYE: {e}')
-        if self.ws:
-            await self.ws.close()
-            self.logger.debug('Websocket closed.')
-        await self.webrtc.close()
-        self.logger.debug('WebRTC manager closed.')
+                    await self.keepalive_task
+                except asyncio.CancelledError:
+                    self.logger.debug('Keepalive loop cancelled.')
+                self.keepalive_task = None
+            async with self.invite_resp_lock:
+                if self.invite_resp:
+                    bye = self.build_bye()
+                    try:
+                        await self.write_websocket(bye)
+                        self.logger.debug('Sent BYE message.')
+                    except Exception as e:
+                        self.logger.warning(f'Exception sending BYE: {e}')
+            if self.ws:
+                await self.ws.close()
+                self.logger.debug('Websocket closed.')
+            await self.webrtc.close()
+            self.logger.debug('WebRTC manager closed.')
+        except Exception as e:
+            self.logger.error(f"Error closing SIPWebRTCManager: {e}", exc_info=True)
+            raise
 
     async def start_talk(self):
-        payload = f'deviceId:{self.sip_cfg["DeviceID"]};startTalk'
-        self.logger.debug(f'Sending startTalk message: {payload!r}')
-        msg = self.build_message(payload)
-        await self.write_websocket(msg)
-        resp = await self.read_websocket()
-        if resp.status_code != 202:
-            raise Exception(f'Did not receive 202 Accepted for startTalk, got {resp.status_code}')
-        self.logger.debug('startTalk accepted.')
+        try:
+            payload = f'deviceId:{self.sip_cfg["DeviceID"]};startTalk'
+            self.logger.debug(f'Sending startTalk message: {payload!r}')
+            msg = self.build_message(payload)
+            await self.write_websocket(msg)
+            resp = await self.read_websocket()
+            if resp.status_code not in (200, 202):
+                raise Exception(f'Did not receive 200 OK or 202 Accepted for startTalk, got {resp.status_code}')
+            self.logger.debug('startTalk accepted.')
+        except Exception as e:
+            self.logger.error(f"Error in start_talk: {e}", exc_info=True)
+            raise
 
     async def stop_talk(self):
-        payload = f'deviceId:{self.sip_cfg["DeviceID"]};stopTalk'
-        self.logger.debug(f'Sending stopTalk message: {payload!r}')
-        msg = self.build_message(payload)
-        await self.write_websocket(msg)
-        resp = await self.read_websocket()
-        if resp.status_code != 202:
-            raise Exception(f'Did not receive 202 Accepted for stopTalk, got {resp.status_code}')
-        self.logger.debug('stopTalk accepted.')
+        try:
+            payload = f'deviceId:{self.sip_cfg["DeviceID"]};stopTalk'
+            self.logger.debug(f'Sending stopTalk message: {payload!r}')
+            msg = self.build_message(payload)
+            await self.write_websocket(msg)
+            resp = await self.read_websocket()
+            if resp.status_code not in (200, 202):
+                raise Exception(f'Did not receive 200 OK or 202 Accepted for stopTalk, got {resp.status_code}')
+            self.logger.debug('stopTalk accepted.')
+        except Exception as e:
+            self.logger.error(f"Error in stop_talk: {e}", exc_info=True)
+            raise

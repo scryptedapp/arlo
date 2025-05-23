@@ -19,6 +19,7 @@ from scrypted_sdk.types import (
     Charger,
     Device,
     DeviceProvider,
+    Intercom,
     MediaObject,
     MotionSensor,
     ObjectDetectionTypes,
@@ -38,15 +39,13 @@ from scrypted_sdk.types import (
 )
 
 from .base import ArloDeviceBase
+from .intercom import ArloIntercom
 from .light import ArloBaseLight, ArloSpotlight, ArloFloodlight, ArloNightlight
 from .logging import TCPLogServer
 from .vss import ArloBaseVirtualSecuritySystem, ArloSirenVirtualSecuritySystem
 from .webrtc_sip import (
-    ArloCameraIntercomSession,
-    ArloCameraSIPIntercomSession,
-    ArloCameraWebRTCIntercomSession,
-    ArloCameraRTCSessionControl,
-    ArloCameraRTCSignalingSession,
+    ArloCameraWebRTCSignalingSession,
+    ArloCameraWebRTCSessionControl,
     RTCSignalingSession,
 )
 
@@ -64,8 +63,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     ARLO_TO_SCRYPTED_BRIGHTNESS_MAP = {v: k for k, v in SCRYPTED_TO_ARLO_BRIGHTNESS_MAP.items()}
 
     timeout: int = 30
-    intercom_session: ArloCameraIntercomSession = None
+    intercom: ArloIntercom = None
     light: ArloBaseLight = None
+    speaker: Intercom = None
     svss: ArloBaseVirtualSecuritySystem = None
     picture_lock: asyncio.Lock = None
     last_picture: bytes = None
@@ -230,6 +230,16 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 native_id=self.svss.nativeId,
             ))
             results.extend(self.svss.get_builtin_child_device_manifests())
+        if self.has_push_to_talk:
+            if not self.intercom:
+                self._create_intercom()
+            results.append(self.intercom.get_device_manifest(
+                name=f'{self.arlo_device["deviceName"]} Intercom',
+                interfaces=self.intercom.get_applicable_interfaces(),
+                device_type=self.intercom.get_device_type(),
+                provider_native_id=self.nativeId,
+                native_id=self.intercom.nativeId,
+            ))
         return results
 
     @property
@@ -499,19 +509,28 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return await scrypted_sdk.mediaManager.createFFmpegMediaObject(ffmpeg_input)
 
     async def startIntercom(self, media: MediaObject) -> None:
-        self.logger.info('Starting intercom')
-        if self.uses_sip_push_to_talk:
-            self.intercom_session = ArloCameraSIPIntercomSession(self)
-        else:
-            self.intercom_session = ArloCameraWebRTCIntercomSession(self)
-        await self.intercom_session.initialize_push_to_talk(media)
-        self.logger.info('Intercom initialized')
+        try:
+            self.logger.debug("startIntercom called.")
+            if not self.speaker:
+                self.logger.debug("Speaker not initialized, creating speaker from intercom.")
+                self.speaker = self.intercom.speaker()
+            self.logger.debug("Calling speaker.startIntercom.")
+            await self.speaker.startIntercom(media)
+            self.logger.debug("speaker.startIntercom completed successfully.")
+        except Exception as e:
+            self.logger.error(f"Error in startIntercom: {e}", exc_info=True)
 
     async def stopIntercom(self) -> None:
-        self.logger.info('Stopping intercom')
-        if self.intercom_session is not None:
-            await self.intercom_session.shutdown()
-            self.intercom_session = None
+        try:
+            self.logger.debug("stopIntercom called.")
+            if not self.speaker:
+                self.logger.debug("Speaker not initialized, creating speaker from intercom.")
+                self.speaker = self.intercom.speaker()
+            self.logger.debug("Calling speaker.stopIntercom.")
+            await self.speaker.stopIntercom()
+            self.logger.debug("speaker.stopIntercom completed successfully.")
+        except Exception as e:
+            self.logger.error(f"Error in stopIntercom: {e}", exc_info=True)
 
     async def getVideoClip(self, videoId: str) -> MediaObject:
         self.logger.info(f'Getting video clip {videoId}')
@@ -578,6 +597,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             if not self.svss:
                 self._create_svss()
             return self.svss
+        if nativeId.endswith('intercom') and self.has_push_to_talk:
+            if not self.intercom:
+                self._create_intercom()
+            return self.intercom
         return None
 
     def _create_light(self) -> None:
@@ -595,6 +618,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if self.has_siren:
             svss_id = f'{self.arlo_device["deviceId"]}.svss'
             self.svss = ArloSirenVirtualSecuritySystem(svss_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+
+    def _create_intercom(self) -> None:
+        if self.has_push_to_talk:
+            intercom_id = f'{self.arlo_device["deviceId"]}.intercom'
+            self.intercom = ArloIntercom(intercom_id, self.arlo_device, self.arlo_basestation, self.provider, self)
 
     async def getDetectionInput(self, detectionId: str, eventId: str = None) -> MediaObject:
         return await self.getVideoClipThumbnail(detectionId, no_cache=True)
@@ -624,46 +652,37 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         self.provider.arlo.brightness_set(self.arlo_basestation, self.arlo_device, ArloCamera.SCRYPTED_TO_ARLO_BRIGHTNESS_MAP[brightness])
 
     async def startRTCSignalingSession(self, scrypted_session: RTCSignalingSession):
-        self.logger.debug('Starting RTC signaling session.')
-        plugin_session = ArloCameraRTCSignalingSession(self)
-        await plugin_session.delayed_init()
-        plugin_session.scrypted_session = scrypted_session
-        raw_ice_servers: list[dict] = plugin_session.sip_info['iceServers']['data']
-        ice_servers = [
-            {
-                'urls': [f'{ice_server["type"]}:{ice_server["domain"]}:{ice_server["port"]}'],
-                'username': ice_server.get('username'),
-                'credential': ice_server.get('credential'),
-            }
-            for ice_server in raw_ice_servers
-        ]
-        self.logger.debug(f'ICE servers from plugin session: {ice_servers}')
-        scrypted_setup = {
-            'type': 'offer',
-            'audio': {'direction': 'sendrecv'},
-            'video': {'direction': 'recvonly'},
-            'configuration': {
-                'iceServers': ice_servers,
-                'iceCandidatePoolSize': 0,
-            }
-        }
-        plugin_setup = {}
         try:
-            self.logger.debug('Creating local description (offer) with Scrypted session.')
-            scrypted_offer = await asyncio.wait_for(
-                scrypted_session.createLocalDescription('offer', scrypted_setup),
-                timeout=3
-            )
-        except asyncio.TimeoutError:
-            self.logger.warning('Timeout waiting for Scrypted offer, using ignore_trickle fallback.')
-            async def ignore_trickle(c): pass
-            scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
-        self.logger.debug(f'Received Scrypted offer: {scrypted_offer}')
-        await plugin_session.setRemoteDescription(scrypted_offer, plugin_setup)
-        self.logger.debug('Creating local description (answer) with plugin session.')
-        plugin_answer = await plugin_session.createLocalDescription('answer', plugin_setup)
-        self.logger.info(f'Scrypted answer sdp:\n{plugin_answer["sdp"]}')
-        self.logger.debug('Setting remote description on Scrypted session.')
-        await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
-        self.logger.debug('RTC signaling session complete, returning session control.')
-        return ArloCameraRTCSessionControl(plugin_session)
+            self.logger.debug("Starting RTC signaling session.")
+            plugin_session = ArloCameraWebRTCSignalingSession(self)
+            await plugin_session.delayed_init()
+            plugin_session.scrypted_session = scrypted_session
+            scrypted_setup = {
+                'type': 'offer',
+                'audio': {'direction': 'sendrecv'},
+                'video': {'direction': 'recvonly'},
+                'configuration': {
+                    'iceServers': plugin_session.ice_servers,
+                    'iceCandidatePoolSize': 0,
+                }
+            }
+            try:
+                scrypted_offer = await asyncio.wait_for(
+                    scrypted_session.createLocalDescription('offer', scrypted_setup),
+                    timeout=3
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning("Timeout waiting for ICE candidates, falling back to ignore trickle.")
+                async def ignore_trickle(c): pass
+                scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
+            self.logger.debug("Setting remote description on plugin session.")
+            await plugin_session.setRemoteDescription(scrypted_offer)
+            self.logger.debug("Creating local description (answer) from plugin session.")
+            plugin_answer = await plugin_session.createLocalDescription()
+            self.logger.debug("Setting remote description (answer) on Scrypted session.")
+            await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
+            self.logger.debug("RTC signaling session established successfully.")
+            return ArloCameraWebRTCSessionControl(plugin_session)
+        except Exception as e:
+            self.logger.error(f"Error in startRTCSignalingSession: {e}", exc_info=True)
+            raise
