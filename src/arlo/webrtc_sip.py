@@ -4,7 +4,7 @@ import asyncio
 
 from typing import Callable, Protocol, TYPE_CHECKING
 
-from .client import SIPWebRTCManager, USER_AGENTS
+from .client import SIPManager, USER_AGENTS
 from .util import BackgroundTaskMixin
 
 if TYPE_CHECKING:
@@ -54,6 +54,53 @@ class BaseArloSignalingSession(BackgroundTaskMixin):
             formatted.append(entry)
         self.ice_servers = formatted
 
+    def _patch_sdp(self, sdp: str) -> str:
+        def parse_sections(sdp: str):
+            lines = sdp.splitlines()
+            header = []
+            sections = []
+            current = []
+            for line in lines:
+                if line.startswith('m='):
+                    if current:
+                        sections.append(current)
+                    current = [line]
+                elif not sections and not current:
+                    header.append(line)
+                else:
+                    current.append(line)
+            if current:
+                sections.append(current)
+            return header, sections
+        header, sections = parse_sections(sdp)
+        patched_sections = []
+        section: list[list[str]] = []
+        for i, section in enumerate(sections):
+            mline = section[0]
+            is_rejected = str(mline).split()[1] == '0'
+            has_mid = any(str(l).startswith('a=mid:') for l in section)
+            if not has_mid:
+                c_idx = next((j for j, l in enumerate(section) if str(l).startswith('c=')), None)
+                insert_at = c_idx + 1 if c_idx is not None else 1
+                section.insert(insert_at, f'a=mid:{i}')
+            if is_rejected:
+                minimal = [section[0]]
+                c_line = next((l for l in section if str(l).startswith('c=')), None)
+                if c_line:
+                    minimal.append(c_line)
+                mid_line = next((l for l in section if str(l).startswith('a=mid:')), None)
+                if mid_line:
+                    minimal.append(mid_line)
+                minimal.append('a=inactive')
+                patched_sections.append(minimal)
+            else:
+                patched_sections.append(section)
+        patched_sdp = '\r\n'.join(header)
+        for section in patched_sections:
+            patched_sdp += '\r\n' + '\r\n'.join(section)
+        patched_sdp += '\r\n'
+        return patched_sdp
+
     async def close(self):
         raise NotImplementedError("Subclasses must implement close() method.")
 
@@ -71,7 +118,7 @@ class BaseArloSessionControl:
 class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
     def __init__(self, camera: ArloCamera) -> None:
         super().__init__(camera)
-        self.arlo_sip: SIPWebRTCManager = None
+        self.arlo_sip: SIPManager = None
         self.sip_info: dict = None
 
     async def delayed_init(self):
@@ -89,7 +136,7 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
         try:
             self.logger.debug("Setting remote description for camera WebRTC session.")
             sip_call_info = self.sip_info['sipCallInfo']
-            cleaned_offer_sdp = self._clean_sdp(offer['sdp'])
+            offer_sdp = self._clean_sdp(offer['sdp'])
             sip_cfg = {
                 'DeviceID': sip_call_info['deviceId'],
                 'CallerURI': f'sip:{sip_call_info["id"]}@{sip_call_info["domain"]}:{sip_call_info["port"]}',
@@ -101,14 +148,13 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
                 'WebsocketHeaders': {
                     'User-Agent': USER_AGENTS['firefox']
                 },
-                'SDP': cleaned_offer_sdp,
+                'SDP': offer_sdp,
             }
-            self.arlo_sip = SIPWebRTCManager(
+            self.arlo_sip = SIPManager(
                 self.logger,
-                self.ice_servers,
                 sip_cfg,
             )
-            self.logger.debug("SIPWebRTCManager initialized for camera session.")
+            self.logger.debug("SIPManager initialized for camera session.")
         except Exception as e:
             self.logger.error(f"Error in setRemoteDescription: {e}", exc_info=True)
             raise
@@ -117,10 +163,11 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
         try:
             self.logger.debug("Creating local description (answer) for camera WebRTC session.")
             answer_sdp = await self.arlo_sip.start()
-            cleaned_answer_sdp = self._clean_sdp(answer_sdp)
+            answer_sdp = self._patch_sdp(answer_sdp)
+            answer_sdp = self._clean_sdp(answer_sdp)
             self.logger.debug("Local description (answer) created successfully.")
             return {
-                'sdp': cleaned_answer_sdp,
+                'sdp': answer_sdp,
                 'type': 'answer'
             }
         except Exception as e:
@@ -141,7 +188,7 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
 class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
     def __init__(self, arlo_session: ArloCameraWebRTCSignalingSession) -> None:
         super().__init__(arlo_session)
-        self.arlo_sip: SIPWebRTCManager = arlo_session.arlo_sip
+        self.arlo_sip: SIPManager = arlo_session.arlo_sip
 
     async def setPlayback(self, options):
         try:
@@ -179,8 +226,9 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
 
     def _start_sdp_answer_subscription(self) -> None:
         def callback(sdp):
-            async def async_callback():
+            async def async_callback(sdp=sdp):
                 try:
+                    sdp = self._patch_sdp(sdp)
                     self.answer = {'sdp': sdp, 'type': 'answer'}
                 except Exception as e:
                     self.logger.error(f"Error in SDP answer subscription: {e}", exc_info=True)
@@ -220,9 +268,10 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
     async def setRemoteDescription(self, offer) -> None:
         try:
             self.logger.debug("Setting remote description for intercom WebRTC session.")
+            offer_sdp = offer['sdp']
             await self.provider.arlo.notify_push_to_talk_offer_sdp(
                 self.arlo_basestation, self.arlo_device,
-                self.session_id, offer['sdp']
+                self.session_id, offer_sdp
             )
             self.logger.debug("Remote description set and push-to-talk offer notified.")
         except Exception as e:
@@ -242,7 +291,7 @@ class ArloIntercomWebRTCSessionControl(BaseArloSessionControl):
 class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
     def __init__(self, intercom: ArloIntercom) -> None:
         super().__init__(intercom)
-        self.arlo_sip: SIPWebRTCManager = None
+        self.arlo_sip: SIPManager = None
         self.sip_info: dict = None
 
     async def delayed_init(self) -> None:
@@ -260,7 +309,7 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
         try:
             self.logger.debug("Setting remote description for intercom SIP session.")
             sip_call_info: dict = self.sip_info['sipCallInfo']
-            cleaned_offer_sdp = self._clean_sdp(offer['sdp'])
+            offer_sdp = self._clean_sdp(offer['sdp'])
             sip_cfg = {
                 'DeviceID': self.arlo_device['deviceId'],
                 'CallerURI': f'sip:{sip_call_info["id"]}@{sip_call_info["domain"]}:{sip_call_info["port"]}',
@@ -272,15 +321,13 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
                 'WebsocketHeaders': {
                     'User-Agent': USER_AGENTS['linux']
                 },
-                'SDP': cleaned_offer_sdp,
+                'SDP': offer_sdp,
             }
-            self.arlo_sip = SIPWebRTCManager(
+            self.arlo_sip = SIPManager(
                 self.logger,
-                self.ice_servers,
                 sip_cfg,
-                True,
             )
-            self.logger.debug("SIPWebRTCManager initialized for intercom SIP session.")
+            self.logger.debug("SIPManager initialized for intercom SIP session.")
         except Exception as e:
             self.logger.error(f"Error in setRemoteDescription: {e}", exc_info=True)
             raise
@@ -288,11 +335,12 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
     async def createLocalDescription(self) -> dict:
         try:
             self.logger.debug("Creating local description (answer) for intercom SIP session.")
-            answer_sdp = await self.arlo_sip.start()
-            cleaned_answer_sdp = self._clean_sdp(answer_sdp)
+            sdp = await self.arlo_sip.start()
+            sdp = self._patch_sdp(sdp)
+            sdp = self._clean_sdp(sdp)
             self.logger.debug("Local description (answer) created successfully.")
             return {
-                'sdp': cleaned_answer_sdp,
+                'sdp': sdp,
                 'type': 'answer'
             }
         except Exception as e:

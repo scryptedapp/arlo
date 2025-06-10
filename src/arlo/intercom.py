@@ -71,10 +71,12 @@ class ArloIntercom(ArloDeviceBase):
                         self.logger.warning("Timeout waiting for ICE candidates, falling back to ignore trickle.")
                         async def ignore_trickle(c): pass
                         scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
+                    self.logger.debug(f"Setting local description with offer: {scrypted_offer['sdp']}")
                     await plugin_session.setRemoteDescription(scrypted_offer)
                     self.logger.debug("Waiting for local description to be set by plugin session.")
                     while not plugin_session.answer:
                         await asyncio.sleep(0.1)
+                    self.logger.debug(f"Setting remote description with answer: {plugin_session.answer['sdp']}")
                     await scrypted_session.setRemoteDescription(plugin_session.answer, scrypted_setup)
                     self.logger.debug("WebRTC signaling session established.")
                     return ArloIntercomWebRTCSessionControl(plugin_session)
@@ -84,6 +86,7 @@ class ArloIntercom(ArloDeviceBase):
             else:
                 try:
                     try:
+                        self.logger.debug("Creating local description with ICE candidate trickle.")
                         scrypted_offer = await asyncio.wait_for(
                             scrypted_session.createLocalDescription('offer', scrypted_setup),
                             timeout=3
@@ -92,9 +95,13 @@ class ArloIntercom(ArloDeviceBase):
                         self.logger.warning("Timeout waiting for ICE candidates, falling back to ignore trickle.")
                         async def ignore_trickle(c): pass
                         scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
+                    self.logger.debug(f"Setting local description with offer: {scrypted_offer['sdp']}")
                     await plugin_session.setRemoteDescription(scrypted_offer)
+                    self.logger.debug("Waiting for local description to be set by plugin session.")
                     plugin_answer = await plugin_session.createLocalDescription()
+                    self.logger.debug(f"Setting remote description with answer: {plugin_answer['sdp']}")
                     await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
+                    await plugin_session.arlo_sip.auto_start_talk()
                     self.logger.debug("SIP signaling session established.")
                     return ArloIntercomSIPSessionControl(plugin_session)
                 except Exception as e:
