@@ -17,17 +17,19 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     nativeId: str = None
     arlo_device: dict = None
     arlo_basestation: dict = None
+    arlo_properties: dict = None
     arlo_capabilities: dict = None
     arlo_smart_features: dict = None
     provider: ArloProvider = None
     stop_subscriptions: bool | None = None
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, auto_init: bool = True) -> None:
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, auto_init: bool = True) -> None:
         super().__init__(nativeId=nativeId)
         self.logger_name = nativeId
         self.nativeId = nativeId
         self.arlo_device = arlo_device
         self.arlo_basestation = arlo_basestation
+        self.arlo_properties = arlo_properties
         self.provider = provider
         self.logger.setLevel(self.provider.get_current_log_level())
         self._ready_event = asyncio.Event()
@@ -48,10 +50,10 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
                 self._ready_event.set()
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloBaseDevice {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error('Delayed init exceeded iteration limit, giving up')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseDevice {self.nativeId}, giving up.')
             self._ready_event.set()
             return
 
@@ -94,9 +96,8 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
                 provider_native_id = parent_id
             if provider_native_id in getattr(self.provider, 'hidden_device_ids', []):
                 provider_native_id = None
-        properties: dict = self.arlo_device.get('properties', {})
         info = {
-            'model': f'{self.arlo_device["modelId"]} {str(properties.get("hwVersion", "")).replace(self.arlo_device.get("modelId", ""), "") if properties else ""}'.strip(),
+            'model': f'{self.arlo_device["modelId"]} {str(self.arlo_properties.get("hwVersion", "")).replace(self.arlo_device.get("modelId", ""), "") if self.arlo_properties else ""}'.strip(),
             'manufacturer': 'Arlo',
             'firmware': self.arlo_device.get('firmwareVersion'),
             'serialNumber': self.arlo_device['deviceId'],

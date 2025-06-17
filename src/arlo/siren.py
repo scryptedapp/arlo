@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 class ArloSiren(ArloDeviceBase, OnOff):
     svss: ArloSirenVirtualSecuritySystem = None
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, svss: ArloSirenVirtualSecuritySystem) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, svss: ArloSirenVirtualSecuritySystem) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.svss = svss
 
     def get_applicable_interfaces(self) -> list[str]:

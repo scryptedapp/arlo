@@ -79,7 +79,6 @@ class ArloClient(object):
 
     def _init_persistent(self) -> None:
         self.cookies = self.storage.getItem('arlo_cookies')
-        self._check_cookies()
         self.device_id = self.storage.getItem('arlo_device_id')
         self.event_stream_transport = self.storage.getItem('arlo_event_stream_transport')
         self.extra_debug_logging = str(self.storage.getItem('extra_debug_logging')).lower() == 'true'
@@ -103,33 +102,6 @@ class ArloClient(object):
         self.request: Request = None
         self.token: str = None
         self.user_id: str = None
-
-    def _check_cookies(self) -> None:
-        if not self.cookies:
-            logger.debug('No cookies found in storage.')
-            return
-        logger.debug(f'Loaded cookies from storage...')
-        valid = self._is_valid_cookie_format()
-        logger.debug(f'Cookie format valid? {valid}')
-        if not valid:
-            logger.debug('Invalid cookie format detected, clearing cookies.')
-            self.cookies = None
-            self.storage.setItem('arlo_cookies', None)
-
-    def _is_valid_cookie_format(self) -> bool:
-        try:
-            decoded = base64.b64decode(self.cookies)
-            cookies_dict = pickle.loads(decoded)
-            if not isinstance(cookies_dict, dict):
-                return False
-            for k, v in cookies_dict.items():
-                if not isinstance(v, str):
-                    logger.debug(f'Cookie value for {k} is not a string: {type(v)}')
-                    return False
-            return True
-        except Exception as e:
-            logger.debug(f'Cookie validation failed: {e}')
-            return False
 
     async def login(self) -> None:
         try:
@@ -230,11 +202,8 @@ class ArloClient(object):
             raise Exception('No factor ID response returned.')
         get_factor_id_meta: dict[str, Any] = get_factor_id_response.get('meta')
         get_factor_id_meta_code: int = get_factor_id_meta.get('code')
-        if get_factor_id_meta_code == 200 and self.browser_authenticated and not self.browser_authenticated.done():
-            self.browser_authenticated.set_result(True)
-        else:
-            if self.browser_authenticated and not self.browser_authenticated.done():
-                self.browser_authenticated.set_result(False)
+        if self.browser_authenticated and not self.browser_authenticated.done():
+            self.browser_authenticated.set_result(get_factor_id_meta_code == 200)
         if get_factor_id_meta_code != 200:
             logger.debug('Browser not authenticated, starting browser authentication...')
             get_factors_response: dict[str, Any] = await self._get_factors(issued)
@@ -530,6 +499,51 @@ class ArloClient(object):
             self._smart_features_cache_time = now
             return result
 
+    async def trigger_properties(self, basestation: dict, camera: dict = None) -> dict:
+        properties = {}
+        resources = []
+        if camera:
+            camera_id = camera.get('deviceId')
+            camera_parent_id = camera.get('parentId')
+            resources.append(f'cameras/{camera_id}')
+            if camera_id == camera_parent_id:
+                resources.append('basestation')
+        else:
+            resources.append('basestation')
+
+        async def trigger(resource):
+            await self.request.post(
+                f'https://{self.arlo_api_url}/hmsweb/users/devices/notify/{basestation['deviceId']}',
+                params={
+                    'to': basestation['deviceId'],
+                    'from': self.user_id + '_web',
+                    'resource': resource,
+                    'action': 'get',
+                    'publishResponse': False,
+                    'transId': self._genTransId(),
+                },
+                headers={'xcloudId': basestation.get('xCloudId')}
+            )
+
+        def callback(event: dict):
+            if 'error' in event:
+                return None
+            resource = event.get('resource')
+            resource_properties = event.get('properties', {})
+            properties.update(resource_properties)
+            return resource_properties
+
+        from_id = basestation.get('deviceId')
+        for resource in resources:
+            await self._trigger_and_handle_events(
+                resource,
+                [('is', 'interfaceVersion')],
+                lambda: trigger(resource),
+                callback,
+                from_id,
+            )
+        return properties
+
     async def get_locations(self) -> dict[str, str]:
         locations = await self._get_locations_response()
         return {
@@ -701,7 +715,7 @@ class ArloClient(object):
             delivery_delay = 10
             logger.debug(
                 f'{event_key}: {event_detected} '
-                f'{"will delay delivery by " + str(delivery_delay) + "s" if not event_detected else ""}'.rstrip()
+                f'{'will delay delivery by ' + str(delivery_delay) + 's' if not event_detected else ''}'.rstrip()
             )
             force_reset_event_task = cancel_task(force_reset_event_task, 'force reset')
             delayed_event_end_task = cancel_task(delayed_event_end_task, 'delay event')
@@ -905,7 +919,8 @@ class ArloClient(object):
         self,
         resource: str,
         actions: list,
-        callback: Callable[[dict], Any]
+        callback: Callable[[dict], Any],
+        from_id: str = None,
     ) -> Any:
         if not callable(callback):
             raise Exception('The callback should be a callable function.')
@@ -928,6 +943,10 @@ class ArloClient(object):
                 ):
                     return None
                 seen_events[event.uuid] = event
+                event_from = event.item.get('from')
+                if from_id is not None and event_from != from_id:
+                    self.event_stream.requeue(event, resource, action, prop)
+                    continue
                 response = callback(event.item)
                 self.event_stream.requeue(event, resource, action, prop)
                 if response is not None:
@@ -947,7 +966,8 @@ class ArloClient(object):
         resource: str,
         actions: list,
         trigger: Callable[[], None],
-        callback: Callable[[dict], Any]
+        callback: Callable[[dict], Any],
+        from_id: str = None,
     ) -> Any:
         if trigger is not None and not callable(trigger):
             raise Exception('The trigger should be a callable function.')
@@ -956,7 +976,7 @@ class ArloClient(object):
         await self.subscribe()
         if trigger:
             await trigger()
-        return await self._handle_events(resource, actions, callback)
+        return await self._handle_events(resource, actions, callback, from_id)
 
     def get_mpd_headers(self, url: str) -> dict:
         parsed = urlparse(url)

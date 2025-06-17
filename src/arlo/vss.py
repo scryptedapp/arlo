@@ -25,17 +25,22 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         SecuritySystemMode.Disarmed.value
     ]
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, auto_init: bool = True) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider, auto_init=auto_init)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, auto_init: bool = True) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider, auto_init=auto_init)
 
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
         for _ in range(100):
-            if getattr(self, 'storage', None) is not None:
-                break
-            await asyncio.sleep(0.1)
+            if self.stop_subscriptions:
+                return
+            try:
+                if getattr(self, 'storage', None) is not None:
+                    break
+            except Exception as e:
+                self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem {self.nativeId}, will try again: {e}')
+                await asyncio.sleep(0.1)
         else:
-            self.logger.error('Delayed init exceeded iteration limit, giving up')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem {self.nativeId}, giving up.')
             return
         for _ in range(100):
             if self.stop_subscriptions:
@@ -47,8 +52,11 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
                 }
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
+        else:
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem {self.nativeId}, giving up.')
+            return
 
     @property
     def mode(self) -> str:
@@ -122,8 +130,8 @@ class ArloSirenVirtualSecuritySystem(ArloBaseVirtualSecuritySystem, DeviceProvid
     parent: ArloBasestation | ArloCamera = None
     siren: ArloSiren | None = None
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, parent: ArloBasestation | ArloCamera) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, parent: ArloBasestation | ArloCamera) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.parent = parent
         self.siren = None
 
@@ -190,7 +198,7 @@ class ArloSirenVirtualSecuritySystem(ArloBaseVirtualSecuritySystem, DeviceProvid
     def _create_siren(self) -> None:
         siren_id = f'{self.arlo_device["deviceId"]}.siren'
         if not self.siren:
-            self.siren = ArloSiren(siren_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+            self.siren = ArloSiren(siren_id, self.arlo_device, self.arlo_basestation, self.arlo_properties, self.provider, self)
 
     def _mode_description(self) -> str:
         return 'If disarmed, the associated siren will not be physically triggered even if toggled.'
@@ -214,8 +222,8 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
     }
     SCRYPTED_TO_ARLO = {v: k for k, v in ARLO_TO_SCRYPTED.items()}
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider, auto_init=False)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider, auto_init=False)
         self._ready_event.set()
 
     def complete_init(self) -> None:
@@ -227,9 +235,10 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
                 scrypted_sdk.deviceManager.getDeviceState(self.nativeId)
                 break
             except KeyError:
+                self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Device {self.nativeId} was never registered, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem {self.nativeId}, giving up.')
             return
         for _ in range(100):
             if self.stop_subscriptions:
@@ -244,8 +253,11 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
                 self._start_active_mode_subscription()
                 return
             except Exception as e:
-                self.logger.warning(f'MVSS delayed init failed, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
+        else:
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem {self.nativeId}, giving up.')
+            return
 
     async def _get_initial_mode_and_revision(self):
         resp = await self.provider.arlo.get_mode_and_revision()

@@ -73,8 +73,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     info_logger: TCPLogServer
     debug_logger: TCPLogServer
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: 'ArloProvider') -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.picture_lock = asyncio.Lock()
         self.info_logger = TCPLogServer(self, self.logger.info)
         self.debug_logger = TCPLogServer(self, self.logger.debug)
@@ -93,13 +93,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             if self.stop_subscriptions:
                 return
             try:
+                self.batteryLevel = self.arlo_properties['batteryLevel']
+                self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[self.arlo_properties['brightness']]
                 self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloCamera: {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error('Delayed init exceeded iteration limit, giving up')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloCamera: {self.nativeId}, giving up.')
             return
 
     def _start_error_subscription(self) -> None:
@@ -510,27 +512,27 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     async def startIntercom(self, media: MediaObject) -> None:
         try:
-            self.logger.debug("startIntercom called.")
+            self.logger.debug('startIntercom called.')
             if not self.speaker:
-                self.logger.debug("Speaker not initialized, creating speaker from intercom.")
+                self.logger.debug('Speaker not initialized, creating speaker from intercom.')
                 self.speaker = self.intercom.speaker()
-            self.logger.debug("Calling speaker.startIntercom.")
+            self.logger.debug('Calling speaker.startIntercom.')
             await self.speaker.startIntercom(media)
-            self.logger.debug("speaker.startIntercom completed successfully.")
+            self.logger.debug('speaker.startIntercom completed successfully.')
         except Exception as e:
-            self.logger.error(f"Error in startIntercom: {e}", exc_info=True)
+            self.logger.error(f'Error in startIntercom: {e}', exc_info=True)
 
     async def stopIntercom(self) -> None:
         try:
-            self.logger.debug("stopIntercom called.")
+            self.logger.debug('stopIntercom called.')
             if not self.speaker:
-                self.logger.debug("Speaker not initialized, creating speaker from intercom.")
+                self.logger.debug('Speaker not initialized, creating speaker from intercom.')
                 self.speaker = self.intercom.speaker()
-            self.logger.debug("Calling speaker.stopIntercom.")
+            self.logger.debug('Calling speaker.stopIntercom.')
             await self.speaker.stopIntercom()
-            self.logger.debug("speaker.stopIntercom completed successfully.")
+            self.logger.debug('speaker.stopIntercom completed successfully.')
         except Exception as e:
-            self.logger.error(f"Error in stopIntercom: {e}", exc_info=True)
+            self.logger.error(f'Error in stopIntercom: {e}', exc_info=True)
 
     async def getVideoClip(self, videoId: str) -> MediaObject:
         self.logger.info(f'Getting video clip {videoId}')
@@ -606,23 +608,23 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     def _create_light(self) -> None:
         if self.has_spotlight:
             light_id = f'{self.arlo_device["deviceId"]}.spotlight'
-            self.light = ArloSpotlight(light_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+            self.light = ArloSpotlight(light_id, self.arlo_device, self.arlo_basestation, self.arlo_properties, self.provider, self)
         elif self.has_floodlight:
             light_id = f'{self.arlo_device["deviceId"]}.floodlight'
-            self.light = ArloFloodlight(light_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+            self.light = ArloFloodlight(light_id, self.arlo_device, self.arlo_basestation, self.arlo_properties, self.provider, self)
         elif self.has_nightlight:
             light_id = f'{self.arlo_device["deviceId"]}.nightlight'
-            self.light = ArloNightlight(light_id, self.arlo_device, self.provider, self)
+            self.light = ArloNightlight(light_id, self.arlo_device, self.arlo_properties, self.provider, self)
 
     def _create_svss(self) -> None:
         if self.has_siren:
             svss_id = f'{self.arlo_device["deviceId"]}.svss'
-            self.svss = ArloSirenVirtualSecuritySystem(svss_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+            self.svss = ArloSirenVirtualSecuritySystem(svss_id, self.arlo_device, self.arlo_basestation, self.arlo_properties, self.provider, self)
 
     def _create_intercom(self) -> None:
         if self.has_push_to_talk:
             intercom_id = f'{self.arlo_device["deviceId"]}.intercom'
-            self.intercom = ArloIntercom(intercom_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+            self.intercom = ArloIntercom(intercom_id, self.arlo_device, self.arlo_basestation, self.arlo_properties, self.provider, self)
 
     async def getDetectionInput(self, detectionId: str, eventId: str = None) -> MediaObject:
         return await self.getVideoClipThumbnail(detectionId, no_cache=True)
@@ -653,7 +655,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     async def startRTCSignalingSession(self, scrypted_session: RTCSignalingSession):
         try:
-            self.logger.debug("Starting RTC signaling session.")
+            self.logger.debug('Starting RTC signaling session.')
             plugin_session = ArloCameraWebRTCSignalingSession(self)
             await plugin_session.delayed_init()
             plugin_session.scrypted_session = scrypted_session
@@ -672,17 +674,17 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                     timeout=3
                 )
             except asyncio.TimeoutError:
-                self.logger.warning("Timeout waiting for ICE candidates, falling back to ignore trickle.")
+                self.logger.warning('Timeout waiting for ICE candidates, falling back to ignore trickle.')
                 async def ignore_trickle(c): pass
                 scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
-            self.logger.debug("Setting remote description on plugin session.")
+            self.logger.debug('Setting remote description on plugin session.')
             await plugin_session.setRemoteDescription(scrypted_offer)
-            self.logger.debug("Creating local description (answer) from plugin session.")
+            self.logger.debug('Creating local description (answer) from plugin session.')
             plugin_answer = await plugin_session.createLocalDescription()
-            self.logger.debug("Setting remote description (answer) on Scrypted session.")
+            self.logger.debug('Setting remote description (answer) on Scrypted session.')
             await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
-            self.logger.debug("RTC signaling session established successfully.")
+            self.logger.debug('RTC signaling session established successfully.')
             return ArloCameraWebRTCSessionControl(plugin_session)
         except Exception as e:
-            self.logger.error(f"Error in startRTCSignalingSession: {e}", exc_info=True)
+            self.logger.error(f'Error in startRTCSignalingSession: {e}', exc_info=True)
             raise

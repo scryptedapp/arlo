@@ -46,7 +46,7 @@ class BaseArloSignalingSession(BackgroundTaskMixin):
     def _format_ice_servers(self) -> None:
         formatted = []
         for ice_server in self.ice_servers:
-            entry = {'urls': [ice_server.get('url') or f"{ice_server.get('type')}:{ice_server.get('domain')}:{ice_server.get('port')}"]}
+            entry = {'urls': [ice_server.get('url') or f'{ice_server.get("type")}:{ice_server.get("domain")}:{ice_server.get("port")}']}
             if 'username' in ice_server:
                 entry['username'] = ice_server['username']
             if 'credential' in ice_server:
@@ -102,7 +102,7 @@ class BaseArloSignalingSession(BackgroundTaskMixin):
         return patched_sdp
 
     async def close(self):
-        raise NotImplementedError("Subclasses must implement close() method.")
+        raise NotImplementedError('Subclasses must implement close() method.')
 
 class BaseArloSessionControl:
     def __init__(self, arlo_session: BaseArloSignalingSession) -> None:
@@ -112,7 +112,7 @@ class BaseArloSessionControl:
         try:
             await self.arlo_session.close()
         except Exception as e:
-            self.arlo_session.logger.error(f"Error ending session: {e}", exc_info=True)
+            self.arlo_session.logger.error(f'Error ending session: {e}', exc_info=True)
             raise
 
 class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
@@ -123,18 +123,18 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
 
     async def delayed_init(self):
         try:
-            self.logger.debug("Fetching SIP info for camera WebRTC session.")
+            self.logger.debug('Fetching SIP info for camera WebRTC session.')
             self.sip_info = await self.provider.arlo.get_sip_info_v2(self.arlo_device)
             self.ice_servers = self.sip_info['iceServers']['data']
             self._format_ice_servers()
-            self.logger.debug(f"SIP info and ICE servers set: {self.ice_servers}")
+            self.logger.debug(f'SIP info and ICE servers set: {self.ice_servers}')
         except Exception as e:
-            self.logger.error(f"Error in delayed_init: {e}", exc_info=True)
+            self.logger.error(f'Error in delayed_init: {e}', exc_info=True)
             raise
 
     async def setRemoteDescription(self, offer):
         try:
-            self.logger.debug("Setting remote description for camera WebRTC session.")
+            self.logger.debug('Setting remote description for camera WebRTC session.')
             sip_call_info = self.sip_info['sipCallInfo']
             offer_sdp = self._clean_sdp(offer['sdp'])
             sip_cfg = {
@@ -154,35 +154,35 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
                 self.logger,
                 sip_cfg,
             )
-            self.logger.debug("SIPManager initialized for camera session.")
+            self.logger.debug('SIPManager initialized for camera session.')
         except Exception as e:
-            self.logger.error(f"Error in setRemoteDescription: {e}", exc_info=True)
+            self.logger.error(f'Error in setRemoteDescription: {e}', exc_info=True)
             raise
 
     async def createLocalDescription(self):
         try:
-            self.logger.debug("Creating local description (answer) for camera WebRTC session.")
+            self.logger.debug('Creating local description (answer) for camera WebRTC session.')
             answer_sdp = await self.arlo_sip.start()
             answer_sdp = self._patch_sdp(answer_sdp)
             answer_sdp = self._clean_sdp(answer_sdp)
-            self.logger.debug("Local description (answer) created successfully.")
+            self.logger.debug('Local description (answer) created successfully.')
             return {
                 'sdp': answer_sdp,
                 'type': 'answer'
             }
         except Exception as e:
-            self.logger.error(f"Error in createLocalDescription: {e}", exc_info=True)
+            self.logger.error(f'Error in createLocalDescription: {e}', exc_info=True)
             raise
 
     async def close(self):
         try:
-            self.logger.debug("Closing camera WebRTC SIP session.")
+            self.logger.debug('Closing camera WebRTC SIP session.')
             if self.arlo_sip is not None:
                 await self.arlo_sip.close()
                 self.arlo_sip = None
-            self.logger.debug("Camera WebRTC SIP session closed.")
+            self.logger.debug('Camera WebRTC SIP session closed.')
         except Exception as e:
-            self.logger.error(f"Error in close: {e}", exc_info=True)
+            self.logger.error(f'Error in close: {e}', exc_info=True)
             raise
 
 class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
@@ -197,7 +197,7 @@ class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
             else:
                 await self.arlo_sip.stop_talk()
         except Exception as e:
-            self.arlo_session.logger.error(f"Error in setPlayback: {e}", exc_info=True)
+            self.arlo_session.logger.error(f'Error in setPlayback: {e}', exc_info=True)
             raise
 
 class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
@@ -214,14 +214,14 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
 
     async def delayed_init(self) -> None:
         try:
-            self.logger.debug("Starting push-to-talk session for intercom WebRTC.")
+            self.logger.debug('Starting push-to-talk session for intercom WebRTC.')
             self.session_id, self.ice_servers = await self.provider.arlo.start_push_to_talk(self.arlo_device)
             self._format_ice_servers()
             self._start_sdp_answer_subscription()
             self._start_candidate_answer_subscription()
-            self.logger.debug("Intercom WebRTC session initialized.")
+            self.logger.debug('Intercom WebRTC session initialized.')
         except Exception as e:
-            self.logger.error(f"Error in delayed_init: {e}", exc_info=True)
+            self.logger.error(f'Error in delayed_init: {e}', exc_info=True)
             raise
 
     def _start_sdp_answer_subscription(self) -> None:
@@ -231,7 +231,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
                     sdp = self._patch_sdp(sdp)
                     self.answer = {'sdp': sdp, 'type': 'answer'}
                 except Exception as e:
-                    self.logger.error(f"Error in SDP answer subscription: {e}", exc_info=True)
+                    self.logger.error(f'Error in SDP answer subscription: {e}', exc_info=True)
                 return self.stop_subscriptions
             asyncio.create_task(async_callback())
             return self.stop_subscriptions
@@ -245,7 +245,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
                     if self.scrypted_session:
                         await self.scrypted_session.addIceCandidate({'candidate': candidate, 'sdpMid': '0', 'sdpMLineIndex': 0})
                 except Exception as e:
-                    self.logger.error(f"Error in candidate answer subscription: {e}", exc_info=True)
+                    self.logger.error(f'Error in candidate answer subscription: {e}', exc_info=True)
                 return self.stop_subscriptions
             asyncio.create_task(async_callback())
             return self.stop_subscriptions
@@ -262,27 +262,27 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
             else:
                 raise TypeError('Event Subscription must return a coroutine or task.')
         except Exception as e:
-            self.logger.error(f"Error in event subscription: {e}", exc_info=True)
+            self.logger.error(f'Error in event subscription: {e}', exc_info=True)
             raise
 
     async def setRemoteDescription(self, offer) -> None:
         try:
-            self.logger.debug("Setting remote description for intercom WebRTC session.")
+            self.logger.debug('Setting remote description for intercom WebRTC session.')
             offer_sdp = offer['sdp']
             await self.provider.arlo.notify_push_to_talk_offer_sdp(
                 self.arlo_basestation, self.arlo_device,
                 self.session_id, offer_sdp
             )
-            self.logger.debug("Remote description set and push-to-talk offer notified.")
+            self.logger.debug('Remote description set and push-to-talk offer notified.')
         except Exception as e:
-            self.logger.error(f"Error in setRemoteDescription: {e}", exc_info=True)
+            self.logger.error(f'Error in setRemoteDescription: {e}', exc_info=True)
             raise
 
     async def close(self) -> None:
         try:
-            self.logger.debug("Intercom WebRTC session closed.")
+            self.logger.debug('Intercom WebRTC session closed.')
         except Exception as e:
-            self.logger.error(f"Error in close: {e}", exc_info=True)
+            self.logger.error(f'Error in close: {e}', exc_info=True)
             raise
 
 class ArloIntercomWebRTCSessionControl(BaseArloSessionControl):
@@ -296,18 +296,18 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
 
     async def delayed_init(self) -> None:
         try:
-            self.logger.debug("Fetching SIP info for intercom SIP session.")
+            self.logger.debug('Fetching SIP info for intercom SIP session.')
             self.sip_info = await self.provider.arlo.get_sip_info()
             self.ice_servers = self.sip_info['iceServers']['data']
             self._format_ice_servers()
-            self.logger.debug(f"SIP info and ICE servers set: {self.ice_servers}")
+            self.logger.debug(f'SIP info and ICE servers set: {self.ice_servers}')
         except Exception as e:
-            self.logger.error(f"Error in delayed_init: {e}", exc_info=True)
+            self.logger.error(f'Error in delayed_init: {e}', exc_info=True)
             raise
 
     async def setRemoteDescription(self, offer) -> None:
         try:
-            self.logger.debug("Setting remote description for intercom SIP session.")
+            self.logger.debug('Setting remote description for intercom SIP session.')
             sip_call_info: dict = self.sip_info['sipCallInfo']
             offer_sdp = self._clean_sdp(offer['sdp'])
             sip_cfg = {
@@ -327,35 +327,35 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
                 self.logger,
                 sip_cfg,
             )
-            self.logger.debug("SIPManager initialized for intercom SIP session.")
+            self.logger.debug('SIPManager initialized for intercom SIP session.')
         except Exception as e:
-            self.logger.error(f"Error in setRemoteDescription: {e}", exc_info=True)
+            self.logger.error(f'Error in setRemoteDescription: {e}', exc_info=True)
             raise
 
     async def createLocalDescription(self) -> dict:
         try:
-            self.logger.debug("Creating local description (answer) for intercom SIP session.")
+            self.logger.debug('Creating local description (answer) for intercom SIP session.')
             sdp = await self.arlo_sip.start()
             sdp = self._patch_sdp(sdp)
             sdp = self._clean_sdp(sdp)
-            self.logger.debug("Local description (answer) created successfully.")
+            self.logger.debug('Local description (answer) created successfully.')
             return {
                 'sdp': sdp,
                 'type': 'answer'
             }
         except Exception as e:
-            self.logger.error(f"Error in createLocalDescription: {e}", exc_info=True)
+            self.logger.error(f'Error in createLocalDescription: {e}', exc_info=True)
             raise
 
     async def close(self) -> None:
         try:
-            self.logger.debug("Closing intercom SIP session.")
+            self.logger.debug('Closing intercom SIP session.')
             if self.arlo_sip is not None:
                 await self.arlo_sip.close()
                 self.arlo_sip = None
-            self.logger.debug("Intercom SIP session closed.")
+            self.logger.debug('Intercom SIP session closed.')
         except Exception as e:
-            self.logger.error(f"Error in close: {e}", exc_info=True)
+            self.logger.error(f'Error in close: {e}', exc_info=True)
             raise
 
 class ArloIntercomSIPSessionControl(BaseArloSessionControl):

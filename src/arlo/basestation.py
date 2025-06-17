@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
     svss: ArloBaseVirtualSecuritySystem | None = None
 
-    def __init__(self, nativeId: str, arlo_basestation: dict, provider: ArloProvider) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_basestation, arlo_basestation=arlo_basestation, provider=provider)
+    def __init__(self, nativeId: str, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_basestation, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.svss = None
 
     @property
@@ -62,7 +62,7 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
     def _create_svss(self) -> None:
         svss_id = f'{self.arlo_device["deviceId"]}.svss'
         if not self.svss:
-            self.svss = ArloSirenVirtualSecuritySystem(svss_id, self.arlo_device, self.arlo_basestation, self.provider, self)
+            self.svss = ArloSirenVirtualSecuritySystem(svss_id, self.arlo_device, self.arlo_basestation, self.arlo_properties, self.provider, self)
 
     async def getSettings(self) -> list[Setting]:
         return [
@@ -79,4 +79,5 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
         if key == 'print_debug':
             self.logger.info(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
             self.logger.info(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
+            self.logger.info(f'Device Properties: {json.dumps(self.arlo_properties)}')
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)

@@ -66,7 +66,7 @@ class SIPMessage:
                 idx += 1
             self.body = '\r\n'.join(lines[idx:])
         except Exception as e:
-            logging.getLogger(__name__).error(f"Error parsing SIP message: {e}", exc_info=True)
+            logging.getLogger(__name__).error(f'Error parsing SIP message: {e}', exc_info=True)
             raise
 
     def get_header(self, name: str) -> str | None:
@@ -97,7 +97,7 @@ class SIPMessage:
                 lines.append(self.body)
             return '\r\n'.join(lines)
         except Exception as e:
-            logging.getLogger(__name__).error(f"Error building SIP message: {e}", exc_info=True)
+            logging.getLogger(__name__).error(f'Error building SIP message: {e}', exc_info=True)
             raise
 
 class AuthHeader:
@@ -106,9 +106,6 @@ class AuthHeader:
         self.params = params
 
     def update_response_digest(self, method: str, password: str):
-        """
-        Update the response digest for Digest authentication.
-        """
         if self.params.get('algorithm') != SIP_MD5:
             raise Exception(f'cannot compute response digest with algorithm {self.params.get("algorithm")!r}')
         if self.params.get('qop') != 'auth':
@@ -340,7 +337,7 @@ class SIPManager:
                     self.logger.warning(f'Did not receive 200 OK or 202 Accepted for keepAlive, got {resp.status_code}')
                     break
         except Exception as e:
-            self.logger.error(f"Error in keepalive loop: {e}", exc_info=True)
+            self.logger.error(f'Error in keepalive loop: {e}', exc_info=True)
 
     async def close(self):
         self.logger.debug('Closing SIPManager session.')
@@ -365,7 +362,7 @@ class SIPManager:
                 await self.ws.close()
                 self.logger.debug('Websocket closed.')
         except Exception as e:
-            self.logger.error(f"Error closing SIPManager: {e}", exc_info=True)
+            self.logger.error(f'Error closing SIPManager: {e}', exc_info=True)
             raise
 
     async def auto_start_talk(self):
@@ -374,7 +371,7 @@ class SIPManager:
             await self.start_talk()
             self.keepalive_task = asyncio.create_task(self.keepalive_loop())
         except Exception as e:
-            self.logger.error(f"Error in auto_start_talk: {e}", exc_info=True)
+            self.logger.error(f'Error in auto_start_talk: {e}', exc_info=True)
             raise
 
     async def start_talk(self):

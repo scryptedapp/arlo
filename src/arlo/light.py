@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 class ArloBaseLight(ArloDeviceBase, OnOff):
     camera: ArloCamera = None
 
-    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, provider: ArloProvider, camera: ArloCamera = None) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, provider=provider)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, camera: ArloCamera = None) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.camera = camera
 
     def get_applicable_interfaces(self) -> list[str]:
@@ -57,8 +57,8 @@ class ArloFloodlight(ArloBaseLight):
         self.on = state
 
 class ArloNightlight(ArloBaseLight):
-    def __init__(self, nativeId: str, arlo_device: dict, provider: ArloProvider, camera: ArloCamera = None) -> None:
-        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_device, provider=provider, camera=camera)
+    def __init__(self, nativeId: str, arlo_device: dict, arlo_properties: dict, provider: ArloProvider, camera: ArloCamera = None) -> None:
+        super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_device, arlo_properties=arlo_properties, provider=provider, camera=camera)
 
     async def _set_light_state(self, state: bool) -> None:
         self.logger.info('Turning nightlight %s', 'on' if state else 'off')

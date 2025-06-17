@@ -51,7 +51,7 @@ class Request:
         try:
             self.session: CurlCffiSession | Session = self._initialize_session()
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize HTTP session for mode '{self.mode}': {e}")
+            raise RuntimeError(f'Failed to initialize HTTP session for mode "{self.mode}": {e}')
 
     def _configure_logging(self):
         request_logger: Logger = logging.getLogger('requests.packages.urllib3')
@@ -151,6 +151,8 @@ class Request:
 
         try:
             body: dict[str, Any] = response.json()
+            if self.extra_debug_logging:
+                self.logger.debug(f'Response from {url}: {body}')
         except JSONDecodeError as e:
             self.logger.error(f'JSON decode error from {url}: {e}')
             raise HTTPError(f'Invalid JSON response from {url}', response=response)
@@ -189,13 +191,13 @@ class Request:
 
     def dumps_cookies(self) -> str:
         if self.mode != 'curl':
-            raise RuntimeError("Cookie serialization only supported in 'curl' mode.")
+            raise RuntimeError('Cookie serialization only supported in "curl" mode.')
         pickled = pickle.dumps(self.session.cookies.get_dict())
         return base64.b64encode(pickled).decode()
 
     def loads_cookies(self, cookies: str) -> None:
         if self.mode != 'curl':
-            raise RuntimeError("Cookie deserialization only supported in 'curl' mode.")
+            raise RuntimeError('Cookie deserialization only supported in "curl" mode.')
         decoded = base64.b64decode(cookies)
         cookie_dict = pickle.loads(decoded)
         self.session.cookies.update(cookie_dict)
