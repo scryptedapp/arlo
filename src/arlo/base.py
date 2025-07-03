@@ -114,14 +114,27 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     def get_builtin_child_device_manifests(self) -> list[Device]:
         return []
 
+    async def refresh_device(self) -> None:
+        return None
+
     def _create_or_register_event_subscription(self, subscribe_fn, *args, **kwargs):
         result = subscribe_fn(*args, **kwargs)
         if asyncio.iscoroutine(result):
             self.create_task(result)
         elif isinstance(result, asyncio.Task):
             self.register_task(result)
+        elif isinstance(result, (list, tuple, set)):
+            for task in result:
+                if asyncio.iscoroutine(task):
+                    self.create_task(task)
+                elif isinstance(task, asyncio.Task):
+                    self.register_task(task)
+                else:
+                    raise TypeError('Event Subscription must return a coroutine or task.')
+        elif isinstance(result, asyncio.Future):
+            self.register_task(result)
         else:
-            raise TypeError('Event Subscription must return a coroutine or task.')
+            raise TypeError('Event Subscription must return a coroutine, task, or collection of them.')
 
     def _has_feature(self, feature: str) -> bool:
         if not self.arlo_smart_features:

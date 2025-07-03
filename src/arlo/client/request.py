@@ -8,24 +8,15 @@ import uuid
 
 from curl_cffi.requests import Session as CurlCffiSession
 from json import JSONDecodeError
-from logging import Handler, Logger
+from logging import Logger
 from requests import Response, Session
 from requests.exceptions import HTTPError, RequestException
 from requests_toolbelt.adapters import host_header_ssl
-from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
 from typing import Any
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from ..logging import StdoutLoggerFactory
-
-def _should_retry(exception: Exception) -> bool:
-    if isinstance(exception, RequestException):
-        response: Response | None = getattr(exception, 'response', None)
-        if response and hasattr(response, 'status_code'):
-            return response.status_code in {429, 500, 502, 503, 504}
-        return True
-    return False
-
+from ..util import UnauthorizedRestartException
 
 class Request:
     logger: Logger = StdoutLoggerFactory.get_logger(name='Client')
@@ -55,7 +46,6 @@ class Request:
 
     def _configure_logging(self):
         request_logger: Logger = logging.getLogger('requests.packages.urllib3')
-        handler: Handler = None
         for handler in list(request_logger.handlers):
             request_logger.removeHandler(handler)
         for handler in list(self.logger.handlers):
@@ -109,13 +99,6 @@ class Request:
             return True
         return False
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception(_should_retry),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True
-    )
     def _request(
         self,
         url: str,
@@ -127,28 +110,38 @@ class Request:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         params = params or {}
         headers = headers or {}
-
         if not skip_event_id:
             event_params = {
                 'eventId': self.gen_event_id(),
                 'time': self.get_time()
             }
             url = self._add_query_params(url, event_params)
-
         method = method.upper()
         if self.extra_debug_logging:
             self.logger.debug(f'Performing HTTP {method} to {url} with params={params} headers={headers}')
-
-        try:
-            response = self._send_request(url, method, params, headers)
-            response.raise_for_status()
-        except RequestException as e:
-            self.logger.error(f'HTTP {method} request to {url} failed: {e}')
-            raise
-
+        for attempt in range(self.max_retries):
+            try:
+                response = self._send_request(url, method, params, headers)
+                if response.status_code == 401:
+                    self.logger.error(f'HTTP 401 Unauthorized for {method} {url}, triggering plugin restart.')
+                    raise UnauthorizedRestartException("401 Unauthorized")
+                response.raise_for_status()
+                break
+            except RequestException as e:
+                response_obj: Response | None = getattr(e, 'response', None)
+                if response_obj and getattr(response_obj, 'status_code', None) == 401:
+                    self.logger.error(f'HTTP 401 Unauthorized for {method} {url}, triggering plugin restart.')
+                    raise UnauthorizedRestartException("401 Unauthorized")
+                self.logger.error(f'HTTP {method} request to {url} failed: {e}')
+                if attempt < self.max_retries - 1:
+                    if response_obj and response_obj.status_code in {429, 500, 502, 503, 504}:
+                        time.sleep(2 ** attempt)
+                        continue
+                raise
+        else:
+            raise HTTPError(f'HTTP {method} request to {url} failed after {self.max_retries} attempts')
         if method == 'OPTIONS':
             return {}
-
         try:
             body: dict[str, Any] = response.json()
             if self.extra_debug_logging:
@@ -156,10 +149,8 @@ class Request:
         except JSONDecodeError as e:
             self.logger.error(f'JSON decode error from {url}: {e}')
             raise HTTPError(f'Invalid JSON response from {url}', response=response)
-
         if raw:
             return body
-
         if self._is_success(body):
             return body.get('data', body)
         else:

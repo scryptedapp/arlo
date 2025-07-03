@@ -70,6 +70,10 @@ class BackgroundTaskMixin:
                     await task
                 self.background_tasks.discard(task)
 
+class UnauthorizedRestartException(Exception):
+    """Raised when a 401 Unauthorized is encountered and a plugin restart is needed."""
+    pass
+
 def float2hex(f: float, max_hexadecimals: int = 15) -> str:
     w = int(f)
     d = f - w

@@ -158,8 +158,23 @@ class MQTTEventStream(Stream):
                 self.logger.error(f'Failed to request plugin restart: {e}')
             return
 
-        while not self.connected and not self.event_stream_stop_event.is_set():
-            await asyncio.sleep(0.5)
+        wait_timeout = 10
+        waited = 0
+        poll_interval = 0.05
+
+        while not self.connected and not self.event_stream_stop_event.is_set() and waited < wait_timeout:
+            await asyncio.sleep(poll_interval)
+            waited += poll_interval
+
+        if not self.connected:
+            self.logger.error("MQTT Event Stream failed to connect within timeout.")
+            self.event_stream = None
+            try:
+                await scrypted_sdk.deviceManager.requestRestart()
+                self.logger.error('Requested plugin restart due to connection wait timeout.')
+            except Exception as e:
+                self.logger.error(f'Failed to request plugin restart: {e}')
+            return
 
         if not self.event_stream_stop_event.is_set():
             self.resubscribe()

@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import math
-import pickle
 import random
 import time
 
@@ -11,12 +10,14 @@ from scrypted_sdk.other import Storage
 from urllib.parse import parse_qs, ParseResult, urlparse
 from typing import Any, Callable
 
+import scrypted_sdk
+
 from .mqtt_stream import MQTTEventStream
 from .request import Request
 from .stream import StreamEvent
 from .sse_stream import SSEEventStream
 from ..logging import StdoutLoggerFactory
-from ..util import float2hex, pick_host_async
+from ..util import float2hex, pick_host_async, UnauthorizedRestartException
 
 logger = StdoutLoggerFactory.get_logger(name='Client')
 
@@ -58,6 +59,7 @@ class ArloClient(object):
 
     def __init__(self, storage: Storage):
         self.storage: Storage = storage
+        self.heartbeat_task: asyncio.Task | None = None
         self._devices_cache = None
         self._devices_cache_time = 0
         self._devices_cache_lock = asyncio.Lock()
@@ -440,12 +442,17 @@ class ArloClient(object):
         logger.info('Arlo client logged out.')
 
     async def get_devices(self, device_type=None, device_state=None) -> list[dict[str, Any]]:
-        devices = await self._get_devices_request()
-        if device_type:
-            devices = [device for device in devices if device.get('deviceType') in device_type]
-        if device_state is not None and device_state:
-            devices = [device for device in devices if device.get('state') in VALID_DEVICE_STATES]
-        return devices
+        try:
+            devices = await self._get_devices_request()
+            if device_type:
+                devices = [device for device in devices if device.get('deviceType') in device_type]
+            if device_state is not None and device_state:
+                devices = [device for device in devices if device.get('state') in VALID_DEVICE_STATES]
+            return devices
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401). Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return []
 
     async def _get_devices_request(self) -> list[dict[str, Any]]:
         async with self._devices_cache_lock:
@@ -461,7 +468,12 @@ class ArloClient(object):
             return devices
 
     async def get_device_capabilities(self, device: dict) -> dict:
-        return await self._get_device_capabilities_request(str(device['modelId']).lower(), device['interfaceVersion'])
+        try:
+            return await self._get_device_capabilities_request(str(device['modelId']).lower(), device['interfaceVersion'])
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_device_capabilities. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return {}
 
     async def _get_device_capabilities_request(self, model_id: str, interface_version: str) -> dict:
         key = (model_id, interface_version)
@@ -481,10 +493,15 @@ class ArloClient(object):
             return result
 
     async def get_device_smart_features(self, device) -> dict:
-        smart_features = await self._get_device_smart_features_response()
-        features: dict = smart_features.get('features')
-        key = f'{device["owner"]["ownerId"]}_{device["deviceId"]}'
-        return features.get(key, {})
+        try:
+            smart_features = await self._get_device_smart_features_response()
+            features: dict = smart_features.get('features')
+            key = f'{device["owner"]["ownerId"]}_{device["deviceId"]}'
+            return features.get(key, {})
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_device_smart_features. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return {}
 
     async def _get_device_smart_features_response(self) -> dict:
         async with self._smart_features_cache_lock:
@@ -500,57 +517,67 @@ class ArloClient(object):
             return result
 
     async def trigger_properties(self, basestation: dict, camera: dict = None) -> dict:
-        properties = {}
-        resources = []
-        if camera:
-            camera_id = camera.get('deviceId')
-            camera_parent_id = camera.get('parentId')
-            resources.append(f'cameras/{camera_id}')
-            if camera_id == camera_parent_id:
+        try:
+            properties = {}
+            resources = []
+            if camera:
+                camera_id = camera.get('deviceId')
+                camera_parent_id = camera.get('parentId')
+                resources.append(f'cameras/{camera_id}')
+                if camera_id == camera_parent_id:
+                    resources.append('basestation')
+            else:
                 resources.append('basestation')
-        else:
-            resources.append('basestation')
 
-        async def trigger(resource):
-            await self.request.post(
-                f'https://{self.arlo_api_url}/hmsweb/users/devices/notify/{basestation['deviceId']}',
-                params={
-                    'to': basestation['deviceId'],
-                    'from': self.user_id + '_web',
-                    'resource': resource,
-                    'action': 'get',
-                    'publishResponse': False,
-                    'transId': self._genTransId(),
-                },
-                headers={'xcloudId': basestation.get('xCloudId')}
-            )
+            async def trigger(resource):
+                await self.request.post(
+                    f'https://{self.arlo_api_url}/hmsweb/users/devices/notify/{basestation["deviceId"]}',
+                    params={
+                        'to': basestation['deviceId'],
+                        'from': self.user_id + '_web',
+                        'resource': resource,
+                        'action': 'get',
+                        'publishResponse': False,
+                        'transId': self._genTransId(),
+                    },
+                    headers={'xcloudId': basestation.get('xCloudId')}
+                )
 
-        def callback(event: dict):
-            if 'error' in event:
-                return None
-            resource = event.get('resource')
-            resource_properties = event.get('properties', {})
-            properties.update(resource_properties)
-            return resource_properties
+            def callback(event: dict):
+                if 'error' in event:
+                    return None
+                resource = event.get('resource')
+                resource_properties = event.get('properties', {})
+                properties.update(resource_properties)
+                return resource_properties
 
-        from_id = basestation.get('deviceId')
-        for resource in resources:
-            await self._trigger_and_handle_events(
-                resource,
-                [('is', 'interfaceVersion')],
-                lambda: trigger(resource),
-                callback,
-                from_id,
-            )
-        return properties
+            from_id = basestation.get('deviceId')
+            for resource in resources:
+                await self._trigger_and_handle_events(
+                    resource,
+                    [('is', 'interfaceVersion')],
+                    lambda: trigger(resource),
+                    callback,
+                    from_id,
+                )
+            return properties
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in trigger_properties. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return {}
 
     async def get_locations(self) -> dict[str, str]:
-        locations = await self._get_locations_response()
-        return {
-            location['locationId']: location['locationName']
-            for location_list in locations.values()
-            for location in location_list
-        }
+        try:
+            locations = await self._get_locations_response()
+            return {
+                location['locationId']: location['locationName']
+                for location_list in locations.values()
+                for location in location_list
+            }
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_locations. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return {}
 
     async def _get_locations_response(self) -> dict:
         return await self.request.get(f'https://{self.arlo_api_url}/hmsdevicemanagement/users/{self.user_id}/locations')
@@ -562,7 +589,12 @@ class ArloClient(object):
             'x-user-device-id': self.user_id,
             'x-forwarded-user': self.user_id,
         }
-        return await self.request.get(f'https://{self.arlo_api_url}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
+        try:
+            return await self.request.get(f'https://{self.arlo_api_url}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_mode_and_revision. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return {}
 
     async def set_mode(self, set_mode: str, location: str, next_revision: str) -> None:
         headers = {
@@ -574,52 +606,70 @@ class ArloClient(object):
         params = {
             'mode': set_mode,
         }
-        await self.request.put(f'https://{self.arlo_api_url}/hmsweb/automation/v3/activeMode?locationId={location}&revision={next_revision}', params=params, headers=headers)
+        try:
+            await self.request.put(f'https://{self.arlo_api_url}/hmsweb/automation/v3/activeMode?locationId={location}&revision={next_revision}', params=params, headers=headers)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in set_mode. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return
 
     async def subscribe(self, basestation_camera_tuples: list[tuple[dict[str, Any], dict[str, Any]]] = []) -> None:
-        if not self.event_stream or (not self.event_stream.initializing and not self.event_stream.connected):
-            if self.event_stream_transport == 'MQTT':
-                self.event_stream = MQTTEventStream(self)
-            elif self.event_stream_transport == 'SSE':
-                self.event_stream = SSEEventStream(self)
-            else:
-                raise RuntimeError(f'Unknown event_stream_transport: {self.event_stream_transport}')
-            await self.event_stream.start()
-
-        while not self.event_stream.connected:
-            await asyncio.sleep(0.5)
-
-        if not self.event_stream or not self.event_stream.connected:
-            raise RuntimeError('Event stream failed to initialize or connect.')
-
-        if basestation_camera_tuples:
-            basestations = {b['deviceId']: b for b, _ in basestation_camera_tuples}
-            cameras = {c['deviceId']: c for _, c in basestation_camera_tuples}
-
-            devices_to_ping = {
-                b['deviceId']: b for b in basestations.values()
-                if not (
-                    b['deviceId'] == b.get('parentId')
-                    and b['deviceType'] not in ['doorbell', 'siren', 'arloq', 'arloqs']
-                    and str(b['modelId']).lower() not in ['abc1000', 'abc1000a']
-                )
-                and not str(b['modelId']).lower().startswith(('avd2001', 'avd3001', 'avd4001'))
-            }
-
-            logger.info(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
-            asyncio.create_task(self._heartbeat(list(devices_to_ping.values())))
-
-            topics = self._collect_topics(basestations) + self._collect_topics(cameras)
-            self.event_stream.subscribe(topics)
+        try:
+            if not self.event_stream or (not self.event_stream.initializing and not self.event_stream.connected):
+                if self.event_stream_transport == 'MQTT':
+                    self.event_stream = MQTTEventStream(self)
+                elif self.event_stream_transport == 'SSE':
+                    self.event_stream = SSEEventStream(self)
+                else:
+                    raise RuntimeError(f'Unknown event_stream_transport: {self.event_stream_transport}')
+                await self.event_stream.start()
+            wait_timeout = 10
+            waited = 0
+            poll_interval = 0.05
+            while not self.event_stream.connected and waited < wait_timeout:
+                await asyncio.sleep(poll_interval)
+                waited += poll_interval
+            if not self.event_stream or not self.event_stream.connected:
+                raise RuntimeError('Event stream failed to initialize or connect.')
+            if basestation_camera_tuples:
+                basestations = {b['deviceId']: b for b, _ in basestation_camera_tuples}
+                cameras = {c['deviceId']: c for _, c in basestation_camera_tuples}
+                devices_to_ping = {
+                    b['deviceId']: b for b in basestations.values()
+                    if not (
+                        b['deviceId'] == b.get('parentId')
+                        and b['deviceType'] not in ['doorbell', 'siren', 'arloq', 'arloqs']
+                        and str(b['modelId']).lower() not in ['abc1000', 'abc1000a']
+                    )
+                    and not str(b['modelId']).lower().startswith(('avd2001', 'avd3001', 'avd4001'))
+                }
+                logger.info(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
+                if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
+                    self.heartbeat_task.cancel()
+                    try:
+                        await self.heartbeat_task
+                    except Exception:
+                        pass
+                    self.heartbeat_task = None
+                self.heartbeat_task = asyncio.create_task(self._heartbeat(list(devices_to_ping.values())))
+                topics = self._collect_topics(basestations) + self._collect_topics(cameras)
+                self.event_stream.subscribe(topics)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in subscribe. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return
 
     async def _heartbeat(self, basestations: list[dict[str, Any]], interval: int = 30) -> None:
-        while self.event_stream and self.event_stream.active:
-            for basestation in basestations:
-                try:
-                    await self._ping(basestation)
-                except Exception:
-                    pass
-            await asyncio.sleep(interval)
+        try:
+            while self.event_stream and self.event_stream.active:
+                for basestation in basestations:
+                    try:
+                        await self._ping(basestation)
+                    except Exception:
+                        pass
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.debug('Heartbeat task cancelled.')
 
     def _collect_topics(self, devices: dict[Any, dict[str, Any]]) -> list:
         return [topic for d in devices.values() for topic in d.get('allowedMqttTopics', [])]
@@ -652,10 +702,15 @@ class ArloClient(object):
         return f'{trans_type}!{rand_hex}!{timestamp}'
 
     async def unsubscribe(self):
-        if self.event_stream and self.event_stream.connected:
-            self.event_stream.disconnect()
-            await self.request.get(f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe')
-        self.event_stream = None
+        try:
+            if self.event_stream and self.event_stream.connected:
+                self.event_stream.disconnect()
+                await self.request.get(f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe')
+            self.event_stream = None
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in unsubscribe. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            self.event_stream = None
 
     def subscribe_to_error_events(self, camera: dict, callback: Callable[[Any, Any], Any]) -> asyncio.Task:
         resource = f'cameras/{camera.get('deviceId')}'
@@ -701,30 +756,27 @@ class ArloClient(object):
         async def reset_event(sleep_duration: float) -> None:
             nonlocal force_reset_event_task, delayed_event_end_task
             await asyncio.sleep(sleep_duration)
-            logger.debug(f'{event_key}: delivering False')
+            logger.debug(f'{event_key}: False')
             callback(False)
             force_reset_event_task = None
             delayed_event_end_task = None
 
         def callbackwrapper(event: dict):
             nonlocal force_reset_event_task, delayed_event_end_task
-            properties = event.get('properties', {})
-            if event_key not in properties:
+            properties: dict = event.get('properties', {})
+            if list(properties.keys()) != [event_key]:
                 return None
             event_detected = properties[event_key]
-            delivery_delay = 10
-            logger.debug(
-                f'{event_key}: {event_detected} '
-                f'{'will delay delivery by ' + str(delivery_delay) + 's' if not event_detected else ''}'.rstrip()
-            )
+            logger.debug(f'{event_key}: {event_detected}')
+            logger.debug(f'{event_key}: {'will delay delivery by 10s' if not event_detected else 'will force reset after 60s'}'.rstrip())
             force_reset_event_task = cancel_task(force_reset_event_task, 'force reset')
-            delayed_event_end_task = cancel_task(delayed_event_end_task, 'delay event')
+            delayed_event_end_task = cancel_task(delayed_event_end_task, 'delay delivery')
             if event_detected:
                 stop = callback(event_detected)
                 force_reset_event_task = asyncio.create_task(reset_event(60))
             else:
                 stop = None
-                delayed_event_end_task = asyncio.create_task(reset_event(delivery_delay))
+                delayed_event_end_task = asyncio.create_task(reset_event(10))
             return stop
 
         return asyncio.create_task(
@@ -794,6 +846,73 @@ class ArloClient(object):
 
         return asyncio.create_task(
             self._handle_events(resource, ['is'], callbackwrapper)
+        )
+    
+    def subscribe_to_device_state_events(self, device: dict, callback: Callable) -> asyncio.Task:
+        device_id = device.get('deviceId', '')
+        parent_id = device.get('parentId', '')
+        is_wifi_camera = device_id == parent_id
+        from_id = device_id
+        resources = [
+            f'cameras/{device_id}', 'basestation'
+        ] if is_wifi_camera else [
+            'basestation', f'subscriptions/{self.user_id}_web'
+        ]
+
+        def callbackwrapper(event: dict):
+            properties: dict = event.get('properties', {})
+            resource: str = event.get('resource', '')
+            if is_wifi_camera:
+                if resource.startswith('cameras/') and properties.get('connectionState') == 'unavailable':
+                    return callback('unavailable')
+                if resource == 'basestation' and properties.get('connectionState') == 'available':
+                    return callback('available')
+            else:
+                if resource == 'basestation' and properties.get('state') == 'rebooting':
+                    return callback('unavailable')
+                if resource.startswith('subscriptions/') and device_id in properties.get('devices', []):
+                    return callback('available')
+            return None
+
+        def get_action(resource: str) -> str | tuple[str, str]:
+            if resource.startswith('subscriptions/'):
+                return 'is'
+            return ('is', 'connectionState') if (resource != 'basestation' or is_wifi_camera) else ('is', 'state')
+
+        tasks = [
+            asyncio.create_task(
+                self._handle_events(
+                    resource,
+                    [get_action(resource)],
+                    callbackwrapper,
+                    from_id
+                )
+            )
+            for resource in resources
+        ]
+        return asyncio.gather(*tasks)
+
+    def subscribe_to_activity_state_events(self, camera: dict, callback: Callable) -> asyncio.Task:
+        device_id = camera.get('deviceId', '')
+        parent_id = camera.get('parentId', '')
+        from_id = device_id if device_id == parent_id else parent_id
+        resource = f'cameras/{device_id}'
+
+        def callbackwrapper(event: dict):
+            if 'to' in event:
+                return None
+            properties = event.get('properties') or {}
+            if 'activityState' in properties:
+                return callback(properties.get('activityState'))
+            return None
+
+        return asyncio.create_task(
+            self._handle_events(
+                resource,
+                [('is', 'activityState')],
+                callbackwrapper,
+                from_id
+            )
         )
 
     async def trigger_full_frame_snapshot(self, camera: dict):
@@ -994,7 +1113,12 @@ class ArloClient(object):
         }
 
     async def get_sip_info(self):
-        return await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/sipInfo')
+        try:
+            return await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/sipInfo')
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_sip_info. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def get_sip_info_v2(self, camera: dict):
         url = (
@@ -1007,17 +1131,35 @@ class ArloClient(object):
             'xcloudId': camera.get('xCloudId'),
             'cameraId': camera.get('deviceId'),
         }
-        return await self.request.get(url, headers=headers)
+        try:
+            return await self.request.get(url, headers=headers)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_sip_info_v2. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def start_push_to_talk(self, camera: dict) -> tuple[str, list[dict]]:
-        response = await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/{self.user_id}_{camera.get("deviceId")}/pushtotalk')
-        return response.get('uSessionId'), response.get('data')
+        try:
+            response = await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/{self.user_id}_{camera.get("deviceId")}/pushtotalk')
+            return response.get('uSessionId'), response.get('data')
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in start_push_to_talk. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None, None
 
     async def notify_push_to_talk_offer_sdp(self, basestation: dict, camera: dict, uSessionId: str, localSdp: str):
-        await self._notify_push_to_talk(basestation, camera, uSessionId, localSdp, 'offerSdp', publish_response=True)
+        try:
+            await self._notify_push_to_talk(basestation, camera, uSessionId, localSdp, 'offerSdp', publish_response=True)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in notify_push_to_talk_offer_sdp. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
 
     async def notify_push_to_talk_offer_candidate(self, basestation: dict, camera: dict, uSessionId: str, localCandidate: str):
-        await self._notify_push_to_talk(basestation, camera, uSessionId, localCandidate, 'offerCandidate', publish_response=False)
+        try:
+            await self._notify_push_to_talk(basestation, camera, uSessionId, localCandidate, 'offerCandidate', publish_response=False)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in notify_push_to_talk_offer_candidate. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
 
     async def _notify_push_to_talk(self, basestation: dict, camera: dict, uSessionId: str, data: str, data_type: str, publish_response: bool):
         resource = f'cameras/{camera.get("deviceId")}'
@@ -1033,31 +1175,76 @@ class ArloClient(object):
         })
 
     async def siren_on(self, basestation, camera=None):
-        return await self._set_child_device(basestation, camera, 'siren', 'on')
+        try:
+            return await self._set_child_device(basestation, camera, 'siren', 'on')
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in siren_on. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def siren_off(self, basestation, camera=None):
-        return await self._set_child_device(basestation, camera, 'siren', 'off')
+        try:
+            return await self._set_child_device(basestation, camera, 'siren', 'off')
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in siren_off. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def spotlight_on(self, basestation, camera):
-        return await self._set_child_device(basestation, camera, 'spotlight', True)
+        try:
+            return await self._set_child_device(basestation, camera, 'spotlight', True)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in spotlight_on. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def spotlight_off(self, basestation, camera):
-        return await self._set_child_device(basestation, camera, 'spotlight', False)
+        try:
+            return await self._set_child_device(basestation, camera, 'spotlight', False)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in spotlight_off. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def floodlight_on(self, basestation, camera):
-        return await self._set_child_device(basestation, camera, 'floodlight', True)
+        try:
+            return await self._set_child_device(basestation, camera, 'floodlight', True)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in floodlight_on. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def floodlight_off(self, basestation, camera):
-        return await self._set_child_device(basestation, camera, 'floodlight', False)
+        try:
+            return await self._set_child_device(basestation, camera, 'floodlight', False)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in floodlight_off. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def nightlight_on(self, basestation):
-        return await self._set_child_device(basestation, None, 'nightLight', True)
+        try:
+            return await self._set_child_device(basestation, None, 'nightLight', True)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in nightlight_on. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def nightlight_off(self, basestation):
-        return await self._set_child_device(basestation, None, 'nightLight', False)
+        try:
+            return await self._set_child_device(basestation, None, 'nightLight', False)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in nightlight_off. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def brightness_set(self, basestation, camera, brightness=0):
-        return await self._set_child_device(basestation, camera, 'brightness', brightness)
+        try:
+            return await self._set_child_device(basestation, camera, 'brightness', brightness)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in brightness_set. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return None
 
     async def _set_child_device(
         self,
@@ -1113,14 +1300,36 @@ class ArloClient(object):
             'properties': properties,
         })
 
+    async def restart_device(self, deviceId: str) -> None:
+        try:
+            headers = {
+                'Origin': f'https://{self.arlo_api_url}',
+                'Referer': f'https://{self.arlo_api_url}/',
+                'x-user-device-id': self.device_id,
+                'x-forwarded-user': self.user_id,
+            }
+            params = {
+                'deviceId': deviceId,
+            }
+            await self.request.post(f'https://{self.arlo_api_url}/hmsweb/users/devices/restart', params=params, headers=headers)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in restart_device. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return
+
     async def get_library(self, device, from_date: datetime, to_date: datetime, no_cache=False):
-        from_date_str, to_date_str = self._format_library_dates(from_date, to_date)
-        library_results = (
-            await self._get_library_impl(from_date_str, to_date_str)
-            if no_cache
-            else await self._get_library_cached(from_date_str, to_date_str)
-        )
-        return self._filter_library_results(library_results, device, from_date, to_date)
+        try:
+            from_date_str, to_date_str = self._format_library_dates(from_date, to_date)
+            library_results = (
+                await self._get_library(from_date_str, to_date_str)
+                if no_cache
+                else await self._get_library_cached(from_date_str, to_date_str)
+            )
+            return self._filter_library_results(library_results, device, from_date, to_date)
+        except UnauthorizedRestartException:
+            logger.error("Session expired (401) in get_library. Restarting plugin.")
+            await scrypted_sdk.deviceManager.requestRestart()
+            return []
 
     def _format_library_dates(self, from_date: datetime, to_date: datetime) -> tuple[str, str]:
         from_date_internal = from_date - timedelta(days=1)
@@ -1144,12 +1353,12 @@ class ArloClient(object):
             ):
                 return self._library_cache[key]
             logger.debug(f'Library cache miss for {from_date}, {to_date}')
-            result = await self._get_library_impl(from_date, to_date)
+            result = await self._get_library(from_date, to_date)
             self._library_cache[key] = result
             self._library_cache_time[key] = now
             return result
 
-    async def _get_library_impl(self, from_date: str, to_date: str):
+    async def _get_library(self, from_date: str, to_date: str):
         return await self.request.post(
             f'https://{self.arlo_api_url}/hmsweb/users/library',
             params={

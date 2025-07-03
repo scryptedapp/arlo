@@ -42,7 +42,7 @@ from .base import ArloDeviceBase
 from .intercom import ArloIntercom
 from .light import ArloBaseLight, ArloSpotlight, ArloFloodlight, ArloNightlight
 from .logging import TCPLogServer
-from .vss import ArloBaseVirtualSecuritySystem, ArloSirenVirtualSecuritySystem
+from .vss import ArloSirenVirtualSecuritySystem
 from .webrtc_sip import (
     ArloCameraWebRTCSignalingSession,
     ArloCameraWebRTCSessionControl,
@@ -66,7 +66,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     intercom: ArloIntercom = None
     light: ArloBaseLight = None
     speaker: Intercom = None
-    svss: ArloBaseVirtualSecuritySystem = None
+    svss: ArloSirenVirtualSecuritySystem = None
+    device_state: str = None
+    activity_state: str = None
     picture_lock: asyncio.Lock = None
     last_picture: bytes = None
     last_picture_time: datetime = datetime(1970, 1, 1)
@@ -82,6 +84,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
         self._start_error_subscription()
+        self._start_device_state_subscription()
+        self._start_activity_state_subscription()
         self._start_motion_subscription()
         self._start_audio_subscription()
         self._start_battery_subscription()
@@ -93,9 +97,13 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             if self.stop_subscriptions:
                 return
             try:
-                self.batteryLevel = self.arlo_properties['batteryLevel']
-                self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[self.arlo_properties['brightness']]
+                self.batteryLevel = self.arlo_properties.get('batteryLevel', 0)
+                self.device_state = self.arlo_properties.get('connectionState', 'unavailable')
+                self.activity_state = self.arlo_properties.get('activityState', 'unavailable')
+                self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[self.arlo_properties.get('brightness', 0)]
                 self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
+                if not self.arlo_properties:
+                    self.create_task(self.refresh_device())
                 return
             except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloCamera: {self.nativeId}, will try again: {e}')
@@ -110,6 +118,24 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             return self.stop_subscriptions
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_error_events,
+            self.arlo_device, callback
+        )
+
+    def _start_device_state_subscription(self) -> None:
+        def callback(device_state: str):
+            self.device_state = device_state
+            return self.stop_subscriptions
+        self._create_or_register_event_subscription(
+            self.provider.arlo.subscribe_to_device_state_events,
+            self.arlo_device, callback
+        )
+
+    def _start_activity_state_subscription(self) -> None:
+        def callback(activity_state: str):
+            self.activity_state = activity_state
+            return self.stop_subscriptions
+        self._create_or_register_event_subscription(
+            self.provider.arlo.subscribe_to_activity_state_events,
             self.arlo_device, callback
         )
 
@@ -186,7 +212,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ScryptedInterface.ObjectDetector.value,
             ScryptedInterface.Brightness.value,
         ])
-        if self.has_sip_webrtc_streaming:
+        if self.has_sip_webrtc_streaming and not self.disable_webrtc:
             results.add(ScryptedInterface.RTCSignalingChannel.value)
         if self.has_push_to_talk:
             results.add(ScryptedInterface.Intercom.value)
@@ -244,6 +270,32 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ))
         return results
 
+    async def refresh_device(self):
+        try:
+            try:
+                self.arlo_properties = await self.provider._get_device_properties(self.arlo_basestation, self.arlo_device)
+                if self.light:
+                    self.light.arlo_properties = self.arlo_properties
+                if self.svss:
+                    self.svss.arlo_properties = self.arlo_properties
+                    if hasattr(self.svss, 'siren') and self.svss.siren:
+                        self.svss.siren.arlo_properties = self.arlo_properties
+                if self.intercom:
+                    self.intercom.arlo_properties = self.arlo_properties
+                manifests = [self.get_device_manifest()]
+                manifests.extend(self.get_builtin_child_device_manifests())
+                for manifest in manifests:
+                    await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+                self.logger.info(f"Camera {self.nativeId} and children refreshed and updated in Scrypted.")
+            except Exception as e:
+                self.logger.error(f"Error refreshing device {self.nativeId}: {e}", exc_info=True)
+        except asyncio.CancelledError:
+            self.logger.info("Device refresh task cancelled.")
+
+    @property
+    def can_restart(self) -> bool:
+        return self.arlo_device["deviceId"] == self.arlo_device["parentId"] and self.provider.arlo.user_id == self.arlo_device["owner"]["ownerId"]
+
     @property
     def wired_to_power(self) -> bool:
         if self.storage:
@@ -260,6 +312,12 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     def disable_eager_streams(self) -> bool:
         if self.storage:
             return bool(self.storage.getItem('disable_eager_streams'))
+        return False
+
+    @property
+    def disable_webrtc(self) -> bool:
+        if self.storage:
+            return bool(self.storage.getItem('disable_webrtc'))
         return False
 
     @property
@@ -360,6 +418,17 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ),
             'type': 'boolean',
         })
+        result.append({
+            'group': 'General',
+            'key': 'disable_webrtc',
+            'title': 'Disable WebRTC',
+            'value': self.disable_webrtc,
+            'description': (
+                'Disables WebRTC streaming for this camera. '
+                'This will prevent the camera from being used in the Scrypted WebRTC UI, but will still allow RTSP/DASH streaming.'
+            ),
+            'type': 'boolean',
+        })
         if self.eco_mode:
             result.append({
                 'group': 'Eco Mode',
@@ -381,20 +450,41 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             'description': 'Prints information about this device to console.',
             'type': 'button',
         })
+        if self.can_restart:
+            result.append(
+                {
+                    "group": "General",
+                    "key": "restart_device",
+                    "title": "Restart Device",
+                    "description": "Restarts the Device.",
+                    "type": "button",
+                },
+            )
         return result
 
     async def putSetting(self, key: str, value: SettingValue) -> None:
         if not self._validate_setting(key, value):
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             return
-        if key == 'wired_to_power':
+        if key in ['wired_to_power', 'disable_webrtc']:
             self.storage.setItem(key, value == 'true' or value is True)
-            await self.provider.discover_devices()
+            if key == 'wired_to_power':
+                self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
+            await self.refresh_device()
         elif key in ['eco_mode', 'disable_eager_streams']:
             self.storage.setItem(key, value == 'true' or value is True)
         elif key == 'print_debug':
             self.logger.info(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
             self.logger.info(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
+            self.logger.info(f'Device Properties: {json.dumps(self.arlo_properties)}')
+            self.logger.info(f'Device State: {self.device_state}')
+            self.logger.info(f'Activity State: {self.activity_state}')
+        elif key == "restart_device":
+            if self.activity_state == 'idle':
+                self.logger.info("Restarting Device")
+                await self.provider.arlo.restart_device(self.arlo_device["deviceId"])
+            else:
+                self.logger.warning("Device is not idle, cannot restart at this time.")
         else:
             self.storage.setItem(key, value)
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
