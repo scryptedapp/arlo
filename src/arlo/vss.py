@@ -246,7 +246,7 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
             try:
                 self.securitySystemState = {
                     'supportedModes': self.SUPPORTED_MODES,
-                    'mode': '',
+                    'mode': self.mode,
                 }
                 mode, revision = await self._get_initial_mode_and_revision()
                 self._set_mode_and_revision(mode, revision)

@@ -100,6 +100,9 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
 
     async def periodic_discovery(self):
+        if self.device_discovery_interval == 0:
+            self.logger.info("Device discovery interval is 0; periodic discovery will not run.")
+            return
         try:
             await asyncio.sleep(self.device_discovery_interval)
             while True:
@@ -116,6 +119,9 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.logger.info("Periodic discovery task cancelled.")
 
     async def periodic_refresh(self):
+        if self.device_refresh_interval == 0:
+            self.logger.info("Device refresh interval is 0; periodic refresh will not run.")
+            return
         try:
             await asyncio.sleep(self.device_refresh_interval)
             while True:

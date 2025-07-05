@@ -915,7 +915,7 @@ class ArloClient(object):
             )
         )
 
-    async def trigger_full_frame_snapshot(self, camera: dict):
+    async def trigger_full_frame_snapshot(self, camera: dict) -> str:
         resource = f'cameras/{camera.get("deviceId")}'
         actions = [
             (action, prop)
