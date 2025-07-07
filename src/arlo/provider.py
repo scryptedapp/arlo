@@ -82,6 +82,10 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         return ArloProvider.plugin_log_level_choices[self.plugin_log_level]
 
     def initialize_plugin(self) -> None:
+        if self.disable_plugin:
+                self.logger.info('Plugin has been disabled. Will not initialize Arlo client.')
+                self.logger.info('To re-enable the plugin, uncheck the "Disable Arlo Plugin" setting.')
+                return
         if not self.arlo_device_id:
             self.logger.info(f'Setting up Arlo plugin Device ID.')
             _ = self.arlo_device_id
@@ -303,6 +307,18 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             val = 240
             self.storage.setItem('device_refresh_interval', val)
         return int(val)
+
+    @property
+    def disable_plugin(self) -> bool:
+        try:
+            disable_plugin = self.storage.getItem('disable_plugin')
+            if disable_plugin is None:
+                disable_plugin = False
+                self.storage.setItem('disable_plugin', disable_plugin)
+            return disable_plugin
+        except Exception as e:
+            self.logger.warning(f'Could not get disable_plugin setting: {e}')
+            return False
 
     async def login(self, cancel_event: asyncio.Event) -> None:
         if self.login_in_progress:
@@ -743,6 +759,14 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 'value': self.mvss_enabled,
                 'type': 'boolean',
             },
+            {
+                'group': 'General',
+                'key': 'disable_plugin',
+                'title': 'Disable Arlo Plugin',
+                'description': 'Disables the Arlo Plugin.',
+                'value': self.disable_plugin,
+                'type': 'boolean',
+            },
         ])
         return results
 
@@ -801,6 +825,12 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             await self.cancel_and_await_tasks_by_tag('periodic_discovery')
             self.create_task(self.periodic_discovery(), tag='periodic_discovery')
             skip_plugin_reset = True
+        elif key == 'disable_plugin':
+            skip_plugin_reset = True
+            self.storage.setItem(key, str(value))
+            verb = 'disabled' if value else 'enabled'
+            self.logger.info(f'Arlo plugin will be {verb}. Restarting...')
+            await scrypted_sdk.deviceManager.requestRestart()
         else:
             self.storage.setItem(key, value)
         if not skip_plugin_reset:
@@ -1089,9 +1119,10 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             manifest_list.append(manifest)
 
     async def getDevice(self, nativeId: str) -> ArloDeviceBase:
-        self.logger.debug(f'Scrypted requested to load device {nativeId}')
-        async with self.device_lock:
-            return await self._get_device(nativeId)
+        if not self.disabled_plugin:
+            self.logger.debug(f'Scrypted requested to load device {nativeId}')
+            async with self.device_lock:
+                return await self._get_device(nativeId)
 
     async def _get_device(self, nativeId: str, arlo_properties: dict | None = None) -> ArloDeviceBase:
         device = self.scrypted_devices.get(nativeId)
