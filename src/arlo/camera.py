@@ -285,15 +285,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
-                self.logger.info(f"Camera {self.nativeId} and children refreshed and updated in Scrypted.")
+                self.logger.info(f'Camera {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
-                self.logger.error(f"Error refreshing device {self.nativeId}: {e}", exc_info=True)
+                self.logger.error(f'Error refreshing device {self.nativeId}: {e}', exc_info=True)
         except asyncio.CancelledError:
-            self.logger.info("Device refresh task cancelled.")
+            self.logger.info('Device refresh task cancelled.')
 
     @property
     def can_restart(self) -> bool:
-        return self.arlo_device["deviceId"] == self.arlo_device["parentId"] and self.provider.arlo.user_id == self.arlo_device["owner"]["ownerId"]
+        return self.arlo_device['deviceId'] == self.arlo_device['parentId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
 
     @property
     def wired_to_power(self) -> bool:
@@ -452,11 +452,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if self.can_restart:
             result.append(
                 {
-                    "group": "General",
-                    "key": "restart_device",
-                    "title": "Restart Device",
-                    "description": "Restarts the Device.",
-                    "type": "button",
+                    'group': 'General',
+                    'key': 'restart_device',
+                    'title': 'Restart Device',
+                    'description': 'Restarts the Device.',
+                    'type': 'button',
                 },
             )
         return result
@@ -478,12 +478,12 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             self.logger.info(f'Device Properties: {json.dumps(self.arlo_properties)}')
             self.logger.info(f'Device State: {self.device_state}')
             self.logger.info(f'Activity State: {self.activity_state}')
-        elif key == "restart_device":
+        elif key == 'restart_device':
             if self.activity_state == 'idle':
-                self.logger.info("Restarting Device")
-                await self.provider.arlo.restart_device(self.arlo_device["deviceId"])
+                self.logger.info('Restarting Device')
+                await self.provider.arlo.restart_device(self.arlo_device['deviceId'])
             else:
-                self.logger.warning("Device is not idle, cannot restart at this time.")
+                self.logger.warning('Device is not idle, cannot restart at this time.')
         else:
             self.storage.setItem(key, value)
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
@@ -499,18 +499,18 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     async def _wait_for_state_change(self, name: str = None) -> None:
         start_time = asyncio.get_event_loop().time()
-        self.logger.debug("Checking activity state...")
+        self.logger.debug('Checking activity state...')
         while True:
-            scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty("id"))
+            scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
             if scrypted_device:
                 msos: list[ResponseMediaStreamOptions] = await scrypted_device.getVideoStreamOptions()
                 prebuffer_name: str | None = next((m['name'] for m in msos if 'prebuffer' in m), None) if msos else None
             if self.activity_state == 'idle' or (prebuffer_name and name == prebuffer_name):
-                self.logger.debug("Activity State is idle or selected stream is currently active, continuing...")
+                self.logger.debug('Activity State is idle or selected stream is currently active, continuing...')
                 break
             elif (asyncio.get_event_loop().time() - start_time) > self.timeout:
-                raise TimeoutError("Waiting for activity state to be idle timed out")
-            self.logger.debug("Activity State is not idle or selected stream is not the current active stream, waiting...")
+                raise TimeoutError('Waiting for activity state to be idle timed out')
+            self.logger.debug('Activity State is not idle or selected stream is not the current active stream, waiting...')
             await asyncio.sleep(1)
 
     async def getPictureOptions(self) -> list[ResponsePictureOptions]:
@@ -518,29 +518,29 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     async def takePicture(self, options: dict = None) -> MediaObject:
         try:
-            self.logger.info("Initiating snapshot process")
+            self.logger.info('Initiating snapshot process')
             async with self.snapshot_lock:
                 try:
                     await self._attempt_snapshot_from_prebuffer()
-                    self.logger.info("Snapshot created successfully from prebuffer")
+                    self.logger.info('Snapshot created successfully from prebuffer')
                     return self.last_snapshot
                 except Exception as e:
-                    self.logger.error(f"Prebuffer snapshot failed: {e}")
+                    self.logger.error(f'Prebuffer snapshot failed: {e}')
                 if not self._is_time_for_new_snapshot():
                     if self.last_snapshot:
-                        self.logger.info("Returning cached snapshot within throttle interval")
+                        self.logger.info('Returning cached snapshot within throttle interval')
                         return self.last_snapshot
                     else:
-                        self.logger.warning("No cached snapshot available within throttle interval")
+                        self.logger.warning('No cached snapshot available within throttle interval')
                 try:
                     await self._attempt_snapshot_from_arlo_cloud()
-                    self.logger.info("Snapshot created successfully from Arlo Cloud")
+                    self.logger.info('Snapshot created successfully from Arlo Cloud')
                     return self.last_snapshot
                 except Exception as e:
-                    self.logger.error(f"Arlo Cloud snapshot failed: {e}")
+                    self.logger.error(f'Arlo Cloud snapshot failed: {e}')
         except Exception as e:
-            self.logger.error(f"Unexpected error during snapshot process: {e}")
-        self.logger.error("Failed to create or retrieve any snapshot")
+            self.logger.error(f'Unexpected error during snapshot process: {e}')
+        self.logger.error('Failed to create or retrieve any snapshot')
         return None
 
     def _is_time_for_new_snapshot(self) -> bool:
@@ -569,62 +569,62 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             raise
 
     async def _get_scrypted_device_and_prebuffer_id(self) -> tuple[VideoCamera, str]:
-        self.logger.debug("Attempting to get Scrypted Device and Prebuffer ID")
-        scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty("id"))
+        self.logger.debug('Attempting to get Scrypted Device and Prebuffer ID')
+        scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
         if not scrypted_device:
-            raise ValueError("Scrypted Device not found")
+            raise ValueError('Scrypted Device not found')
         msos: list[ResponseMediaStreamOptions] = await scrypted_device.getVideoStreamOptions()
         prebuffer_id: str | None = next((m['id'] for m in msos if 'prebuffer' in m), None)
         if not prebuffer_id:
-            raise ValueError("Scrypted Device found, but no Prebuffer ID found")
-        self.logger.debug("Successfully got Scrypted Device and Prebuffer ID")
+            raise ValueError('Scrypted Device found, but no Prebuffer ID found')
+        self.logger.debug('Successfully got Scrypted Device and Prebuffer ID')
         return scrypted_device, prebuffer_id
 
     async def _get_snapshot_url(self) -> str:
-        self.logger.debug("Getting snapshot URL")
+        self.logger.debug('Getting snapshot URL')
         try:
             await self._wait_for_state_change()
             snapshot_url: str = await asyncio.wait_for(
                 self.provider.arlo.trigger_full_frame_snapshot(self.arlo_device), timeout=10
             )
         except Exception as e:
-            raise ValueError(f"Failed to get snapshot URL: {e}")
+            raise ValueError(f'Failed to get snapshot URL: {e}')
         if not snapshot_url:
-            raise ValueError("Snapshot URL is empty")
-        self.logger.debug(f"Got snapshot URL: {snapshot_url}")
+            raise ValueError('Snapshot URL is empty')
+        self.logger.debug(f'Got snapshot URL: {snapshot_url}')
         return snapshot_url
 
     async def _get_buffer_from_prebuffer(self, scrypted_device: VideoCamera, prebuffer_id: str) -> bytearray:
-        self.logger.debug("Attempting to get buffer from Scrypted Prebuffer")
-        media_object: MediaObject = await scrypted_device.getVideoStream({"id": f"{prebuffer_id}", "refresh": False})
+        self.logger.debug('Attempting to get buffer from Scrypted Prebuffer')
+        media_object: MediaObject = await scrypted_device.getVideoStream({'id': f'{prebuffer_id}', 'refresh': False})
         if not media_object:
-            raise ValueError("No MediaObject received from Scrypted Prebuffer")
-        buf: bytearray = await scrypted_sdk.mediaManager.convertMediaObjectToBuffer(media_object, "image/jpeg")
+            raise ValueError('No MediaObject received from Scrypted Prebuffer')
+        buf: bytearray = await scrypted_sdk.mediaManager.convertMediaObjectToBuffer(media_object, 'image/jpeg')
         if not buf:
-            raise ValueError("Failed to convert MediaObject to buffer")
-        self.logger.debug("Successfully got buffer from Scrypted Prebuffer")
+            raise ValueError('Failed to convert MediaObject to buffer')
+        self.logger.debug('Successfully got buffer from Scrypted Prebuffer')
         return buf
 
     async def _get_buffer_from_url(self, snapshot_url: str) -> bytes:
-        self.logger.debug("Attempting to get buffer from Arlo Cloud URL")
+        self.logger.debug('Attempting to get buffer from Arlo Cloud URL')
         async with aiohttp.ClientSession() as session:
             async with session.get(snapshot_url) as resp:
                 if resp.status != 200:
-                    raise ValueError(f"Unexpected status downloading snapshot image: {resp.status}")
+                    raise ValueError(f'Unexpected status downloading snapshot image: {resp.status}')
                 buf: bytes = await resp.read()
                 if not buf:
-                    raise ValueError("Failed to get buffer from Arlo Cloud URL")
-                self.logger.debug("Successfully got buffer from Arlo Cloud URL")
+                    raise ValueError('Failed to get buffer from Arlo Cloud URL')
+                self.logger.debug('Successfully got buffer from Arlo Cloud URL')
                 return buf
 
     async def _create_snapshot_from_buffer(self, buf: bytearray | bytes) -> None:
-        self.logger.debug("Creating snapshot from buffer")
-        current_snapshot: MediaObject = await scrypted_sdk.mediaManager.createMediaObject(buf, "image/jpeg")
+        self.logger.debug('Creating snapshot from buffer')
+        current_snapshot: MediaObject = await scrypted_sdk.mediaManager.createMediaObject(buf, 'image/jpeg')
         if not current_snapshot:
-            raise ValueError("Failed to create MediaObject from buffer")
+            raise ValueError('Failed to create MediaObject from buffer')
         self.last_snapshot = current_snapshot
         self.last_snapshot_time = datetime.now()
-        self.logger.debug("Successfully created snapshot from buffer")
+        self.logger.debug('Successfully created snapshot from buffer')
 
     async def getVideoStreamOptions(self, id: str = None) -> list[ResponseMediaStreamOptions]:
         options: list[ResponseMediaStreamOptions] = [

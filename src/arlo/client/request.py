@@ -124,14 +124,14 @@ class Request:
                 response = self._send_request(url, method, params, headers)
                 if response.status_code == 401:
                     self.logger.error(f'HTTP 401 Unauthorized for {method} {url}, triggering plugin restart.')
-                    raise UnauthorizedRestartException("401 Unauthorized")
+                    raise UnauthorizedRestartException('401 Unauthorized')
                 response.raise_for_status()
                 break
             except RequestException as e:
                 response_obj: Response | None = getattr(e, 'response', None)
                 if response_obj and getattr(response_obj, 'status_code', None) == 401:
                     self.logger.error(f'HTTP 401 Unauthorized for {method} {url}, triggering plugin restart.')
-                    raise UnauthorizedRestartException("401 Unauthorized")
+                    raise UnauthorizedRestartException('401 Unauthorized')
                 self.logger.error(f'HTTP {method} request to {url} failed: {e}')
                 if attempt < self.max_retries - 1:
                     if response_obj and response_obj.status_code in {429, 500, 502, 503, 504}:

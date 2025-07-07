@@ -50,7 +50,7 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
 
     @property
     def can_restart(self) -> bool:
-        return self.provider.arlo.user_id == self.arlo_device["owner"]["ownerId"]
+        return self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
 
     def get_applicable_interfaces(self) -> list[str]:
         return [
@@ -93,11 +93,11 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
-                self.logger.info(f"Basestation {self.nativeId} and children refreshed and updated in Scrypted.")
+                self.logger.info(f'Basestation {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
-                self.logger.error(f"Error refreshing basestation {self.nativeId}: {e}", exc_info=True)
+                self.logger.error(f'Error refreshing basestation {self.nativeId}: {e}', exc_info=True)
         except asyncio.CancelledError:
-            self.logger.info("Device refresh task cancelled.")
+            self.logger.info('Device refresh task cancelled.')
 
     async def getDevice(self, nativeId: str) -> ScryptedDeviceBase:
         if not nativeId.startswith(self.nativeId):
@@ -117,21 +117,21 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
         result = []
         result.append(
             {
-                "group": "General",
-                "key": "print_debug",
-                "title": "Debug Info",
-                "description": "Prints information about this device to console.",
-                "type": "button",
+                'group': 'General',
+                'key': 'print_debug',
+                'title': 'Debug Info',
+                'description': 'Prints information about this device to console.',
+                'type': 'button',
             },
         )
         if self.can_restart:
             result.append(
                 {
-                    "group": "General",
-                    "key": "restart_device",
-                    "title": "Restart Device",
-                    "description": "Restarts the Device.",
-                    "type": "button",
+                    'group': 'General',
+                    'key': 'restart_device',
+                    'title': 'Restart Device',
+                    'description': 'Restarts the Device.',
+                    'type': 'button',
                 },
             )
         return result
@@ -142,8 +142,8 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
             self.logger.info(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
             self.logger.info(f'Device Properties: {json.dumps(self.arlo_properties)}')
             self.logger.info(f'Device State: {self.device_state}')
-        elif key == "restart_device":
-            self.logger.info("Restarting Device")
+        elif key == 'restart_device':
+            self.logger.info('Restarting Device')
             self.reboot_time = datetime.now()
-            await self.provider.arlo.restart_device(self.arlo_device["deviceId"])
+            await self.provider.arlo.restart_device(self.arlo_device['deviceId'])
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)

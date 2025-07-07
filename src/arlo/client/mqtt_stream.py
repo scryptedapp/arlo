@@ -167,7 +167,7 @@ class MQTTEventStream(Stream):
             waited += poll_interval
 
         if not self.connected:
-            self.logger.error("MQTT Event Stream failed to connect within timeout.")
+            self.logger.error('MQTT Event Stream failed to connect within timeout.')
             self.event_stream = None
             try:
                 await scrypted_sdk.deviceManager.requestRestart()

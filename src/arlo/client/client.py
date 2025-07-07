@@ -450,7 +450,7 @@ class ArloClient(object):
                 devices = [device for device in devices if device.get('state') in VALID_DEVICE_STATES]
             return devices
         except UnauthorizedRestartException:
-            logger.error("Session expired (401). Restarting plugin.")
+            logger.error('Session expired (401). Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return []
 
@@ -471,7 +471,7 @@ class ArloClient(object):
         try:
             return await self._get_device_capabilities_request(str(device['modelId']).lower(), device['interfaceVersion'])
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_device_capabilities. Restarting plugin.")
+            logger.error('Session expired (401) in get_device_capabilities. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return {}
 
@@ -499,7 +499,7 @@ class ArloClient(object):
             key = f'{device["owner"]["ownerId"]}_{device["deviceId"]}'
             return features.get(key, {})
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_device_smart_features. Restarting plugin.")
+            logger.error('Session expired (401) in get_device_smart_features. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return {}
 
@@ -562,7 +562,7 @@ class ArloClient(object):
                 )
             return properties
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in trigger_properties. Restarting plugin.")
+            logger.error('Session expired (401) in trigger_properties. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return {}
 
@@ -575,7 +575,7 @@ class ArloClient(object):
                 for location in location_list
             }
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_locations. Restarting plugin.")
+            logger.error('Session expired (401) in get_locations. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return {}
 
@@ -592,7 +592,7 @@ class ArloClient(object):
         try:
             return await self.request.get(f'https://{self.arlo_api_url}/hmsweb/automation/v3/activeMode?locationId=all', headers=headers)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_mode_and_revision. Restarting plugin.")
+            logger.error('Session expired (401) in get_mode_and_revision. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return {}
 
@@ -609,7 +609,7 @@ class ArloClient(object):
         try:
             await self.request.put(f'https://{self.arlo_api_url}/hmsweb/automation/v3/activeMode?locationId={location}&revision={next_revision}', params=params, headers=headers)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in set_mode. Restarting plugin.")
+            logger.error('Session expired (401) in set_mode. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return
 
@@ -655,7 +655,7 @@ class ArloClient(object):
                 topics = self._collect_topics(basestations) + self._collect_topics(cameras)
                 self.event_stream.subscribe(topics)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in subscribe. Restarting plugin.")
+            logger.error('Session expired (401) in subscribe. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return
 
@@ -708,7 +708,7 @@ class ArloClient(object):
                 await self.request.get(f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe')
             self.event_stream = None
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in unsubscribe. Restarting plugin.")
+            logger.error('Session expired (401) in unsubscribe. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             self.event_stream = None
 
@@ -1116,7 +1116,7 @@ class ArloClient(object):
         try:
             return await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/sipInfo')
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_sip_info. Restarting plugin.")
+            logger.error('Session expired (401) in get_sip_info. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1134,7 +1134,7 @@ class ArloClient(object):
         try:
             return await self.request.get(url, headers=headers)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_sip_info_v2. Restarting plugin.")
+            logger.error('Session expired (401) in get_sip_info_v2. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1143,7 +1143,7 @@ class ArloClient(object):
             response = await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/{self.user_id}_{camera.get("deviceId")}/pushtotalk')
             return response.get('uSessionId'), response.get('data')
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in start_push_to_talk. Restarting plugin.")
+            logger.error('Session expired (401) in start_push_to_talk. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None, None
 
@@ -1151,14 +1151,14 @@ class ArloClient(object):
         try:
             await self._notify_push_to_talk(basestation, camera, uSessionId, localSdp, 'offerSdp', publish_response=True)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in notify_push_to_talk_offer_sdp. Restarting plugin.")
+            logger.error('Session expired (401) in notify_push_to_talk_offer_sdp. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
 
     async def notify_push_to_talk_offer_candidate(self, basestation: dict, camera: dict, uSessionId: str, localCandidate: str):
         try:
             await self._notify_push_to_talk(basestation, camera, uSessionId, localCandidate, 'offerCandidate', publish_response=False)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in notify_push_to_talk_offer_candidate. Restarting plugin.")
+            logger.error('Session expired (401) in notify_push_to_talk_offer_candidate. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
 
     async def _notify_push_to_talk(self, basestation: dict, camera: dict, uSessionId: str, data: str, data_type: str, publish_response: bool):
@@ -1178,7 +1178,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'siren', 'on')
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in siren_on. Restarting plugin.")
+            logger.error('Session expired (401) in siren_on. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1186,7 +1186,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'siren', 'off')
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in siren_off. Restarting plugin.")
+            logger.error('Session expired (401) in siren_off. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1194,7 +1194,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'spotlight', True)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in spotlight_on. Restarting plugin.")
+            logger.error('Session expired (401) in spotlight_on. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1202,7 +1202,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'spotlight', False)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in spotlight_off. Restarting plugin.")
+            logger.error('Session expired (401) in spotlight_off. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1210,7 +1210,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'floodlight', True)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in floodlight_on. Restarting plugin.")
+            logger.error('Session expired (401) in floodlight_on. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1218,7 +1218,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'floodlight', False)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in floodlight_off. Restarting plugin.")
+            logger.error('Session expired (401) in floodlight_off. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1226,7 +1226,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, None, 'nightLight', True)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in nightlight_on. Restarting plugin.")
+            logger.error('Session expired (401) in nightlight_on. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1234,7 +1234,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, None, 'nightLight', False)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in nightlight_off. Restarting plugin.")
+            logger.error('Session expired (401) in nightlight_off. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1242,7 +1242,7 @@ class ArloClient(object):
         try:
             return await self._set_child_device(basestation, camera, 'brightness', brightness)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in brightness_set. Restarting plugin.")
+            logger.error('Session expired (401) in brightness_set. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return None
 
@@ -1313,7 +1313,7 @@ class ArloClient(object):
             }
             await self.request.post(f'https://{self.arlo_api_url}/hmsweb/users/devices/restart', params=params, headers=headers)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in restart_device. Restarting plugin.")
+            logger.error('Session expired (401) in restart_device. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return
 
@@ -1327,7 +1327,7 @@ class ArloClient(object):
             )
             return self._filter_library_results(library_results, device, from_date, to_date)
         except UnauthorizedRestartException:
-            logger.error("Session expired (401) in get_library. Restarting plugin.")
+            logger.error('Session expired (401) in get_library. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return []
 
