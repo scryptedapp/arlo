@@ -6,7 +6,7 @@ import json
 import time
 
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, cast, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import scrypted_sdk
 from scrypted_sdk.types import (
@@ -38,7 +38,6 @@ from scrypted_sdk.types import (
 )
 
 from .base import ArloDeviceBase
-from .child_process import HeartbeatChildProcess
 from .intercom import ArloIntercom
 from .light import ArloBaseLight, ArloSpotlight, ArloFloodlight, ArloNightlight
 from .logging import TCPLogServer
