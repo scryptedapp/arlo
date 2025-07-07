@@ -104,7 +104,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.logger.info('Device discovery interval is 0; periodic discovery will not run.')
             return
         try:
-            await asyncio.sleep(self.device_discovery_interval)
+            await asyncio.sleep(self.device_discovery_interval * 60)
             while True:
                 try:
                     self.logger.info('Running periodic device discovery...')
@@ -123,7 +123,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.logger.info('Device refresh interval is 0; periodic refresh will not run.')
             return
         try:
-            await asyncio.sleep(self.device_refresh_interval)
+            await asyncio.sleep(self.device_refresh_interval * 60)
             while True:
                 try:
                     self.logger.info('Running periodic device refresh...')
