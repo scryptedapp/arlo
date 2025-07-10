@@ -40,7 +40,7 @@ from scrypted_sdk.types import (
 from .base import ArloDeviceBase
 from .intercom import ArloIntercom
 from .light import ArloBaseLight, ArloSpotlight, ArloFloodlight, ArloNightlight
-from .logging import TCPLogServer
+from .local_stream import ArloLocalStreamProxy
 from .vss import ArloSirenVirtualSecuritySystem
 from .webrtc_sip import (
     ArloCameraWebRTCSignalingSession,
@@ -50,6 +50,7 @@ from .webrtc_sip import (
 
 if TYPE_CHECKING:
     from .provider import ArloProvider
+    from .basestation import ArloBasestation
 
 class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger):
     SCRYPTED_TO_ARLO_BRIGHTNESS_MAP = {
@@ -71,14 +72,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     snapshot_lock: asyncio.Lock = None
     last_snapshot: MediaObject = None
     last_snapshot_time: datetime = datetime(1970, 1, 1)
-    info_logger: TCPLogServer
-    debug_logger: TCPLogServer
+    intercom_active: bool = False
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.snapshot_lock = asyncio.Lock()
-        self.info_logger = TCPLogServer(self, self.logger.info)
-        self.debug_logger = TCPLogServer(self, self.logger.debug)
 
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
@@ -88,6 +86,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         self._start_motion_subscription()
         self._start_audio_subscription()
         self._start_battery_subscription()
+        self._start_charge_notification_led_subscription()
         self._start_brightness_subscription()
         self._start_smart_motion_subscription()
         for _ in range(100):
@@ -99,6 +98,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 if self.has_battery:
                     self.batteryLevel = self.arlo_properties.get('batteryLevel', 0)
                     self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
+                if self.has_charge_notification_led:
+                    self.on = self.arlo_properties.get('chargeNotificationLedEnable', False)
                 self.device_state = self.arlo_properties.get('connectionState', 'unavailable')
                 self.activity_state = self.arlo_properties.get('activityState', 'unavailable')
                 self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[self.arlo_properties.get('brightness', 0)]
@@ -138,7 +139,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         )
 
     def _start_motion_subscription(self) -> None:
-        def callback(motion_detected):
+        def callback(motion_detected: bool):
             self.motionDetected = motion_detected
             return self.stop_subscriptions
         self._create_or_register_event_subscription(
@@ -149,7 +150,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     def _start_audio_subscription(self) -> None:
         if not self.has_audio_sensor:
             return
-        def callback(audio_detected):
+        def callback(audio_detected: bool):
             self.audioDetected = audio_detected
             return self.stop_subscriptions
         self._create_or_register_event_subscription(
@@ -160,7 +161,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     def _start_battery_subscription(self) -> None:
         if not self.has_battery:
             return
-        def callback(battery_level):
+        def callback(battery_level: float):
             self.batteryLevel = battery_level
             return self.stop_subscriptions
         self._create_or_register_event_subscription(
@@ -168,8 +169,19 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             self.arlo_device, callback
         )
 
+    def _start_charge_notification_led_subscription(self) -> None:
+        if not self.has_charge_notification_led:
+            return
+        def callback(charge_notification_led_enable: bool):
+            self.on = charge_notification_led_enable
+            return self.stop_subscriptions
+        self._create_or_register_event_subscription(
+            self.provider.arlo.subscribe_to_charge_notification_led_events,
+            self.arlo_device, callback
+        )
+
     def _start_brightness_subscription(self) -> None:
-        def callback(brightness):
+        def callback(brightness: int):
             self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[brightness]
             return self.stop_subscriptions
         self._create_or_register_event_subscription(
@@ -210,6 +222,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ScryptedInterface.ObjectDetector.value,
             ScryptedInterface.Brightness.value,
         ])
+        if self.has_charge_notification_led:
+            results.add(ScryptedInterface.OnOff.value)
         if self.has_sip_webrtc_streaming and not self.disable_webrtc:
             results.add(ScryptedInterface.RTCSignalingChannel.value)
         if self.has_push_to_talk:
@@ -295,6 +309,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return self.arlo_device['deviceId'] == self.arlo_device['parentId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
 
     @property
+    def has_charge_notification_led(self) -> bool:
+        return self._has_property('chargeNotificationLedEnable')
+
+    @property
     def wired_to_power(self) -> bool:
         if self.storage:
             return bool(self.storage.getItem('wired_to_power'))
@@ -378,6 +396,26 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     def has_sip_webrtc_streaming(self) -> bool:
         return self._has_capability('SIPStreaming', 'Streaming')
 
+    @property
+    def has_local_live_streaming(self) -> bool:
+        return self._has_feature('localLiveStreaming') and self.arlo_device['deviceId'] != self.arlo_basestation['deviceId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
+
+    @property
+    def local_live_streaming_codec(self) -> str:
+        codec: str = self.storage.getItem('local_live_streaming_codec')
+        if codec is None or codec == '':
+            codec = 'h.264'
+            self.storage.setItem('local_live_streaming_codec', codec)
+        return codec
+
+    @property
+    def local_live_streaming_codec_list(self) -> list[str]:
+        capabilities: dict = self.arlo_capabilities.get('Capabilities', {})
+        video: list[dict] | dict = capabilities.get('Video', {})
+        if isinstance(video, list):
+            return sum([v.get('Codecs', []) for v in video], [])
+        return video.get('Codecs', [])
+
     async def getSettings(self) -> list[Setting]:
         result = []
         if self.has_battery:
@@ -427,6 +465,18 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ),
             'type': 'boolean',
         })
+        if self.has_local_live_streaming:
+            result.append(
+                {
+                    'group': 'General',
+                    'key': 'local_live_streaming_codec',
+                    'title': 'Local Live Streaming Codec',
+                    'description': 'Select the codec to pull the Local Live Stream from the basestation.',
+                    'value': self.local_live_streaming_codec,
+                    'multiple': False,
+                    'choices': self.local_live_streaming_codec_list,
+                }
+            )
         if self.eco_mode:
             result.append({
                 'group': 'Eco Mode',
@@ -656,6 +706,42 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 'userConfigurable': False,
             }
         ]
+        if self.has_local_live_streaming:
+            options[0]['id'] = 'rtsp'
+            if self.local_live_streaming_codec == 'h.264':
+                options = [
+                    {
+                        'id': 'default',
+                        'name': 'Local RTSP',
+                        'container': 'rtsp',
+                        'video': {
+                            'codec': 'h264',
+                        },
+                        'audio': None if self.arlo_device.get('modelId') == 'VMC3030' else {
+                            'codec': 'aac',
+                        },
+                        'source': 'local',
+                        'tool': 'scrypted',
+                        'userConfigurable': False,
+                    },
+                ] + options
+            elif self.local_live_streaming_codec == 'h.265':
+                options = [
+                    {
+                        'id': 'default',
+                        'name': 'Local RTSP',
+                        'container': 'rtsp',
+                        'video': {
+                            'codec': 'h265',
+                        },
+                        'audio': None if self.arlo_device.get('modelId') == 'VMC3030' else {
+                            'codec': 'aac',
+                        },
+                        'source': 'local',
+                        'tool': 'scrypted',
+                        'userConfigurable': False,
+                    },
+                ] + options
         if id is None:
             return options
         return next(iter([o for o in options if o['id'] == id]))
@@ -690,9 +776,34 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     async def _get_video_stream_url(self, name: str, container: str) -> str:
         try:
             await self._wait_for_state_change(name)
-            self.logger.info(f'Requesting {container} stream')
-            url: str = await asyncio.wait_for(self.provider.arlo.start_stream(self.arlo_device, mode=container, eager=not self.disable_eager_streams), timeout=self.timeout)
-            self.logger.debug(f'Got {container} stream URL at {url}')
+            if name == 'Local RTSP':
+                self.logger.info('Setting up local RTSP stream')
+                basestation: ArloBasestation = await self.provider._get_device(self.arlo_basestation['deviceId'])
+                if basestation is None:
+                    raise Exception("This camera's basestation is missing or hidden, unable to use local stream.")
+                if self.arlo_device['deviceId'] == self.arlo_basestation['deviceId']:
+                    raise Exception('This camera is not connected to a basestation, unable to use local stream.')
+                if basestation.ip is None or not basestation.ip:
+                    raise Exception("Must specify the basestation's IP address to use local stream.")
+                if basestation.host_name is None or not basestation.host_name:
+                    raise Exception("Must specify the basestation's Hostname to use local stream.")
+                if basestation.peer_cert is None or not basestation.peer_cert:
+                    raise Exception('This basestation does not have a certificate, unable to use local stream.')
+                proxy = ArloLocalStreamProxy(
+                    self.provider,
+                    basestation,
+                    self
+                )
+                port = await proxy.start()
+                if self.local_live_streaming_codec == 'h.264':
+                    url = f'rtsp://localhost:{port}/{self.nativeId}/tcp/avc'
+                elif self.local_live_streaming_codec == 'h.265':
+                    url = f'rtsp://localhost:{port}/{self.nativeId}/tcp/hevc'
+                self.logger.debug(f'Constructed local stream URL at {url}')
+            else:
+                self.logger.info(f'Requesting {container} stream')
+                url: str = await asyncio.wait_for(self.provider.arlo.start_stream(self.arlo_device, mode=container, eager=not self.disable_eager_streams), timeout=self.timeout)
+                self.logger.debug(f'Got {container} stream URL at {url}')
             return url
         except asyncio.TimeoutError:
             self.logger.error(f'Timed out waiting for {container} stream URL')
@@ -700,26 +811,27 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     async def startIntercom(self, media: MediaObject) -> None:
         try:
-            self.logger.debug('startIntercom called.')
             if not self.speaker:
-                self.logger.debug('Speaker not initialized, creating speaker from intercom.')
+                self.logger.debug('Speaker not initialized, creating...')
                 self.speaker = self.intercom.speaker()
-            self.logger.debug('Calling speaker.startIntercom.')
             await self.speaker.startIntercom(media)
-            self.logger.debug('speaker.startIntercom completed successfully.')
+            self.intercom_active = True
         except Exception as e:
+            self.intercom_active = False
             self.logger.error(f'Error in startIntercom: {e}', exc_info=True)
 
     async def stopIntercom(self) -> None:
         try:
-            self.logger.debug('stopIntercom called.')
+            if not self.intercom_active:
+                self.logger.debug('Intercom is not active, nothing to stop.')
+                return
             if not self.speaker:
-                self.logger.debug('Speaker not initialized, creating speaker from intercom.')
+                self.logger.debug('Speaker not initialized, creating...')
                 self.speaker = self.intercom.speaker()
-            self.logger.debug('Calling speaker.stopIntercom.')
             await self.speaker.stopIntercom()
-            self.logger.debug('speaker.stopIntercom completed successfully.')
+            self.intercom_active = False
         except Exception as e:
+            self.intercom_active = False
             self.logger.error(f'Error in stopIntercom: {e}', exc_info=True)
 
     async def getVideoClip(self, videoId: str) -> MediaObject:

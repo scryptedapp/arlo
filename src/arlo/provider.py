@@ -19,11 +19,11 @@ from scrypted_sdk.types import Setting, SettingValue, Settings, DeviceProvider, 
 from .base import ArloDeviceBase
 from .basestation import ArloBasestation
 from .camera import ArloCamera
-from .client import ArloClient
+from .client import ArloClient, ArloAsyncBrowser
 from .doorbell import ArloDoorbell
 from .logging import ScryptedDeviceLoggerMixin, StdoutLoggerFactory
 from .vss import ArloModeVirtualSecuritySystem
-from .util import BackgroundTaskMixin
+from .util import BackgroundTaskMixin, generate_rsa_keys
 
 DEVICE_TYPE_BASESTATION = 'basestation'
 DEVICE_TYPE_SIREN = 'siren'
@@ -320,6 +320,31 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.logger.warning(f'Could not get disable_plugin setting: {e}')
             return False
 
+    @property
+    def mdns_services(self) -> dict:
+        return self.storage.getItem('mdns_services')
+
+    @property
+    def arlo_public_key(self) -> str:
+        public_key = self.storage.getItem('arlo_public_key')
+        if public_key is None:
+            self._gen_arlo_keypair()
+            public_key = self.storage.getItem('arlo_public_key')
+        return public_key
+
+    @property
+    def arlo_private_key(self) -> str:
+        private_key = self.storage.getItem('arlo_private_key')
+        if private_key is None:
+            self._gen_arlo_keypair()
+            private_key = self.storage.getItem('arlo_private_key')
+        return private_key
+
+    def _gen_arlo_keypair(self) -> None:
+        public_key, private_key = generate_rsa_keys()
+        self.storage.setItem('arlo_public_key', public_key)
+        self.storage.setItem('arlo_private_key', private_key)
+
     async def login(self, cancel_event: asyncio.Event) -> None:
         if self.login_in_progress:
             self.logger.debug('Login already in progress, waiting for it to complete.')
@@ -590,6 +615,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.scrypted_devices = {}
             await self.arlo.subscribe()
             async with self.device_lock:
+                await self.mdns()
                 await self.discover_devices()
                 await self.subscribe_to_event_stream()
                 await self.create_devices()
@@ -860,6 +886,17 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             return False
         return True
 
+    async def mdns(self) -> None:
+        self.logger.debug('Initializing mDNS Discovery for basestation(s).')
+        try:
+            mdns = ArloAsyncBrowser(self.logger)
+            await mdns.async_run()
+            self.storage.setItem('mdns_services', mdns.services)
+            if self.mdns_services:
+                self.logger.debug(f'Basestation(s) found in mDNS.')
+        except:
+            self.logger.error('Basestation(s) not found in mDNS, manual input needed under basestation(s) settings.')
+
     async def discover_devices(self) -> None:
         try:
             await self._discover_devices()
@@ -1119,7 +1156,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             manifest_list.append(manifest)
 
     async def getDevice(self, nativeId: str) -> ArloDeviceBase:
-        if not self.disabled_plugin:
+        if not self.disable_plugin:
             self.logger.debug(f'Scrypted requested to load device {nativeId}')
             async with self.device_lock:
                 return await self._get_device(nativeId)

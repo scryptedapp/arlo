@@ -5,6 +5,9 @@ import requests
 import socket
 import ssl
 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from requests_toolbelt.adapters import host_header_ssl
 
 from .logging import StdoutLoggerFactory
@@ -89,6 +92,23 @@ def float2hex(f: float, max_hexadecimals: int = 15) -> str:
         d -= digit
         count += 1
     return result
+
+def generate_rsa_keys() -> tuple[str, str]:
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+        backend=default_backend()
+    )
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return public_pem.decode(), private_pem.decode()
 
 async def pick_host_async(hosts: list[str]) -> str:
     return await asyncio.to_thread(_pick_host, hosts)

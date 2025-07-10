@@ -139,35 +139,35 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     def _has_feature(self, feature: str) -> bool:
         if not self.arlo_smart_features:
             return False
-
         smartfeatures: dict = self.arlo_smart_features.get('planFeatures', {})
         return smartfeatures.get(feature, False)
 
     def _has_capability(self, capability: str, subCapability: str = None, subSubCapability: str = None) -> bool:
         if not self.arlo_capabilities:
             return False
-
         capabilities: dict = self.arlo_capabilities.get('Capabilities', {})
-
         if subCapability:
             capabilities = capabilities.get(subCapability, {})
         if subSubCapability:
             capabilities = capabilities.get(subSubCapability, {})
-
         return capability in capabilities
     
     def _get_capability(self, capability: str, subCapability: str = None, subSubCapability: str = None) -> str | dict | None:
         if not self.arlo_capabilities:
             return None
-
         capabilities: dict = self.arlo_capabilities.get('Capabilities', {})
-
         if subCapability:
             capabilities = capabilities.get(subCapability, {})
         if subSubCapability:
             capabilities = capabilities.get(subSubCapability, {})
-
         return capabilities.get(capability, None)
+
+    def _has_property(self, property: str, subProperty: str = None) -> bool:
+        if not self.arlo_properties:
+            return False
+        if subProperty:
+            return property in self.arlo_properties.get(subProperty, {})
+        return property in self.arlo_properties
 
     def _cleanup(self) -> None:
         pass

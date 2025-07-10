@@ -799,6 +799,9 @@ class ArloClient(object):
     def subscribe_to_battery_events(self, camera: dict, callback: Callable) -> asyncio.Task:
         return self._subscribe_to_property_event(camera, 'batteryLevel', callback)
 
+    def subscribe_to_charge_notification_led_events(self, camera: dict, callback: Callable) -> asyncio.Task:
+        return self._subscribe_to_property_event(camera, 'chargeNotificationLedEnable', callback)
+
     def subscribe_to_brightness_events(self, camera: dict, callback: Callable) -> asyncio.Task:
         return self._subscribe_to_property_event(camera, 'brightness', callback)
 
@@ -1316,6 +1319,27 @@ class ArloClient(object):
             logger.error('Session expired (401) in restart_device. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return
+
+    async def create_certificates(self, basestation: dict, public_key: str) -> dict:
+        try:
+            headers = {
+                    'Origin': f'https://{self.arlo_api_url}',
+                    'Referer': f'https://{self.arlo_api_url}/',
+                    'x-user-device-id': self.device_id,
+                    'x-forwarded-user': self.user_id,
+            }
+            params={
+                    'uuid': self.device_id,
+                    'publicKey': public_key,
+                    'uniqueIds': [
+                        basestation['uniqueId']
+                    ],
+            }
+            return await self.request.post(f'https://{self.arlo_api_url}/hmsweb/users/devices/v2/security/cert/create', params=params, headers=headers)
+        except UnauthorizedRestartException:
+            logger.error('Session expired (401) in create_certificates. Restarting plugin.')
+            await scrypted_sdk.deviceManager.requestRestart()
+            return {}
 
     async def get_library(self, device, from_date: datetime, to_date: datetime, no_cache=False):
         try:

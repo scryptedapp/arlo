@@ -33,9 +33,8 @@ class ArloIntercom(ArloDeviceBase):
 
     async def startRTCSignalingSession(self, scrypted_session: RTCSignalingSession):
         try:
-            self.logger.debug('Starting RTC signaling session for intercom.')
             if self.camera.uses_sip_push_to_talk:
-                self.logger.debug('Using SIP push-to-talk for intercom session.')
+                self.logger.debug('Using SIP for intercom session.')
                 plugin_session = ArloIntercomSIPSignalingSession(self)
             else:
                 self.logger.debug('Using WebRTC for intercom session.')
@@ -53,6 +52,7 @@ class ArloIntercom(ArloDeviceBase):
             if isinstance(plugin_session, ArloIntercomWebRTCSignalingSession):
                 try:
                     self.logger.debug('Creating local description with ICE candidate trickle.')
+
                     async def send_ice_candidate(candidate):
                         try:
                             await self.provider.arlo.notify_push_to_talk_offer_candidate(
@@ -62,6 +62,7 @@ class ArloIntercom(ArloDeviceBase):
                             self.logger.debug(f'Sent ICE candidate: {candidate}')
                         except Exception as e:
                             self.logger.error(f'Error sending ICE candidate: {e}', exc_info=True)
+
                     try:
                         scrypted_offer = await asyncio.wait_for(
                             scrypted_session.createLocalDescription('offer', scrypted_setup, send_ice_candidate),
@@ -69,7 +70,9 @@ class ArloIntercom(ArloDeviceBase):
                         )
                     except asyncio.TimeoutError:
                         self.logger.warning('Timeout waiting for ICE candidates, falling back to ignore trickle.')
+
                         async def ignore_trickle(c): pass
+
                         scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
                     self.logger.debug(f'Setting local description with offer: {scrypted_offer['sdp']}')
                     await plugin_session.setRemoteDescription(scrypted_offer)
@@ -93,7 +96,9 @@ class ArloIntercom(ArloDeviceBase):
                         )
                     except asyncio.TimeoutError:
                         self.logger.warning('Timeout waiting for ICE candidates, falling back to ignore trickle.')
+
                         async def ignore_trickle(c): pass
+
                         scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
                     self.logger.debug(f'Setting local description with offer: {scrypted_offer['sdp']}')
                     await plugin_session.setRemoteDescription(scrypted_offer)
