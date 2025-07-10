@@ -781,7 +781,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 'group': 'General',
                 'key': 'mvss_enabled',
                 'title': 'Allow Scrypted to Control Arlo Security Modes',
-                'description': 'Enable or Disable allowing Scrypted to handle changing Security Modes in the Arlo App.',
+                'description': 'Enable allowing Scrypted to handle changing Security Modes in the Arlo App.',
                 'value': self.mvss_enabled,
                 'type': 'boolean',
             },
