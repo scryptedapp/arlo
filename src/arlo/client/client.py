@@ -1,11 +1,17 @@
 import asyncio
 import base64
+import binascii
 import math
+import pickle
 import random
+import requests
+import socket
+import ssl
 import time
 
 from datetime import datetime, timedelta
 from logging import Logger
+from requests_toolbelt.adapters import host_header_ssl
 from scrypted_sdk.other import Storage
 from urllib.parse import parse_qs, ParseResult, urlparse
 from typing import Any, Callable
@@ -14,10 +20,10 @@ import scrypted_sdk
 
 from .mqtt_stream import MQTTEventStream
 from .request import Request
-from .stream import StreamEvent
+from .stream import Stream, StreamEvent
 from .sse_stream import SSEEventStream
 from ..logging import StdoutLoggerFactory
-from ..util import float2hex, pick_host_async, UnauthorizedRestartException
+from ..util import UnauthorizedRestartException
 
 logger = StdoutLoggerFactory.get_logger(name='Client')
 
@@ -80,10 +86,12 @@ class ArloClient(object):
         self._init_session()
 
     def _init_persistent(self) -> None:
+        self.extra_debug_logging = str(self.storage.getItem('extra_debug_logging')).lower() == 'true'
         self.cookies = self.storage.getItem('arlo_cookies')
+        self._check_cookies()
+        self.user_id = self.storage.getItem('arlo_user_id')
         self.device_id = self.storage.getItem('arlo_device_id')
         self.event_stream_transport = self.storage.getItem('arlo_event_stream_transport')
-        self.extra_debug_logging = str(self.storage.getItem('extra_debug_logging')).lower() == 'true'
         self.password = self.storage.getItem('arlo_password')
         self.username = self.storage.getItem('arlo_username')
         self.mvss_enabled = self.storage.getItem('mvss_enabled')
@@ -91,7 +99,7 @@ class ArloClient(object):
     def _init_session(self) -> None:
         self.auth_host: str = None
         self.browser_authenticated: asyncio.Future[bool] | None = None
-        self.event_stream: MQTTEventStream | SSEEventStream = None
+        self.event_stream: Stream | MQTTEventStream | SSEEventStream = None
         self.finialized_login: bool = False
         self.headers: dict[str, str] = None
         self.logged_in: bool = False
@@ -103,7 +111,38 @@ class ArloClient(object):
         self.mqtt_transport: str = 'tcp'
         self.request: Request = None
         self.token: str = None
-        self.user_id: str = None
+
+    def _check_cookies(self) -> None:
+        if not self.cookies:
+            if self.extra_debug_logging:
+                logger.debug('No cookies found in storage.')
+            return
+        if self.extra_debug_logging:
+            logger.debug('Loaded cookies from storage.')
+        try:
+            decoded = base64.b64decode(self.cookies)
+            cookie_dict = pickle.loads(decoded)
+            if not isinstance(cookie_dict, dict):
+                raise ValueError(f'Cookies not stored as a dict: {type(cookie_dict)}')
+            invalid_items = [(k, type(v)) for k, v in cookie_dict.items() if not isinstance(v, str)]
+            if invalid_items:
+                for k, v_type in invalid_items:
+                    if self.extra_debug_logging:
+                        logger.debug(f'Cookie value for {k} is not a string: {v_type}')
+                raise ValueError('One or more cookie values are invalid.')
+        except (binascii.Error, pickle.UnpicklingError, ValueError) as e:
+            if self.extra_debug_logging:
+                logger.debug(f'Invalid cookie format: {e}')
+            self.cookies = None
+            self.storage.setItem('arlo_cookies', None)
+        else:
+            if self.extra_debug_logging:
+                logger.debug('Cookie format is valid.')
+
+    @property
+    def arlo_discovery_in_progress(self):
+        val = self.storage.getItem('arlo_discovery_in_progress')
+        return str(val).lower() == 'true'
 
     async def login(self) -> None:
         try:
@@ -132,7 +171,9 @@ class ArloClient(object):
             if not auth_response_data:
                 logger.error('No auth response data returned from Arlo Cloud.')
                 raise Exception('Arlo Cloud login failed, no auth response data returned.')
-            self.user_id = auth_response_data.get('userId')
+            if not self.user_id:
+                self.user_id = auth_response_data.get('userId')
+                self.storage.setItem('arlo_user_id', self.user_id)
             self.token = auth_response_data.get('token')
             self.headers = self._get_headers()
             mfa_state: str = auth_response_data.get('MFA_State')
@@ -147,6 +188,7 @@ class ArloClient(object):
                 self._finalize_login()
                 await self.user_session()
                 self.logged_in = True
+                logger.info('Arlo Cloud login successful.')
         except Exception as e:
             logger.exception(f'Arlo Cloud login failed: {e}')
             raise
@@ -187,15 +229,41 @@ class ArloClient(object):
             logger.debug('Attempting to use primary authentication host...')
             self.request = Request(extra_debug_logging=self.extra_debug_logging)
             await self.request.options(f'https://{self.auth_url}/api/auth', headers=self.headers)
-            logger.info(f'Using primary authentication host: {self.auth_url}')
+            logger.debug(f'Using primary authentication host: {self.auth_url}')
             return self.auth_url
         except Exception as e:
             logger.warning(f'Primary authentication host failed: {e}. Trying backup hosts...')
             backup_auth_hosts: list[str] = [base64.b64decode(host.encode('utf-8')).decode('utf-8') for host in self.backup_auth_hosts]
-            auth_host = await pick_host_async(backup_auth_hosts)
-            logger.info(f'Using backup authentication host: {auth_host}')
+            auth_host = await self.pick_host_async(backup_auth_hosts)
+            logger.debug(f'Using backup authentication host: {auth_host}')
             self.request = Request(mode='ip', extra_debug_logging=self.extra_debug_logging)
             return auth_host
+
+    async def pick_host_async(self, hosts: list[str]) -> str:
+        return await asyncio.to_thread(self._pick_host, hosts)
+
+    def _pick_host(self, hosts: list[str]) -> str:
+        socket.setdefaulttimeout(5)
+        try:
+            session = requests.Session()
+            session.mount('https://', host_header_ssl.HostHeaderSSLAdapter())
+            for host in hosts:
+                try:
+                    self._verify_hostname(host)
+                    r = session.post(f'https://{host}/api/auth', headers={'Host': self.auth_url})
+                    r.raise_for_status()
+                    return host
+                except (requests.RequestException, socket.error, ssl.SSLError) as e:
+                    logger.warning(f'Backup Authentication Host {host} is invalid: {e}')
+            raise Exception('No valid backup authentication hosts found!')
+        finally:
+            socket.setdefaulttimeout(15)
+
+    def _verify_hostname(self, host: str) -> None:
+        context = ssl.create_default_context()
+        with socket.create_connection((host, 443), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=self.auth_url):
+                pass
 
     async def _handle_mfa_flow(self, issued: int) -> None:
         get_factor_id_response: dict[str, Any] = await self._get_factor_id()
@@ -259,8 +327,9 @@ class ArloClient(object):
             self._finalize_login()
             await self.user_session()
             self.logged_in = True
+            logger.info('Arlo Cloud login successful.')
         elif get_factor_id_meta_code == 200:
-            logger.info('Browser authenticated, continuing login...')
+            logger.debug('Browser authenticated, continuing login...')
             get_factor_id_response_data: dict[str, Any] = get_factor_id_response.get('data', {})
             factor_id: str = get_factor_id_response_data.get('factorId')
             start_auth_response: dict[str, Any] = await self._start_auth(factor_id)
@@ -278,6 +347,7 @@ class ArloClient(object):
             self._finalize_login()
             await self.user_session()
             self.logged_in = True
+            logger.info('Arlo Cloud login successful.')
 
     async def _get_factor_id(self) -> dict[str, Any]:
         try:
@@ -414,16 +484,16 @@ class ArloClient(object):
                 self.mqtt_port = parsed_url.port
                 if self.mqtt_port != 443:
                     self.mqtt_transport = 'websockets'
-            logger.info('User session established successfully.')
+            logger.debug('User session established successfully.')
         else:
             logger.warning('Failed to fetch session details')
 
     async def restart(self) -> None:
-        logger.info('Restarting Arlo client: performing full logout and reset and preparing for new login.')
+        logger.debug('Restarting Arlo client: performing full logout and reset and preparing for new login.')
         await self._logout()
 
     async def _logout(self) -> None:
-        logger.info('Logging out of Arlo client.')
+        logger.debug('Logging out of Arlo client.')
         try:
             await self.unsubscribe()
         except Exception as e:
@@ -439,7 +509,7 @@ class ArloClient(object):
                 await self.request.put(f'https://{self.arlo_api_url}/hmsweb/logout')
             except Exception as e:
                 logger.warning(f'Error during logout request: {e}')
-        logger.info('Arlo client logged out.')
+        logger.debug('Arlo client logged out.')
 
     async def get_devices(self, device_type=None, device_state=None) -> list[dict[str, Any]]:
         try:
@@ -546,7 +616,6 @@ class ArloClient(object):
             def callback(event: dict):
                 if 'error' in event:
                     return None
-                resource = event.get('resource')
                 resource_properties = event.get('properties', {})
                 properties.update(resource_properties)
                 return resource_properties
@@ -643,7 +712,7 @@ class ArloClient(object):
                     )
                     and not str(b['modelId']).lower().startswith(('avd2001', 'avd3001', 'avd4001'))
                 }
-                logger.info(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
+                logger.debug(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
                 if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
                     self.heartbeat_task.cancel()
                     try:
@@ -697,9 +766,25 @@ class ArloClient(object):
 
     def _genTransId(self, trans_type: str = 'web') -> str:
         now = datetime.today()
-        rand_hex = float2hex(random.random() * math.pow(2, 32)).lower()
+        rand_hex = self._float2hex(random.random() * math.pow(2, 32)).lower()
         timestamp = int((time.mktime(now.timetuple()) * 1e3 + now.microsecond / 1e3))
         return f'{trans_type}!{rand_hex}!{timestamp}'
+
+    def _float2hex(self, f: float, max_hexadecimals: int = 15) -> str:
+        w = int(f)
+        d = f - w
+        result = hex(w).replace('0x', '') or '0'
+        if d == 0:
+            return result
+        result += '.'
+        count = 0
+        while d and count < max_hexadecimals:
+            d *= 16
+            digit = int(d)
+            result += hex(digit).replace('0x', '').upper()
+            d -= digit
+            count += 1
+        return result
 
     async def unsubscribe(self):
         try:

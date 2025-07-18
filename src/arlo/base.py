@@ -151,7 +151,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
         if subSubCapability:
             capabilities = capabilities.get(subSubCapability, {})
         return capability in capabilities
-    
+
     def _get_capability(self, capability: str, subCapability: str = None, subSubCapability: str = None) -> str | dict | None:
         if not self.arlo_capabilities:
             return None

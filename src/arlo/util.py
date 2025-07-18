@@ -1,16 +1,6 @@
 import asyncio
 import contextlib
 import logging
-import requests
-import socket
-import ssl
-
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from requests_toolbelt.adapters import host_header_ssl
-
-from .logging import StdoutLoggerFactory
 
 class BackgroundTaskMixin:
     background_tasks: set[asyncio.Task]
@@ -47,10 +37,13 @@ class BackgroundTaskMixin:
             task.cancel()
             self.background_tasks.discard(task)
 
-    def cancel_pending_tasks(self) -> None:
+    def cancel_pending_tasks(self, tag: str | None = None) -> None:
         if not hasattr(self, 'background_tasks'):
             return
         for task in list(self.background_tasks):
+            task_tag = getattr(task, '_task_tag', None)
+            if tag is not None and task_tag == tag:
+                continue
             task.cancel()
             self.background_tasks.discard(task)
 
@@ -76,63 +69,3 @@ class BackgroundTaskMixin:
 class UnauthorizedRestartException(Exception):
     """Raised when a 401 Unauthorized is encountered and a plugin restart is needed."""
     pass
-
-def float2hex(f: float, max_hexadecimals: int = 15) -> str:
-    w = int(f)
-    d = f - w
-    result = hex(w).replace('0x', '') or '0'
-    if d == 0:
-        return result
-    result += '.'
-    count = 0
-    while d and count < max_hexadecimals:
-        d *= 16
-        digit = int(d)
-        result += hex(digit).replace('0x', '').upper()
-        d -= digit
-        count += 1
-    return result
-
-def generate_rsa_keys() -> tuple[str, str]:
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    public_pem = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    return public_pem.decode(), private_pem.decode()
-
-async def pick_host_async(hosts: list[str]) -> str:
-    return await asyncio.to_thread(_pick_host, hosts)
-
-def _pick_host(hosts: list[str]) -> str:
-    socket.setdefaulttimeout(5)
-    try:
-        session = requests.Session()
-        session.mount('https://', host_header_ssl.HostHeaderSSLAdapter())
-        for host in hosts:
-            try:
-                _verify_hostname(host)
-                r = session.post(f'https://{host}/api/auth', headers={'Host': 'ocapi-app.arlo.com'})
-                r.raise_for_status()
-                return host
-            except (requests.RequestException, socket.error, ssl.SSLError) as e:
-                logger = StdoutLoggerFactory.get_logger(name='Client')
-                logger.warning(f'Backup Authentication Host {host} is invalid: {e}')
-        raise Exception('No valid backup authentication hosts found!')
-    finally:
-        socket.setdefaulttimeout(15)
-
-def _verify_hostname(host: str) -> None:
-    context = ssl.create_default_context()
-    with socket.create_connection((host, 443), timeout=5) as sock:
-        with context.wrap_socket(sock, server_hostname='ocapi-app.arlo.com'):
-            pass

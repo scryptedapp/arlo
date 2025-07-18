@@ -41,11 +41,11 @@ class SSEEventStream(Stream):
                         continue
                     if response.get('action') == 'logout':
                         if self.event_stream_stop_event.is_set() or self.shutting_down_stream is event_stream:
-                            self.logger.info(f'SSE Event Stream {id(event_stream)} disconnected.')
+                            self.logger.debug(f'SSE Event Stream {id(event_stream)} disconnected.')
                             return
                     elif response.get('status') == 'connected':
                         if not self.connected:
-                            self.logger.info(f'SSE Event Stream {id(event_stream)} connected.')
+                            self.logger.debug(f'SSE Event Stream {id(event_stream)} connected.')
                             self.initializing = False
                             self.connected = True
                     else:

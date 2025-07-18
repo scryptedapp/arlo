@@ -101,7 +101,7 @@ class SIPMessage:
             raise
 
 class AuthHeader:
-    def __init__(self, mode: str, params: list[str, str]):
+    def __init__(self, mode: str, params: dict[str, dict]):
         self.mode = mode
         self.params = params
 

@@ -1,6 +1,6 @@
 aiohttp==3.12.14
 beautifulsoup4==4.13.4
-curl-cffi==0.11.4
+curl-cffi==0.12.0
 paho-mqtt==2.1.0
 requests==2.32.4
 requests-toolbelt==1.0.0

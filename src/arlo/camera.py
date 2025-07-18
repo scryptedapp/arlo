@@ -298,11 +298,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
-                self.logger.info(f'Camera {self.nativeId} and children refreshed and updated in Scrypted.')
+                self.logger.debug(f'Camera {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
                 self.logger.error(f'Error refreshing device {self.nativeId}: {e}', exc_info=True)
         except asyncio.CancelledError:
-            self.logger.info('Device refresh task cancelled.')
+            self.logger.debug('Device refresh task cancelled.')
 
     @property
     def can_restart(self) -> bool:
@@ -522,14 +522,14 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         elif key in ['eco_mode', 'disable_eager_streams']:
             self.storage.setItem(key, value == 'true' or value is True)
         elif key == 'print_debug':
-            self.logger.info(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
-            self.logger.info(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
-            self.logger.info(f'Device Properties: {json.dumps(self.arlo_properties)}')
-            self.logger.info(f'Device State: {self.device_state}')
-            self.logger.info(f'Activity State: {self.activity_state}')
+            self.logger.debug(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
+            self.logger.debug(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
+            self.logger.debug(f'Device Properties: {json.dumps(self.arlo_properties)}')
+            self.logger.debug(f'Device State: {self.device_state}')
+            self.logger.debug(f'Activity State: {self.activity_state}')
         elif key == 'restart_device':
             if self.activity_state == 'idle':
-                self.logger.info('Restarting Device')
+                self.logger.debug('Restarting Device')
                 await self.provider.arlo.restart_device(self.arlo_device['deviceId'])
             else:
                 self.logger.warning('Device is not idle, cannot restart at this time.')
@@ -567,23 +567,23 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     async def takePicture(self, options: dict = None) -> MediaObject:
         try:
-            self.logger.info('Initiating snapshot process')
+            self.logger.info('Requesting snapshot')
             async with self.snapshot_lock:
                 try:
                     await self._attempt_snapshot_from_prebuffer()
-                    self.logger.info('Snapshot created successfully from prebuffer')
+                    self.logger.debug('Snapshot created successfully from prebuffer')
                     return self.last_snapshot
                 except Exception as e:
                     self.logger.error(f'Prebuffer snapshot failed: {e}')
                 if not self._is_time_for_new_snapshot():
                     if self.last_snapshot:
-                        self.logger.info('Returning cached snapshot within throttle interval')
+                        self.logger.debug('Returning cached snapshot within throttle interval')
                         return self.last_snapshot
                     else:
                         self.logger.warning('No cached snapshot available within throttle interval')
                 try:
                     await self._attempt_snapshot_from_arlo_cloud()
-                    self.logger.info('Snapshot created successfully from Arlo Cloud')
+                    self.logger.debug('Snapshot created successfully from Arlo Cloud')
                     return self.last_snapshot
                 except Exception as e:
                     self.logger.error(f'Arlo Cloud snapshot failed: {e}')
@@ -617,9 +617,9 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         except Exception:
             raise
 
-    async def _get_scrypted_device_and_prebuffer_id(self) -> tuple[VideoCamera, str]:
+    async def _get_scrypted_device_and_prebuffer_id(self) -> tuple[ArloCamera, str]:
         self.logger.debug('Attempting to get Scrypted Device and Prebuffer ID')
-        scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
+        scrypted_device: ArloCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
         if not scrypted_device:
             raise ValueError('Scrypted Device not found')
         msos: list[ResponseMediaStreamOptions] = await scrypted_device.getVideoStreamOptions()
@@ -720,7 +720,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                         'audio': None if self.arlo_device.get('modelId') == 'VMC3030' else {
                             'codec': 'aac',
                         },
-                        'source': 'local',
+                        'source': 'cloud',
                         'tool': 'scrypted',
                         'userConfigurable': False,
                     },
@@ -737,7 +737,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                         'audio': None if self.arlo_device.get('modelId') == 'VMC3030' else {
                             'codec': 'aac',
                         },
-                        'source': 'local',
+                        'source': 'cloud',
                         'tool': 'scrypted',
                         'userConfigurable': False,
                     },
@@ -777,7 +777,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         try:
             await self._wait_for_state_change(name)
             if name == 'Local RTSP':
-                self.logger.info('Setting up local RTSP stream')
+                self.logger.info(f'Requesting local stream')
                 basestation: ArloBasestation = await self.provider._get_device(self.arlo_basestation['deviceId'])
                 if basestation is None:
                     raise Exception("This camera's basestation is missing or hidden, unable to use local stream.")
@@ -799,7 +799,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                     url = f'rtsp://localhost:{port}/{self.nativeId}/tcp/avc'
                 elif self.local_live_streaming_codec == 'h.265':
                     url = f'rtsp://localhost:{port}/{self.nativeId}/tcp/hevc'
-                self.logger.debug(f'Constructed local stream URL at {url}')
+                self.logger.debug(f'Got local stream URL at {url}')
             else:
                 self.logger.info(f'Requesting {container} stream')
                 url: str = await asyncio.wait_for(self.provider.arlo.start_stream(self.arlo_device, mode=container, eager=not self.disable_eager_streams), timeout=self.timeout)

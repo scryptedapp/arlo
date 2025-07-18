@@ -36,6 +36,8 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
             try:
                 if getattr(self, 'storage', None) is not None:
                     break
+                else:
+                    await asyncio.sleep(0.1)
             except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
@@ -46,9 +48,13 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
             if self.stop_subscriptions:
                 return
             try:
+                mode = self.mode
+                if mode is None or mode not in self.SUPPORTED_MODES:
+                    await asyncio.sleep(0.1)
+                    continue
                 self.securitySystemState = {
                     'supportedModes': self.SUPPORTED_MODES,
-                    'mode': self.mode,
+                    'mode': mode,
                 }
                 return
             except Exception as e:
@@ -234,7 +240,7 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
             try:
                 scrypted_sdk.deviceManager.getDeviceState(self.nativeId)
                 break
-            except KeyError:
+            except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:

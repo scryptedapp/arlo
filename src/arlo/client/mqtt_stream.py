@@ -49,7 +49,7 @@ class MQTTEventStream(Stream):
             if rc == 0:
                 self.connected = True
                 self.initializing = False
-                self.logger.info(f'MQTT Event Stream {id(client)} connected.')
+                self.logger.debug(f'MQTT Event Stream {id(client)} connected.')
                 session_topics = [
                     f'u/{self.arlo.user_id}/in/userSession/connect',
                     f'u/{self.arlo.user_id}/in/userSession/disconnect',
@@ -144,7 +144,7 @@ class MQTTEventStream(Stream):
                     delay = base_delay * (2 ** retries)
                     jitter = random.uniform(0, 1)
                     total_delay = delay + jitter
-                    self.logger.info(f'Retrying MQTT connection in {total_delay:.2f} seconds ({retries}/{retry_limit - 1})...')
+                    self.logger.debug(f'Retrying MQTT connection in {total_delay:.2f} seconds ({retries}/{retry_limit - 1})...')
                     await asyncio.sleep(total_delay)
             return False
 

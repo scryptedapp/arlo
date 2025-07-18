@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+from cryptography import x509
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -23,9 +26,9 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
 
     def __init__(self, nativeId: str, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_basestation, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
-        self.device_state = 'available' if self.arlo_properties.get('state', '') == 'idle' else 'unavailable'
-        self.reboot_time = datetime.now()
-        self.svss = None
+        self.device_state: str = 'available' if self.arlo_properties.get('state', '') == 'idle' else 'unavailable'
+        self.reboot_time: datetime = datetime.now()
+        self.svss: ArloSirenVirtualSecuritySystem | None = None
         self._start_device_state_subscription()
         if not self.arlo_properties:
             self.create_task(self.refresh_device())
@@ -36,14 +39,8 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
             if self.stop_subscriptions:
                 return
             try:
-                self.logger.debug('Checking if Certificates are created with Arlo')
-                cert_registered = self.peer_cert
-                if cert_registered:
-                    self.logger.debug('Certificates have been created with Arlo, skipping Certificate Creation')
-                else:
-                    self.logger.debug('Certificates have not been created with Arlo, proceeding with Certificate Creation')
-                if self.has_local_live_streaming and not cert_registered:
-                    await self._create_certificates()
+                if self.has_local_live_streaming:
+                    await self._check_certificates()
                 if self.has_local_live_streaming:
                     await self._mdns()
                 return
@@ -67,6 +64,44 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
             self.provider.arlo.subscribe_to_device_state_events,
             self.arlo_device, callback
         )
+
+    async def _check_certificates(self) -> None:
+        self.logger.debug('Checking if Certificates are created with Arlo')
+        if not self.peer_cert or not self.device_cert or not self.ica_cert:
+            self.logger.debug('Certificates have not been created with Arlo, proceeding with Certificate Creation')
+            await self._create_certificates()
+            return
+        if not self._check_certificate_and_key_match():
+            self.logger.debug('Certificates exist but do not match the expected keys, generating new keypair and creating new certificates.')
+            self.provider.generate_arlo_keypair()
+            await self._create_certificates()
+            return
+        self.logger.debug('Certificates have been created with Arlo and match the expected keys, skipping Certificate Creation')
+
+    def _check_certificate_and_key_match(self) -> bool:
+        key_pem = self.provider.arlo_private_key
+        cert_pem = self.peer_cert
+        if not key_pem or not cert_pem:
+            self.logger.debug('Missing certificate or private key for match check.')
+            return False
+        try:
+            private_key = serialization.load_pem_private_key(
+                key_pem.encode(), password=None, backend=default_backend()
+            )
+            cert_obj = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
+            pubkey_cert = cert_obj.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            pubkey_key = private_key.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            match = pubkey_cert == pubkey_key
+            return match
+        except Exception as e:
+            self.logger.warning(f'Error checking peer certificate and private key match: {e}')
+            return False
 
     async def _create_certificates(self) -> None:
         certificates = await self.provider.arlo.create_certificates(self.arlo_basestation, ''.join(self.provider.arlo_public_key[27:-25].splitlines()))
@@ -191,11 +226,11 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
-                self.logger.info(f'Basestation {self.nativeId} and children refreshed and updated in Scrypted.')
+                self.logger.debug(f'Basestation {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
                 self.logger.error(f'Error refreshing basestation {self.nativeId}: {e}', exc_info=True)
         except asyncio.CancelledError:
-            self.logger.info('Device refresh task cancelled.')
+            self.logger.debug('Device refresh task cancelled.')
 
     async def getDevice(self, nativeId: str) -> ScryptedDeviceBase:
         if not nativeId.startswith(self.nativeId):
@@ -238,7 +273,7 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                                    'Note that the basestation must be in the same network as Scrypted for this to work.'
                                    'If this is empty, it means mDNS failed to find your basestation, ' + \
                                    'You will have to input the Hostname into this field manually, ' + \
-                                   'Usually the model including the domain, i.e. ""VMB5000.local"" or ""VMB5000-2.local"" ' + \
+                                   'Usually the model including the domain, i.e. "VMB5000.local" or "VMB5000-2.local" ' + \
                                    'if you have mutliple of the same model basestation.',
                     'value': self.host_name,
                     'readonly': self.mdns_boolean,
@@ -267,15 +302,15 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
 
     async def putSetting(self, key: str, value: SettingValue) -> None:
         if key == 'print_debug':
-            self.logger.info(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
-            self.logger.info(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
-            self.logger.info(f'Device Properties: {json.dumps(self.arlo_properties)}')
+            self.logger.debug(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
+            self.logger.debug(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
+            self.logger.debug(f'Device Properties: {json.dumps(self.arlo_properties)}')
             self.logger.debug(f'Peer Certificate:\n{self.peer_cert}')
             self.logger.debug(f'Device Certificate:\n{self.device_cert}')
             self.logger.debug(f'ICA Certificate:\n{self.ica_cert}')
-            self.logger.info(f'Device State: {self.device_state}')
+            self.logger.debug(f'Device State: {self.device_state}')
         elif key == 'restart_device':
-            self.logger.info('Restarting Device')
+            self.logger.debug('Restarting Device')
             self.reboot_time = datetime.now()
             await self.provider.arlo.restart_device(self.arlo_device['deviceId'])
         elif key in ['ip', 'host_name']:

@@ -49,6 +49,8 @@ class Stream:
         self.event_loop.create_task(self._refresh_interval())
         self.event_loop.create_task(self._clean_queues())
 
+        self._event_buffer: list[dict[str, Any]] = []
+
     def __del__(self) -> None:
         self.disconnect()
 
@@ -146,6 +148,14 @@ class Stream:
         return f'{resource}/{action}' + (f'/{property}' if property else '')
 
     def _queue_response(self, response: dict[str, Any]) -> None:
+        if getattr(self.arlo, 'arlo_discovery_in_progress', False):
+            if not self._is_discovery_event(response):
+                self.logger.debug(f'Buffering event during discovery: {response}')
+                self._buffer_event(response)
+                return
+        self._queue_response_normal(response)
+
+    def _queue_response_normal(self, response: dict[str, Any]) -> None:
         resource: str = response.get('resource')
         action: str = response.get('action')
         now: float = time.time()
@@ -159,6 +169,28 @@ class Stream:
         props: dict[str, Any] = response.get('properties', {})
         for prop in props.keys():
             self._queue_event(self._make_key(resource, action, prop), event)
+
+    def _is_discovery_event(self, response: dict) -> bool:
+        properties: dict[str, Any] = response.get('properties', {})
+        return (
+            response.get('action') == 'is'
+            and isinstance(properties, dict)
+            and properties
+            and (
+                'interfaceVersion' in properties
+                or 'localCert' in properties
+            )
+        )
+
+    def _buffer_event(self, response: dict) -> None:
+        self._event_buffer.append(response)
+
+    def process_buffered_events(self):
+        if self._event_buffer:
+            self.logger.debug(f'Processing {len(self._event_buffer)} buffered events after discovery.')
+            for event in self._event_buffer:
+                self._queue_response_normal(event)
+            self._event_buffer.clear()
 
     def _queue_event(self, key: str, event: StreamEvent) -> None:
         self.queues.setdefault(key, asyncio.Queue()).put_nowait(event)

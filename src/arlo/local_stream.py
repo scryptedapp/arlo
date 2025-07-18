@@ -84,9 +84,6 @@ class RTSPMessage:
         self.headers.append((normalized, value))
 
 class ArloLocalStreamProxy:
-    REBROADCAST_BUFFER_LEN = 4096
-    BASESTATION_BUFFER_LEN = 40960
-
     def __init__(self, provider: ArloProvider, basestation: ArloBasestation, camera: ArloCamera):
         self.provider = provider
         self.basestation = basestation
@@ -94,61 +91,60 @@ class ArloLocalStreamProxy:
         self.logger = camera.logger
         self.listener = None
         self.listener_port = None
-        self.extra_debug = self.provider.plugin_log_level == 'Extra Debug'
+        self.extra_debug_logging = str(self.provider.storage.getItem('extra_debug_logging')).lower() == 'true'
         self.certfile = self._write_temp_file(self.basestation.peer_cert, 'cert.pem')
         self.keyfile = self._write_temp_file(self.provider.arlo_private_key, 'key.pem')
         self.ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
         self.ssl_context.load_cert_chain(self.certfile, self.keyfile)
+        self.nonce = 0
 
     async def start(self) -> int:
         self.listener = await asyncio.start_server(self._handle_connection, '127.0.0.1', 0)
         self.listener_port = self.listener.sockets[0].getsockname()[1]
-        self.logger.info(f'ArloLocalStreamProxy listening on 127.0.0.1:{self.listener_port}')
+        self.logger.debug(f'ArloLocalStreamProxy listening on 127.0.0.1:{self.listener_port}')
         return self.listener_port
 
     async def _handle_connection(
         self, rebroadcast_reader: asyncio.StreamReader, rebroadcast_writer: asyncio.StreamWriter
     ):
-        nonce = 0
+        self.nonce = 0
         basestation_reader = basestation_writer = None
         try:
-            self.logger.info(f'Connecting to basestation {self.basestation.ip}:554')
+            self.logger.debug(f'Connecting to basestation {self.basestation.ip}:554')
             basestation_reader, basestation_writer = await asyncio.open_connection(
                 self.basestation.ip, 554, ssl=self.ssl_context
             )
 
-            async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, from_rebroadcast: bool, buffer_size: int):
-                nonlocal nonce
+            async def _connection_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, from_rebroadcast: bool):
                 direction = 'Rebroadcast → Basestation' if from_rebroadcast else 'Basestation → Rebroadcast'
                 try:
                     while True:
-                        data = await reader.read(buffer_size)
+                        data = await reader.read(4096)
                         if not data:
-                            if self.extra_debug:
-                                self.logger.debug(f'EOF received, closing pipe ({direction})')
+                            if self.extra_debug_logging:
+                                self.logger.debug(f'End of Stream received, closing connection handler ({direction})')
                             break
-                        if len(data) == buffer_size:
-                            self.logger.warning(f'Buffer full ({direction})')
                         is_interleaved = self._is_interleaved(data)
                         is_rtsp = self._is_rtsp(data)
                         rtsp_msg = None
                         try:
                             if is_interleaved:
-                                if self.extra_debug:
-                                    self.logger.debug(f'Interleaved data: {len(data)} bytes ({direction})')
+                                if self.extra_debug_logging:
+                                    self.logger.debug(f'Video/Audio Stream Data: {len(data)} bytes ({direction})')
                                 await self._write_and_drain(writer, data)
+                                await asyncio.sleep(0.005)
                             elif is_rtsp:
                                 try:
                                     rtsp_msg = RTSPMessage(data)
                                     if from_rebroadcast:
-                                        nonce = self._handle_outgoing_nonce_and_urls(rtsp_msg, nonce)
+                                        self._handle_outgoing_nonce_and_urls(rtsp_msg)
                                     else:
-                                        nonce = self._handle_incoming_nonce_and_urls(rtsp_msg, nonce)
-                                    if self.extra_debug:
+                                        self._handle_incoming_nonce_and_urls(rtsp_msg)
+                                    if self.extra_debug_logging:
                                         self.logger.debug(
-                                            f'{"Outgoing" if from_rebroadcast else "Incoming"} RTSP message (after mutation):\n{rtsp_msg.formatted()}'
+                                            f'{"Outgoing" if from_rebroadcast else "Incoming"} RTSP message:\n{rtsp_msg.formatted()}'
                                         )
                                     await self._write_and_drain(writer, rtsp_msg.to_bytes())
                                 except Exception as e:
@@ -174,11 +170,11 @@ class ArloLocalStreamProxy:
                     except Exception:
                         pass
 
-            pipes = [
-                asyncio.create_task(_pipe(rebroadcast_reader, basestation_writer, True, self.REBROADCAST_BUFFER_LEN)),
-                asyncio.create_task(_pipe(basestation_reader, rebroadcast_writer, False, self.BASESTATION_BUFFER_LEN)),
+            connection_handlers = [
+                asyncio.create_task(_connection_handler(rebroadcast_reader, basestation_writer, True)),
+                asyncio.create_task(_connection_handler(basestation_reader, rebroadcast_writer, False)),
             ]
-            _, pending = await asyncio.wait(pipes, return_when=asyncio.FIRST_COMPLETED)
+            _, pending = await asyncio.wait(connection_handlers, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
                 try:
@@ -203,22 +199,21 @@ class ArloLocalStreamProxy:
         writer.write(data)
         await writer.drain()
 
-    def _handle_outgoing_nonce_and_urls(self, msg: RTSPMessage, nonce: int) -> int:
-        if nonce != 0:
-            nonce += 1
-            msg.set_header('Nonce', str(nonce))
+    def _handle_outgoing_nonce_and_urls(self, msg: RTSPMessage) -> None:
+        if self.nonce != 0:
+            self.nonce += 1
+            msg.set_header('Nonce', str(self.nonce))
         if 'rtsp://' in msg.first_line:
             msg.first_line = msg.first_line.replace(f'localhost:{self.listener_port}', self.basestation.host_name)
         for k, v in msg.headers:
             if 'rtsp://' in v:
                 msg.set_header(k, str(v).replace(f'localhost:{self.listener_port}', self.basestation.host_name))
-        return nonce
 
-    def _handle_incoming_nonce_and_urls(self, msg: RTSPMessage, nonce: int) -> int:
+    def _handle_incoming_nonce_and_urls(self, msg: RTSPMessage) -> None:
         new_nonce = msg.get_header('Nonce')
         if new_nonce:
             try:
-                nonce = int(new_nonce)
+                self.nonce = int(new_nonce)
             except Exception as e:
                 self.logger.error(f'Error parsing nonce "{new_nonce}": {e}')
         if 'rtsp://' in msg.first_line:
@@ -226,7 +221,6 @@ class ArloLocalStreamProxy:
         for k, v in msg.headers:
             if 'rtsp://' in v:
                 msg.set_header(k, str(v).replace(self.basestation.host_name, f'localhost:{self.listener_port}'))
-        return nonce
 
     def _is_rtsp(self, data: bytes) -> bool:
         rtsp_methods = (
