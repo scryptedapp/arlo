@@ -48,22 +48,39 @@ class ArloSirenVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, R
         self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
 
     async def delayed_init(self) -> None:
-        iterations = 1
-        while not self.stop_subscriptions:
-            if iterations > 100:
-                self.logger.error("Delayed init exceeded iteration limit, giving up")
+        for _ in range(100):
+            if self.stop_subscriptions:
                 return
-
             try:
+                if getattr(self, "storage", None) is not None:
+                    break
+                else:
+                    await asyncio.sleep(0.1)
+            except Exception as e:
+                self.logger.debug(f"Delayed init failed, will try again: {e}")
+                await asyncio.sleep(0.1)
+        else:
+            self.logger.error("Delayed init exceeded iteration limit, giving up")
+            return
+        for _ in range(100):
+            if self.stop_subscriptions:
+                return
+            try:
+                mode = self.mode
+                if mode is None or mode not in ArloSirenVirtualSecuritySystem.SUPPORTED_MODES:
+                    await asyncio.sleep(0.1)
+                    continue
                 self.securitySystemState = {
                     "supportedModes": ArloSirenVirtualSecuritySystem.SUPPORTED_MODES,
-                    "mode": self.mode,
+                    "mode": mode,
                 }
                 return
             except Exception as e:
                 self.logger.debug(f"Delayed init failed, will try again: {e}")
                 await asyncio.sleep(0.1)
-            iterations += 1
+        else:
+            self.logger.error("Delayed init exceeded iteration limit, giving up")
+            return
 
     def get_applicable_interfaces(self) -> List[str]:
         return [

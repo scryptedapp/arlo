@@ -1,6 +1,6 @@
 {
    "name": "@scrypted/arlo",
-   "version": "0.11.45",
+   "version": "0.11.46",
    "description": "Arlo Plugin for Scrypted",
    "license": "Apache",
    "repository": {
@@ -47,6 +47,6 @@
       ]
    },
    "devDependencies": {
-      "@scrypted/sdk": "^0.5.12"
+      "@scrypted/sdk": "^0.5.33"
    }
 }

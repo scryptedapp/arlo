@@ -15,7 +15,7 @@ from typing import List
 
 import scrypted_sdk
 from scrypted_sdk import ScryptedDeviceBase
-from scrypted_sdk.types import ScryptedDevice, Setting, SettingValue, Settings, DeviceProvider, ScryptedInterface
+from scrypted_sdk.types import ScryptedDevice, Setting, SettingValue, Settings, DeviceProvider, ScryptedInterface, ScryptedDeviceType
 
 from .arlo import Arlo, NO_MFA
 from .arlo.arlo_async import change_stream_class
@@ -27,6 +27,8 @@ from .doorbell import ArloDoorbell
 from .basestation import ArloBasestation
 from .base import ArloDeviceBase
 from .smss import ArloSecurityModeSecuritySystem
+
+PLUGIN_VERSION = 0
 
 class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceLoggerMixin, BackgroundTaskMixin):
     arlo_cameras = None
@@ -61,12 +63,15 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         self.imap_skip_emails = None
         self.manual_mfa_signal = None
         self.device_discovery_lock = asyncio.Lock()
-
-        self._migrate_storage()
+        self.cleanup_devices: bool = False
+        self._check_and_migrate_storage()
         self.propagate_verbosity()
         self.propagate_transport()
+        self.create_task(self.load())
 
-        def load(self):
+    async def load(self):
+            await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
+            await self.force_device()
             if self.mfa_strategy == "IMAP":
                 self.initialize_imap()
             else:
@@ -74,66 +79,102 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 if arlo_init is not None:
                     self.initialize_manual_mfa_loop()
 
-        asyncio.get_event_loop().call_soon(load, self)
-        self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
+    async def force_device(self):
+        manifest = {
+                    "info": {
+                        "model": "Dummy",
+                        "manufacturer": "Arlo",
+                        "firmware": "1.0",
+                        "serialNumber": "000",
+                    },
+                    "nativeId": "Dummy",
+                    "name": 'Dummy',
+                    "interfaces": [ScryptedInterface.Camera.value],
+                    "type": ScryptedDeviceType.Camera.value,
+                    "providerNativeId": None,
+                }
+        await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+        await scrypted_sdk.deviceManager.onDeviceRemoved("Dummy")
 
     def print(self, *args, **kwargs) -> None:
         """Overrides the print() from ScryptedDeviceBase to avoid double-printing in the main plugin console."""
         print(*args, **kwargs)
 
+    def _check_and_migrate_storage(self):
+        self.logger.info(f"[Migration] Checking for migration...")
+        stored_version = self.storage.getItem('plugin_version')
+        if stored_version is not None:
+            stored_version = int(stored_version)
+        if stored_version is None:
+            self.logger.info(f"[Migration] First install: setting plugin_version to {PLUGIN_VERSION}")
+            self.storage.setItem('plugin_version', PLUGIN_VERSION)
+            self.cleanup_devices = False
+        elif stored_version > PLUGIN_VERSION:
+            self.logger.info(f"[Migration] Downgrading plugin version {stored_version} → {PLUGIN_VERSION}")
+            self._migrate_storage()
+            self.cleanup_devices = True
+        else:
+            self.logger.info(f"[Migration] Plugin version matches ({PLUGIN_VERSION}), no migration needed.")
+            self.cleanup_devices = False
+
     def _migrate_storage(self) -> None:
+        self.logger.info("[Migration] Migrating storage keys and values...")
         migrations = [
-            ('arlo_event_stream_transport', 'arlo_transport', None),
+            ('arlo_event_stream_transport', 'arlo_transport',
+            lambda v: v if v in ArloProvider.arlo_transport_choices else 'MQTT'),
             ('event_stream_refresh_interval', 'refresh_interval', None),
-            ('mvss_enabled', 'mode_enabled', lambda v: v is True or v == 'true'),
-            ('plugin_log_level', 'plugin_verbosity', lambda v: {'Info': 'Normal', 'Debug': 'Verbose', 'Extra Debug': 'Verbose'}.get(v, 'Normal')),
+            ('mvss_enabled', 'mode_enabled', lambda v: v == 'true'),
+            ('plugin_log_level', 'plugin_verbosity',
+            lambda v: {'Info': 'Normal', 'Debug': 'Verbose', 'Extra Debug': 'Verbose'}.get(v, 'Normal')),
         ]
         for new_key, old_key, map_fn in migrations:
             value = self.storage.getItem(new_key)
             if value is not None:
-                new_value = map_fn(value) if map_fn else value
-                self.logger.info(f"Migrating {new_key}='{value}' to {old_key}='{new_value}'")
-                self.storage.setItem(old_key, new_value)
-                self.storage.removeItem(new_key)
+                old_value = map_fn(value) if map_fn else value
+                self.logger.info(f"[Migration] Migrating {new_key}='{value}' → {old_key}='{old_value}'")
+                self.storage.setItem(old_key, old_value)
+            self.storage.removeItem(new_key)
+        new_only_keys = [
+            'arlo_device_id', 'extra_debug_logging', 'device_discovery_interval',
+            'device_refresh_interval', 'disable_plugin', 'arlo_public_key',
+            'arlo_private_key', 'mdns_services'
+        ]
+        for key in new_only_keys:
+            if self.storage.getItem(key) is not None:
+                self.logger.info(f"[Migration] Removing deprecated key: {key}")
+                self.storage.removeItem(key)
         defaults = {
-            'arlo_transport': 'MQTT',
-            'plugin_verbosity': 'Normal',
-            'refresh_interval': 90,
-            'mode_enabled': False,
-            'one_location': False,
-            'hidden_devices': [],
+            'arlo_auth_headers': None,
+            'last_mfa': 0,
         }
         for key, default in defaults.items():
             if self.storage.getItem(key) is None:
+                self.logger.info(f"[Migration] Setting default for key: {key}='{default}'")
                 self.storage.setItem(key, default)
+        self.logger.info("[Migration] Storage migration complete.")
 
     def _check_cookies(self, cookies: str) -> str:
         if not cookies:
             self.logger.debug("No cookies found in storage.")
             return
-        self.logger.debug(f"Loaded cookies from storage...")
-        valid = self._is_valid_cookie_format(cookies)
-        self.logger.debug(f"Cookie format valid? {valid}")
-        if not valid:
-            self.logger.debug("Invalid cookie format detected, clearing cookies.")
-            return ""
-        self.logger.debug("Valid cookie format detected, using cookies.")
-        return cookies
-
-    def _is_valid_cookie_format(self, cookies: str) -> bool:
+        self.logger.debug("Loaded cookies from storage.")
         try:
             decoded = base64.b64decode(cookies)
-            cookies_dict = pickle.loads(decoded)
-            if not isinstance(cookies_dict, dict):
-                return False
-            for k, v in cookies_dict.items():
-                if not isinstance(v, dict):
-                    self.logger.debug(f"Cookie value for {k} is not a dict: {type(v)}")
-                    return False
-            return True
+            cookie_dict = pickle.loads(decoded)
+            if not isinstance(cookie_dict, dict):
+                raise ValueError(f"Unpickled object is not a dict: {type(cookie_dict)}")
+            invalid_items = [(k, type(v)) for k, v in cookie_dict.items() if not isinstance(v, dict)]
+            if invalid_items:
+                for k, v_type in invalid_items:
+                    self.logger.debug(f"Cookie value for {k} is not a dict: {v_type}")
+                raise ValueError("One or more cookie values are invalid.")
         except Exception as e:
-            self.logger.debug(f"Cookie validation failed: {e}")
-            return False
+            self.logger.debug(f"Invalid cookie format: {e}")
+            self.logger.debug("Invalid cookie format detected, clearing cookies.")
+            self.storage.setItem("arlo_cookies", None)
+            return None
+        self.logger.debug("Valid cookie format detected, using cookies.")
+        return cookies
 
     @property
     def arlo_username(self) -> str:
@@ -282,6 +323,17 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
             one_location = False
             self.storage.setItem("one_location", one_location)
         return one_location
+
+    @property
+    def plugin_version(self) -> int | None:
+        version = self.storage.getItem('plugin_version')
+        if version is not None:
+            try:
+                return int(version)
+            except (ValueError, TypeError):
+                self.logger.warning(f"Invalid plugin_version value in storage: {version}")
+                return None
+        return None
 
     @property
     def arlo(self) -> Arlo:
@@ -915,7 +967,11 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         smss_devices = []
         provider_to_device_map = {None: []}
 
-        await self._cleanup_old_devices()
+        if self.cleanup_devices:
+                await self._cleanup_devices()
+                self.cleanup_devices = False
+                self.storage.setItem('plugin_version', PLUGIN_VERSION)
+                self.logger.info(f"[Migration] Migration complete. plugin_version set to {PLUGIN_VERSION}")
 
         basestations = self.arlo.GetDevices(['basestation', 'siren'], True)
         for basestation in basestations:
@@ -934,7 +990,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.logger.info(f"Skipping manifest for basestation {nativeId} ({basestation['modelId']}) as it is hidden.")
                 continue
 
-            device = await self.getDevice_impl(nativeId)
+            device = await self.getDevice_impl(nativeId, True)
             scrypted_interfaces = device.get_applicable_interfaces()
             manifest = device.get_device_manifest()
             self.logger.debug(f"Interfaces for {nativeId} ({basestation['modelId']}): {scrypted_interfaces}")
@@ -988,7 +1044,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                 self.logger.info(f"Skipping camera {camera['deviceId']} ({camera['modelId']}) because it is hidden.")
                 continue
 
-            device = await self.getDevice_impl(nativeId)
+            device = await self.getDevice_impl(nativeId, True)
             scrypted_interfaces = device.get_applicable_interfaces()
             manifest = device.get_device_manifest()
             self.logger.debug(f"Interfaces for {nativeId} ({camera['modelId']} parent {camera['parentId']}): {scrypted_interfaces}")
@@ -1044,7 +1100,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
                     self.logger.info(f"Skipping security mode security system {nativeId} (Arlo Security Mode Security System - {locations[location]}) because it is hidden.")
                     continue
 
-                device = await self.getDevice_impl(nativeId)
+                device = await self.getDevice_impl(nativeId, True)
                 scrypted_interfaces = device.get_applicable_interfaces()
                 manifest = {
                     "info": {
@@ -1102,41 +1158,74 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         # force a settings refresh so the hidden devices list can be updated
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
 
-    async def _cleanup_old_devices(self) -> None:
-        device_ids: list[str] = list(scrypted_sdk.systemManager.getSystemState().keys())
-        devices: list[ScryptedDevice] = []
-        for device_id in device_ids:
-            devices.append(scrypted_sdk.systemManager.getDeviceById(device_id))
-        for device in devices:
-            if getattr(device, 'nativeId', None) and str(device.nativeId).endswith('.svss'):
-                child_siren = next(
-                    (d for d in devices
-                    if getattr(d, 'providerId', None) == device.id and
-                        getattr(d, 'nativeId', '').endswith('.siren')),
-                    None
-                )
-                if child_siren:
-                    self.logger.debug(f'Cleaning up old siren device {child_siren.nativeId} (child of {device.nativeId})')
-                    await scrypted_sdk.systemManager.removeDevice(child_siren.id)
-                self.logger.debug(f'Cleaning up old device {device.nativeId}')
-                await scrypted_sdk.systemManager.removeDevice(device.id)
+    async def _cleanup_devices(self) -> None:
+        self.logger.info("[Migration] Starting cleanup of plugin devices...")
+        system_state: dict[str, dict[str, dict]] = scrypted_sdk.systemManager.getSystemState()
+        if not system_state:
+            self.logger.info("[Migration] No system state found for device cleanup.")
+            return
+        device_ids_and_names = {
+            device_id: device_info.get('name', {}).get('value', '')
+            for device_id, device_info in system_state.items()
+        }
+        if not device_ids_and_names:
+            self.logger.info("[Migration] No devices found for device cleanup.")
+            return
+        filtered_names = [
+            name
+            for name in device_ids_and_names.values()
+            if str(name).endswith(" Siren")
+            or str(name).endswith("Siren Virtual Security System")
+            or "Mode Virtual Security System" in str(name)
+        ]
+        if not filtered_names:
+            self.logger.info("[Migration] No plugin devices found for device cleanup.")
+            return
+
+        def sort_key(name: str) -> tuple[int, str]:
+            if name.endswith(" Siren"):
+                return (0, name)
+            elif name.endswith("Siren Virtual Security System"):
+                return (1, name)
+            elif "Mode Virtual Security System" in name:
+                return (2, name)
+            else:
+                return (3, name)
+
+        sorted_names = sorted(filtered_names, key=sort_key)
+        self.logger.info(f"[Migration] Found {len(sorted_names)} plugin devices to clean up.")
+        for name in sorted_names:
+            try:
+                device: ScryptedDevice = scrypted_sdk.systemManager.getDeviceByName(name)
+                if not device:
+                    self.logger.info(f"[Migration] Device not found by name: {name}")
+                    continue
+                self.logger.info(f"[Migration] Removing plugin device: {name}")
+                native_id = device.nativeId
+                device = None
+                await scrypted_sdk.deviceManager.onDeviceRemoved(native_id)
+            except Exception as e:
+                self.logger.error(f"[Migration] Error during cleanup for plugin device {name}: {e}", exc_info=True)
+        self.logger.info("[Migration] Plugin device cleanup complete.")
 
     async def getDevice(self, nativeId: str) -> ArloDeviceBase:
         self.logger.debug(f"Scrypted requested to load device {nativeId}")
-        async with self.device_discovery_lock:
-            return await self.getDevice_impl(nativeId)
+        return await self.getDevice_impl(nativeId)
 
-    async def getDevice_impl(self, nativeId: str) -> ArloDeviceBase:
+    async def getDevice_impl(self, nativeId: str, discovery: bool = False) -> ArloDeviceBase:
         ret = self.scrypted_devices.get(nativeId)
-        if ret is None:
+        if ret:
+            return ret
+        if discovery == True:
             ret = self.create_device(nativeId)
-            if ret is not None:
-                self.scrypted_devices[nativeId] = ret
+            self.scrypted_devices[nativeId] = ret
+        else:
+            self.logger.debug(f"Device {nativeId} not found, it hasn't been created yet.")
         return ret
 
     def create_device(self, nativeId: str) -> ArloDeviceBase:
         if nativeId not in self.arlo_cameras and nativeId not in self.arlo_basestations and nativeId not in self.arlo_smss:
-            self.logger.warning(f"Cannot create device for nativeId {nativeId}, maybe it hasn't been loaded yet?")
+            self.logger.warning(f"Cannot create device for nativeId {nativeId}, maybe it hasn't been discovered yet?")
             return None
 
         if nativeId.endswith("smss"):
