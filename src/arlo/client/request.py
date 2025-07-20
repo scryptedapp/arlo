@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import http.client
@@ -12,11 +14,14 @@ from logging import Logger
 from requests import Response, Session
 from requests.exceptions import HTTPError, RequestException
 from requests_toolbelt.adapters import host_header_ssl
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from ..logging import StdoutLoggerFactory
 from ..util import UnauthorizedRestartException
+
+if TYPE_CHECKING:
+    from ..provider import ArloProvider
 
 class Request:
     logger: Logger = StdoutLoggerFactory.get_logger(name='Client')
@@ -26,39 +31,35 @@ class Request:
         timeout: int = 5,
         mode: str = 'curl',
         max_retries: int = 3,
-        extra_debug_logging: bool = False
+        provider: ArloProvider | None = None,
     ):
-        self.extra_debug_logging: bool = extra_debug_logging
+        self.provider: ArloProvider = provider
         self.timeout: int = timeout
         self.max_retries: int = max_retries
         self.mode: str = mode.lower()
-
-        if self.extra_debug_logging:
-            http.client.HTTPConnection.debuglevel = 1
-            self._configure_logging()
-        else:
-            http.client.HTTPConnection.debuglevel = 0
-            self._reset_logging()
+        self.set_logging()
         try:
             self.session: CurlCffiSession | Session = self._initialize_session()
         except Exception as e:
             raise RuntimeError(f'Failed to initialize HTTP session for mode "{self.mode}": {e}')
 
-    def _configure_logging(self):
-        request_logger: Logger = logging.getLogger('requests.packages.urllib3')
-        for handler in list(request_logger.handlers):
-            request_logger.removeHandler(handler)
-        for handler in list(self.logger.handlers):
-            request_logger.addHandler(handler)
-        request_logger.setLevel(self.logger.level)
-        request_logger.propagate = False
-
-    def _reset_logging(self):
-        request_logger: Logger = logging.getLogger('requests.packages.urllib3')
-        for handler in list(request_logger.handlers):
-            request_logger.removeHandler(handler)
-        request_logger.setLevel(logging.WARNING)
-        request_logger.propagate = True
+    def set_logging(self):
+        if self.provider.extra_debug_logging:
+            http.client.HTTPConnection.debuglevel = 1
+            request_logger: Logger = logging.getLogger('requests.packages.urllib3')
+            for handler in list(request_logger.handlers):
+                request_logger.removeHandler(handler)
+            for handler in list(self.logger.handlers):
+                request_logger.addHandler(handler)
+            request_logger.setLevel(self.logger.level)
+            request_logger.propagate = False
+        else:
+            http.client.HTTPConnection.debuglevel = 0
+            request_logger: Logger = logging.getLogger('requests.packages.urllib3')
+            for handler in list(request_logger.handlers):
+                request_logger.removeHandler(handler)
+            request_logger.setLevel(logging.WARNING)
+            request_logger.propagate = True
 
     def _initialize_session(self) -> CurlCffiSession | Session:
         if self.mode == 'curl':
@@ -117,7 +118,7 @@ class Request:
             }
             url = self._add_query_params(url, event_params)
         method = method.upper()
-        if self.extra_debug_logging:
+        if self.provider.extra_debug_logging:
             self.logger.debug(f'Performing HTTP {method} to {url} with params={params} headers={headers}')
         for attempt in range(self.max_retries):
             try:
@@ -144,7 +145,7 @@ class Request:
             return {}
         try:
             body: dict[str, Any] = response.json()
-            if self.extra_debug_logging:
+            if self.provider.extra_debug_logging:
                 self.logger.debug(f'Response from {url}: {body}')
         except JSONDecodeError as e:
             self.logger.error(f'JSON decode error from {url}: {e}')

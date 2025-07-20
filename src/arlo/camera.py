@@ -23,6 +23,7 @@ from scrypted_sdk.types import (
     MotionSensor,
     ObjectDetectionTypes,
     ObjectDetector,
+    OnOff,
     RequestMediaStreamOptions,
     ResponseMediaStreamOptions,
     ResponsePictureOptions,
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
     from .provider import ArloProvider
     from .basestation import ArloBasestation
 
-class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger):
+class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger, OnOff):
     SCRYPTED_TO_ARLO_BRIGHTNESS_MAP = {
         0: -2,
         25: -1,
@@ -61,7 +62,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         100: 2
     }
     ARLO_TO_SCRYPTED_BRIGHTNESS_MAP = {v: k for k, v in SCRYPTED_TO_ARLO_BRIGHTNESS_MAP.items()}
-
     timeout: int = 30
     intercom: ArloIntercom = None
     light: ArloBaseLight = None
@@ -115,82 +115,102 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         def callback(code, message):
             self.logger.error(f'Arlo returned error code {code} with message: {message}')
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_error_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='error_subscription'
         )
 
     def _start_device_state_subscription(self) -> None:
         def callback(device_state: str):
             self.device_state = device_state
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_device_state_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='device_state_subscription'
         )
 
     def _start_activity_state_subscription(self) -> None:
         def callback(activity_state: str):
             self.activity_state = activity_state
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_activity_state_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='activity_state_subscription'
         )
 
     def _start_motion_subscription(self) -> None:
         def callback(motion_detected: bool):
             self.motionDetected = motion_detected
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_motion_events,
-            self.arlo_device, callback, self.logger
+            self.arlo_device, callback, self.logger,
+            event_key='motion_subscription'
         )
 
     def _start_audio_subscription(self) -> None:
         if not self.has_audio_sensor:
             return
+
         def callback(audio_detected: bool):
             self.audioDetected = audio_detected
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_audio_events,
-            self.arlo_device, callback, self.logger
+            self.arlo_device, callback, self.logger,
+            event_key='audio_subscription'
         )
 
     def _start_battery_subscription(self) -> None:
         if not self.has_battery:
             return
+
         def callback(battery_level: float):
             self.batteryLevel = battery_level
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_battery_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='battery_subscription'
         )
 
     def _start_charge_notification_led_subscription(self) -> None:
         if not self.has_charge_notification_led:
             return
+
         def callback(charge_notification_led_enable: bool):
             self.on = charge_notification_led_enable
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_charge_notification_led_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='charge_notification_led_subscription'
         )
 
     def _start_brightness_subscription(self) -> None:
         def callback(brightness: int):
             self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[brightness]
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_brightness_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='brightness_subscription'
         )
 
     def _start_smart_motion_subscription(self) -> None:
         last_seen_timestamp = 0
+
         def callback(event: dict):
             nonlocal last_seen_timestamp
             timestamp = event.get('utcCreatedDate', 0)
@@ -208,9 +228,11 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             }
             self.create_task(self.onDeviceEvent(ScryptedInterface.ObjectDetector.value, detection))
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_smart_motion_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='smart_motion_subscription'
         )
 
     def get_applicable_interfaces(self) -> list[str]:
@@ -337,6 +359,12 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return False
 
     @property
+    def enable_local_rtsp(self) -> bool:
+        if self.storage:
+            return bool(self.storage.getItem('enable_local_rtsp')) and self.arlo_device['deviceId'] != self.arlo_basestation['deviceId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
+        return False
+
+    @property
     def snapshot_throttle_interval(self) -> int:
         interval = self.storage.getItem('snapshot_throttle_interval')
         if interval is None:
@@ -454,18 +482,37 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             ),
             'type': 'boolean',
         })
-        result.append({
-            'group': 'General',
-            'key': 'disable_webrtc',
-            'title': 'Disable WebRTC',
-            'value': self.disable_webrtc,
-            'description': (
-                'Disables WebRTC streaming for this camera. '
-                'This will prevent the camera from being used in the Scrypted WebRTC UI, but will still allow RTSP/DASH streaming.'
-            ),
-            'type': 'boolean',
-        })
-        if self.has_local_live_streaming:
+        if self.has_sip_webrtc_streaming:
+            result.append({
+                'group': 'General',
+                'key': 'disable_webrtc',
+                'title': 'Disable WebRTC',
+                'value': self.disable_webrtc,
+                'description': (
+                    'Disables WebRTC streaming for this camera. '
+                    'This will prevent the camera from being used in the Scrypted WebRTC UI, but will still allow RTSP/DASH streaming.'
+                ),
+                'type': 'boolean',
+            })
+        if (
+            self._check_basestation()
+            and self.has_local_live_streaming == False
+        ):
+            result.append({
+                'group': 'General',
+                'key': 'enable_local_rtsp',
+                'title': 'Enable Local RTSP',
+                'value': self.enable_local_rtsp,
+                'description': (
+                    'Enables Local RTSP streaming from the camera/basestation to Scrypted. '
+                    'This is an experimental feature to force cameras that do not natively '
+                    'support Local Live Streaming to use the Local RTSP stream from the basestation. '
+                    'This will only work if the camera is connected to a basestation that supports Local Live Streaming. '
+                    'This may not work with all cameras, and may cause issues with some features.'
+                ),
+                'type': 'boolean',
+            })
+        if self.has_local_live_streaming or self.enable_local_rtsp:
             result.append(
                 {
                     'group': 'General',
@@ -514,7 +561,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if not self._validate_setting(key, value):
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             return
-        if key in ['wired_to_power', 'disable_webrtc']:
+        if key in ['wired_to_power', 'disable_webrtc', 'enable_local_rtsp']:
             self.storage.setItem(key, value == 'true' or value is True)
             if key == 'wired_to_power':
                 self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
@@ -545,6 +592,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 self.logger.error(f'Invalid snapshot throttle interval {val!r} - must be an integer')
                 return False
         return True
+    
+    def _check_basestation(self) -> bool:
+        if (
+            self.arlo_basestation['deviceId'] == self.arlo_device['deviceId']
+            or self.provider.arlo.user_id != self.arlo_device['owner']['ownerId']
+        ):
+            return False
+        basestation: ArloBasestation = self.provider.scrypted_devices.get(self.arlo_basestation['deviceId'])
+        return bool(getattr(basestation, 'has_local_live_streaming', False))
 
     async def _wait_for_state_change(self, name: str = None) -> None:
         start_time = asyncio.get_event_loop().time()
@@ -593,7 +649,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return None
 
     def _is_time_for_new_snapshot(self) -> bool:
-        self.logger.debug("Checking if it's time for a new snapshot")
+        self.logger.debug('Checking if it is time for a new snapshot')
         if not hasattr(self, 'last_snapshot_time') or self.last_snapshot_time is None:
             return True
         return self.snapshot_throttle_interval == 0 or (
@@ -706,7 +762,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 'userConfigurable': False,
             }
         ]
-        if self.has_local_live_streaming:
+        if self.has_local_live_streaming or self.enable_local_rtsp:
             options[0]['id'] = 'rtsp'
             if self.local_live_streaming_codec == 'h.264':
                 options = [
@@ -870,7 +926,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 },
             }
             clips.append(clip)
-
         if options and options.get('reverseOrder'):
             clips.reverse()
         return clips
@@ -989,3 +1044,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         except Exception as e:
             self.logger.error(f'Error in startRTCSignalingSession: {e}', exc_info=True)
             raise
+
+    async def turnOn(self):
+        try:
+            await self.provider.arlo.charge_notification_led_on(self.arlo_basestation, self.arlo_device)
+        except Exception as e:
+            self.logger.error(f'Error turning charge notification LED on: {e}', exc_info=True)
+
+    async def turnOff(self):
+        try:
+            await self.provider.arlo.charge_notification_led_off(self.arlo_basestation, self.arlo_device)
+        except Exception as e:
+            self.logger.error(f'Error turning charge notification LED off: {e}', exc_info=True)

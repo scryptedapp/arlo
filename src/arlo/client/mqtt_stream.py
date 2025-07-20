@@ -94,7 +94,6 @@ class MQTTEventStream(Stream):
             client.on_connect = on_connect_timeout
             client.connect_async(host, port)
             client.loop_start()
-
             try:
                 await asyncio.wait_for(done.wait(), timeout=timeout)
                 return client.is_connected()
@@ -157,15 +156,12 @@ class MQTTEventStream(Stream):
             except Exception as e:
                 self.logger.error(f'Failed to request plugin restart: {e}')
             return
-
         wait_timeout = 10
         waited = 0
         poll_interval = 0.05
-
         while not self.connected and not self.event_stream_stop_event.is_set() and waited < wait_timeout:
             await asyncio.sleep(poll_interval)
             waited += poll_interval
-
         if not self.connected:
             self.logger.error('MQTT Event Stream failed to connect within timeout.')
             self.event_stream = None
@@ -175,7 +171,6 @@ class MQTTEventStream(Stream):
             except Exception as e:
                 self.logger.error(f'Failed to request plugin restart: {e}')
             return
-
         if not self.event_stream_stop_event.is_set():
             self.resubscribe()
 
@@ -183,7 +178,6 @@ class MQTTEventStream(Stream):
         self.reconnecting = True
         self.connected = False
         self.logger.debug('Restarting MQTT Event Stream...')
-
         if self.event_stream:
             try:
                 self.event_stream.disconnect()
@@ -193,7 +187,6 @@ class MQTTEventStream(Stream):
                 self.event_stream.loop_stop()
             except Exception:
                 pass
-
         self.event_stream = None
         await self.start()
         await asyncio.sleep(1)

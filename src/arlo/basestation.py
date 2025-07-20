@@ -62,7 +62,8 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
 
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_device_state_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='device_state_subscription'
         )
 
     async def _check_certificates(self) -> None:

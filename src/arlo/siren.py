@@ -36,14 +36,12 @@ class ArloSiren(ArloDeviceBase, OnOff):
                     'triggered': False,
                 }
                 return
-
             if isinstance(self.svss.parent, ArloBasestation):
                 self.logger.debug('Parent device is a basestation')
                 await self.provider.arlo.siren_on(self.arlo_basestation)
             else:
                 self.logger.debug('Parent device is a camera')
                 await self.provider.arlo.siren_on(self.arlo_basestation, self.arlo_device)
-
             self.on = True
             self.svss.securitySystemState = {
                 **self.svss.securitySystemState,

@@ -37,18 +37,15 @@ class Stream:
         self.connected: bool = False
         self.reconnecting: bool = False
         self.initializing: bool = True
-
         self.queues: dict[str, asyncio.Queue[StreamEvent]] = {}
         self.refresh: int = 0
         self.event_stream: mqtt.Client | sse.SSEClient | None = None
         self.event_stream_thread: threading.Thread | None = None
         self.event_stream_stop_event: threading.Event = threading.Event()
-
         self.refresh_loop_signal: asyncio.Queue[object | None] = asyncio.Queue()
         self.event_loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
         self.event_loop.create_task(self._refresh_interval())
         self.event_loop.create_task(self._clean_queues())
-
         self._event_buffer: list[dict[str, Any]] = []
 
     def __del__(self) -> None:
@@ -70,19 +67,15 @@ class Stream:
                     if signal is None:
                         return
                     continue
-
                 interval: int = self.refresh * 60
                 signal_task = asyncio.create_task(self.refresh_loop_signal.get())
                 sleep_task = asyncio.create_task(asyncio.sleep(interval))
-
                 done, pending = await asyncio.wait([signal_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)
                 for task in pending:
                     task.cancel()
-
                 done_task = done.pop()
                 if done_task is signal_task and done_task.result() is None:
                     return
-
                 self.logger.info('Refreshing event stream')
                 await self.restart()
             except Exception as e:
@@ -104,7 +97,6 @@ class Stream:
                 num_dropped += 1
                 continue
             items.append(item)
-
         for item in items:
             queue.put_nowait(item)
         await asyncio.sleep(0.1)
@@ -119,29 +111,23 @@ class Stream:
         skip_uuids = skip_uuids or set()
         key = self._make_key(resource, action, property)
         queue = self.queues.setdefault(key, asyncio.Queue())
-
         first_requeued: StreamEvent | None = None
         while True:
             event: StreamEvent | None = await queue.get()
             queue.task_done()
-
             if not event:
                 return None, action
-
             if first_requeued is not None and first_requeued == event:
                 queue.put_nowait(event)
                 await asyncio.sleep(random.uniform(0, 0.01))
                 continue
-
             if event.expired:
                 continue
-
             if event.uuid in skip_uuids:
                 queue.put_nowait(event)
                 if first_requeued is None:
                     first_requeued = event
                 continue
-
             return event, action
 
     def _make_key(self, resource: str, action: str, property: str | None = None) -> str:
@@ -160,12 +146,9 @@ class Stream:
         action: str = response.get('action')
         now: float = time.time()
         event: StreamEvent = StreamEvent(response, now, now + self.expire)
-
         self._queue_event(self._make_key(resource, action), event)
-
         if 'error' in response:
             self._queue_event(self._make_key(resource, 'error'), event)
-
         props: dict[str, Any] = response.get('properties', {})
         for prop in props.keys():
             self._queue_event(self._make_key(resource, action, prop), event)
@@ -202,7 +185,6 @@ class Stream:
     def disconnect(self) -> None:
         if self.reconnecting:
             return
-
         self.connected = False
         self.event_stream_stop_event.set()
 

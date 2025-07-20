@@ -58,10 +58,8 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         self.login_in_progress: bool = False
         self._login_task: asyncio.Task = None
         self._imap_ready_event: asyncio.Event = asyncio.Event()
-        self._browser_authenticated: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
-        self._mfa_code_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-        self._mfa_loop_future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
-        self._mfa_state_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        self._set_login_futures()
+        self.full_reset_needed: bool = False
         self.device_lock = asyncio.Lock()
         self.cleanup_devices: bool = False
         self._check_and_migrate_storage()
@@ -77,10 +75,12 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             log_level = self.get_current_log_level()
             self.storage.setItem('extra_debug_logging', 'true' if self.plugin_log_level == 'Extra Debug' else 'false')
             self.logger.setLevel(log_level)
-            for _, device in self.scrypted_devices.items():
+            for device in self.scrypted_devices.values():
                 device.logger.setLevel(log_level)
-            arlo_client_logger: logging.Logger = StdoutLoggerFactory.get_logger(name='Client')
-            arlo_client_logger.setLevel(log_level)
+            if self.arlo:
+                StdoutLoggerFactory.get_logger(name='Client').setLevel(log_level)
+                if self.arlo.request:
+                    self.arlo.request.set_logging()
         except Exception as e:
             self.logger.error(f'Error setting log level: {e}', exc_info=True)
 
@@ -133,12 +133,20 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             if self.storage.getItem(key) is None:
                 self.storage.setItem(key, default)
 
+    def _set_login_futures(self) -> None:
+        loop = asyncio.get_event_loop()
+        self._browser_authenticated: asyncio.Future[bool] = loop.create_future()
+        self._mfa_code_future: asyncio.Future[str] = loop.create_future()
+        self._mfa_loop_future: asyncio.Future[None] = loop.create_future()
+        self._mfa_state_future: asyncio.Future[str] = loop.create_future()
+
     async def _initialize_plugin(self) -> None:
         if self.disable_plugin:
             self.logger.info('Plugin has been disabled. Will not initialize Arlo client.')
             self.logger.info('To re-enable the plugin, uncheck the "Disable Arlo Plugin" setting.')
             return
         try:
+            self.full_reset_needed = True
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             await self._force_devices_load()
             if not self.arlo_device_id:
@@ -155,25 +163,25 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self._login_task = self.create_task(self.login(), tag='login')
             self.create_task(self.periodic_discovery(), tag='periodic_discovery')
             self.create_task(self.periodic_refresh(), tag='periodic_refresh')
-            self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
+            await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
         except Exception as e:
             self.logger.error(f'Error during plugin initialization: {e}', exc_info=True)
 
     async def _force_devices_load(self):
         self.logger.debug('Forcing plugin to load saved devices...')
         manifest = {
-                    'info': {
-                        'model': 'Dummy',
-                        'manufacturer': 'Arlo',
-                        'firmware': '1.0',
-                        'serialNumber': '000',
-                    },
-                    'nativeId': 'Dummy',
-                    'name': 'Dummy',
-                    'interfaces': [ScryptedInterface.Camera.value],
-                    'type': ScryptedDeviceType.Camera.value,
-                    'providerNativeId': None,
-                }
+            'info': {
+                'model': 'Dummy',
+                'manufacturer': 'Arlo',
+                'firmware': '1.0',
+                'serialNumber': '000',
+            },
+            'nativeId': 'Dummy',
+            'name': 'Dummy',
+            'interfaces': [ScryptedInterface.Camera.value],
+            'type': ScryptedDeviceType.Camera.value,
+            'providerNativeId': None,
+        }
         await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
         await scrypted_sdk.deviceManager.onDeviceRemoved('Dummy')
 
@@ -278,11 +286,11 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
 
     @property
     def extra_debug_logging(self) -> bool:
-        logging_val = self.storage.getItem('extra_debug_logging')
-        if logging_val is None:
-            logging_val = 'false'
-            self.storage.setItem('extra_debug_logging', logging_val)
-        return str(logging_val).lower() == 'true'
+        logging_value = self.storage.getItem('extra_debug_logging')
+        if logging_value is None:
+            logging_value = 'false'
+            self.storage.setItem('extra_debug_logging', logging_value)
+        return str(logging_value).lower() == 'true'
 
     @property
     def hidden_devices(self) -> list[str]:
@@ -466,16 +474,17 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             return
         self.login_in_progress = True
         try:
-            if self.arlo is not None:
-                self.logger.debug('Resetting previous Arlo client.')
+            if self.full_reset_needed:
                 await self._reset_arlo_client()
-                self._reset_login_futures()
-            arlo = ArloClient(self.storage)
+                arlo = ArloClient(self)
+            else:
+                arlo = self.arlo if self.arlo is not None else ArloClient(self)
+            self._set_login_futures()
             arlo.browser_authenticated = self._browser_authenticated
             arlo.mfa_state_future = self._mfa_state_future
             arlo.mfa_loop_future = self._mfa_loop_future
             arlo.mfa_code_future = self._mfa_code_future
-            self.logger.debug('Created new ArloClient and assigned MFA futures.')
+            self.logger.debug('Setup ArloClient and MFA futures.')
             login_task = self.create_task(arlo.login(), tag='login-arlo')
             self.logger.debug('Waiting for MFA state from Arlo Cloud...')
             mfa_state: str = await self._mfa_state_future
@@ -518,7 +527,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 self.logger.warning(f'Error restarting Arlo client: {e}')
         self._arlo = None
 
-    def _reset_login_futures(self) -> None:
+    def _set_login_futures(self) -> None:
         self._browser_authenticated: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
         self._mfa_code_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
         self._mfa_loop_future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
@@ -558,9 +567,11 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
 
     async def on_login_success(self, arlo: ArloClient) -> None:
         self._arlo = arlo
-        await self.cancel_and_await_tasks_by_tag('refresh')
-        self.create_task(self.refresh_login_loop(), tag='refresh')
-        await self.do_arlo_setup()
+        if self.full_reset_needed:
+            await self.cancel_and_await_tasks_by_tag('refresh')
+            self.create_task(self.refresh_login_loop(), tag='refresh')
+            await self.do_arlo_setup()
+            self.full_reset_needed = False
 
     async def refresh_login_loop(self) -> None:
         hard_interval_days = self.imap_mfa_interval if self.mfa_strategy == 'IMAP' else 14
@@ -573,17 +584,16 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 await asyncio.sleep(sleep_time)
                 elapsed += sleep_time
                 if elapsed >= hard_interval:
-                    self.logger.debug('Hard MFA refresh interval reached, clearing cookies and forcing full login.')
-                    self.storage.setItem('arlo_cookies', None)
-                    await self._reset_arlo_client()
-                    self._reset_login_futures()
+                    self.logger.debug('Hard MFA refresh interval reached, forcing full login.')
                     await self._initialize_plugin()
                     break
                 else:
-                    self.logger.debug('Session refresh interval reached, resetting client and re-logging in (cookies preserved).')
-                    await self._reset_arlo_client()
-                    self._reset_login_futures()
-                    await self._initialize_plugin()
+                    self.logger.debug('Session refresh interval reached, re-logging in.')
+                    self.arlo.finialized_login = False
+                    self.arlo.token = None
+                    self.arlo.logged_in = False
+                    await self.login()
+                    await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
         except asyncio.CancelledError:
             self.logger.debug('Refresh Login Loop task was canceled.')
 
@@ -739,8 +749,6 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         except requests.exceptions.HTTPError:
             self.logger.exception('HTTP error during Arlo login')
             self.logger.error('Will retry with fresh login')
-            await self._reset_arlo_client()
-            self._reset_login_futures()
             await self._initialize_plugin()
         except Exception:
             self.logger.exception('Unexpected error during Arlo setup')
@@ -932,19 +940,17 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             if not skip_plugin_reset:
                 self.login_in_progress = False
         elif key == 'arlo_mfa_code':
-            if getattr(self, 'manual_mfa_signal', None):
+            if self.login_in_progress and getattr(self, 'manual_mfa_signal', None):
                 self.logger.debug(f'Entered MFA code: {value}')
                 await self.manual_mfa_signal.put(value)
             skip_plugin_reset = True
         elif key == 'force_mfa_reauthentication':
-            if not self.login_in_progress:
-                self.storage.setItem('arlo_cookies', None)
-            else:
+            if self.login_in_progress:
                 skip_plugin_reset = True
         elif key == 'plugin_log_level':
             self.storage.setItem(key, value)
             self._propagate_log_level()
-            skip_plugin_reset = value != 'Extra Debug'
+            skip_plugin_reset = True
         elif key == 'arlo_event_stream_transport':
             self.storage.setItem(key, value)
         elif key == 'mfa_strategy':
@@ -988,8 +994,6 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.storage.setItem(key, value)
         if not skip_plugin_reset:
             if not self.login_in_progress:
-                await self._reset_arlo_client()
-                self._reset_login_futures()
                 await self._initialize_plugin()
             else:
                 self.logger.debug('Settings changed during login; skipping plugin reset to allow login to complete.')
@@ -1339,29 +1343,25 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             device = self._create_device(nativeId, arlo_properties)
             self.scrypted_devices[nativeId] = device
         else:
-            self.logger.debug(f"Device {nativeId} not found, it hasn't been created yet.")
+            self.logger.debug(f'Device {nativeId} not found, it has not been created yet.')
         return device
 
     def _create_device(self, nativeId: str, arlo_properties: dict) -> ArloDeviceBase:
         if nativeId not in self.arlo_cameras and nativeId not in self.arlo_basestations and nativeId not in self.arlo_mvss:
-            self.logger.warning(f"Device {nativeId} not created, it hasn't been discovered yet.")
+            self.logger.warning(f'Device {nativeId} not created, it has not been discovered yet.')
             return None
-
         if nativeId.endswith('mvss'):
             arlo_device = self.arlo_mvss[nativeId]
             arlo_basestation = self.arlo_mvss[nativeId]
             return ArloModeVirtualSecuritySystem(nativeId, arlo_device, arlo_basestation, arlo_properties, self)
-
         arlo_device = self.arlo_cameras.get(nativeId)
         if not arlo_device:
             arlo_device = self.arlo_basestations[nativeId]
             return ArloBasestation(nativeId, arlo_device, arlo_properties, self)
-
         if arlo_device['parentId'] not in self.arlo_basestations:
             self.logger.warning(f'Cannot create camera with nativeId {nativeId} when {arlo_device['parentId']} is not a valid basestation')
             return None
         arlo_basestation = self.arlo_basestations[arlo_device['parentId']]
-
         if arlo_device['deviceType'] == DEVICE_TYPE_DOORBELL:
             return ArloDoorbell(nativeId, arlo_device, arlo_basestation, arlo_properties, self)
         else:

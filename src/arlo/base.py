@@ -22,6 +22,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     arlo_smart_features: dict = None
     provider: ArloProvider = None
     stop_subscriptions: bool | None = None
+    active_event_subscriptions: dict[str, asyncio.Task] = None
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, auto_init: bool = True) -> None:
         super().__init__(nativeId=nativeId)
@@ -117,24 +118,38 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
     async def refresh_device(self) -> None:
         return None
 
-    def _create_or_register_event_subscription(self, subscribe_fn, *args, **kwargs):
+    def _create_or_register_event_subscription(self, subscribe_fn, *args, event_key=None, **kwargs):
+        if self.active_event_subscriptions is None:
+            self.active_event_subscriptions = {}
+        key = event_key or getattr(subscribe_fn, '__name__', str(subscribe_fn))
+        task = self.active_event_subscriptions.get(key)
+        if task and not task.done():
+            self.logger.debug(f'Event subscription "{key}" already running for device {self.arlo_device["deviceId"]}.')
+            return
         result = subscribe_fn(*args, **kwargs)
         if asyncio.iscoroutine(result):
-            self.create_task(result)
+            task = self.create_task(result)
         elif isinstance(result, asyncio.Task):
-            self.register_task(result)
+            task = result
+            self.register_task(task)
         elif isinstance(result, (list, tuple, set)):
-            for task in result:
-                if asyncio.iscoroutine(task):
-                    self.create_task(task)
-                elif isinstance(task, asyncio.Task):
-                    self.register_task(task)
+            tasks = []
+            for t in result:
+                if asyncio.iscoroutine(t):
+                    tasks.append(self.create_task(t))
+                elif isinstance(t, asyncio.Task):
+                    self.register_task(t)
+                    tasks.append(t)
                 else:
                     raise TypeError('Event Subscription must return a coroutine or task.')
+            self.active_event_subscriptions[key] = tasks
+            return
         elif isinstance(result, asyncio.Future):
-            self.register_task(result)
+            task = result
+            self.register_task(task)
         else:
             raise TypeError('Event Subscription must return a coroutine, task, or collection of them.')
+        self.active_event_subscriptions[key] = task
 
     def _has_feature(self, feature: str) -> bool:
         if not self.arlo_smart_features:

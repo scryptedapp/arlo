@@ -18,9 +18,11 @@ class ArloDoorbell(ArloCamera, BinarySensor):
         def callback(doorbell_pressed):
             self.binaryState = doorbell_pressed
             return self.stop_subscriptions
+
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_doorbell_events,
-            self.arlo_device, callback
+            self.arlo_device, callback,
+            event_key='doorbell_subscription'
         )
 
     def get_device_type(self) -> str:

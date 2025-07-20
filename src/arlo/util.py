@@ -55,7 +55,7 @@ class BackgroundTaskMixin:
                 task.cancel()
                 self.background_tasks.discard(task)
 
-    async def cancel_and_await_tasks_by_tag(self, tag: str):
+    async def cancel_and_await_tasks_by_tag(self, tag: str) -> None:
         if not hasattr(self, 'background_tasks'):
             return
         for task in list(self.background_tasks):

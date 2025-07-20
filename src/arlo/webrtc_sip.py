@@ -201,6 +201,8 @@ class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
             raise
 
 class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
+    active_event_subscriptions: dict[str, asyncio.Task] = None
+
     def __init__(self, intercom: ArloIntercom) -> None:
         super().__init__(intercom)
         self.arlo_basestation: dict = intercom.arlo_basestation
@@ -236,7 +238,11 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
             asyncio.create_task(async_callback())
             return self.stop_subscriptions
 
-        self._create_or_register_event_subscription(self.provider.arlo.subscribe_to_answer_sdp, self.arlo_device, callback)
+        self._create_or_register_event_subscription(
+            self.provider.arlo.subscribe_to_answer_sdp,
+            self.arlo_device, callback,
+            event_key='intercom_answer_sdp'
+        )
 
     def _start_candidate_answer_subscription(self) -> None:
         def callback(candidate: str):
@@ -250,20 +256,44 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
             asyncio.create_task(async_callback())
             return self.stop_subscriptions
 
-        self._create_or_register_event_subscription(self.provider.arlo.subscribe_to_answer_candidate, self.arlo_device, callback)
+        self._create_or_register_event_subscription(
+            self.provider.arlo.subscribe_to_answer_candidate,
+            self.arlo_device, callback,
+            event_key='intercom_answer_candidate'
+        )
 
-    def _create_or_register_event_subscription(self, subscribe_fn, *args, **kwargs):
-        try:
-            result = subscribe_fn(*args, **kwargs)
-            if asyncio.iscoroutine(result):
-                self.create_task(result)
-            elif isinstance(result, asyncio.Task):
-                self.register_task(result)
-            else:
-                raise TypeError('Event Subscription must return a coroutine or task.')
-        except Exception as e:
-            self.logger.error(f'Error in event subscription: {e}', exc_info=True)
-            raise
+    def _create_or_register_event_subscription(self, subscribe_fn, *args, event_key=None, **kwargs):
+        if self.active_event_subscriptions is None:
+            self.active_event_subscriptions = {}
+        key = event_key or getattr(subscribe_fn, '__name__', str(subscribe_fn))
+        task = self.active_event_subscriptions.get(key)
+        if task and not task.done():
+            self.logger.debug(f'Event subscription "{key}" already running for device {self.arlo_device["deviceId"]}.')
+            return
+        result = subscribe_fn(*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            task = self.create_task(result)
+        elif isinstance(result, asyncio.Task):
+            task = result
+            self.register_task(task)
+        elif isinstance(result, (list, tuple, set)):
+            tasks = []
+            for t in result:
+                if asyncio.iscoroutine(t):
+                    tasks.append(self.create_task(t))
+                elif isinstance(t, asyncio.Task):
+                    self.register_task(t)
+                    tasks.append(t)
+                else:
+                    raise TypeError('Event Subscription must return a coroutine or task.')
+            self.active_event_subscriptions[key] = tasks
+            return
+        elif isinstance(result, asyncio.Future):
+            task = result
+            self.register_task(task)
+        else:
+            raise TypeError('Event Subscription must return a coroutine, task, or collection of them.')
+        self.active_event_subscriptions[key] = task
 
     async def setRemoteDescription(self, offer) -> None:
         try:

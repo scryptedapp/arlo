@@ -299,7 +299,8 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
             return self.stop_subscriptions
         self._create_or_register_event_subscription(
             self.provider.arlo.subscribe_to_active_mode_events,
-            self.location, callback
+            self.location, callback,
+            event_key='active_mode_subscription'
         )
 
     @property
