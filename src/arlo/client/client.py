@@ -86,8 +86,13 @@ class ArloClient(object):
         self._library_cache_time = {}
         self._library_cache_lock = asyncio.Lock()
         self._library_cache_ttl = 10
+        self._set_logging()
         self._init_persistent()
         self._init_session()
+
+    def _set_logging(self) -> None:
+        provider_logger_level = self.provider.get_current_log_level()
+        logger.setLevel(provider_logger_level)
 
     def _init_persistent(self) -> None:
         self.cookies = self.provider.storage.getItem('arlo_cookies')

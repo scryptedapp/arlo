@@ -44,6 +44,8 @@ class Request:
             raise RuntimeError(f'Failed to initialize HTTP session for mode "{self.mode}": {e}')
 
     def set_logging(self):
+        provider_logger_level = self.provider.get_current_log_level()
+        self.logger.setLevel(provider_logger_level)
         if self.provider.extra_debug_logging:
             http.client.HTTPConnection.debuglevel = 1
             request_logger: Logger = logging.getLogger('requests.packages.urllib3')
