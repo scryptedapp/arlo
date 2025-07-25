@@ -359,12 +359,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         return False
 
     @property
-    def enable_local_rtsp(self) -> bool:
-        if self.storage:
-            return bool(self.storage.getItem('enable_local_rtsp')) and self.arlo_device['deviceId'] != self.arlo_basestation['deviceId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
-        return False
-
-    @property
     def snapshot_throttle_interval(self) -> int:
         interval = self.storage.getItem('snapshot_throttle_interval')
         if interval is None:
@@ -426,7 +420,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     @property
     def has_local_live_streaming(self) -> bool:
-        return self._has_feature('localLiveStreaming') and self.arlo_device['deviceId'] != self.arlo_basestation['deviceId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
+        return self._has_capability('LocalStreaming', 'Streaming') and self.arlo_device['deviceId'] != self.arlo_basestation['deviceId'] and self.provider.arlo.user_id == self.arlo_device['owner']['ownerId']
 
     @property
     def local_live_streaming_codec(self) -> str:
@@ -494,25 +488,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 ),
                 'type': 'boolean',
             })
-        if (
-            self._check_basestation()
-            and self.has_local_live_streaming == False
-        ):
-            result.append({
-                'group': 'General',
-                'key': 'enable_local_rtsp',
-                'title': 'Enable Local RTSP',
-                'value': self.enable_local_rtsp,
-                'description': (
-                    'Enables Local RTSP streaming from the camera/basestation to Scrypted. '
-                    'This is an experimental feature to force cameras that do not natively '
-                    'support Local Live Streaming to use the Local RTSP stream from the basestation. '
-                    'This will only work if the camera is connected to a basestation that supports Local Live Streaming. '
-                    'This may not work with all cameras, and may cause issues with some features.'
-                ),
-                'type': 'boolean',
-            })
-        if self.has_local_live_streaming or self.enable_local_rtsp:
+        if self.has_local_live_streaming:
             result.append(
                 {
                     'group': 'General',
@@ -561,11 +537,13 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if not self._validate_setting(key, value):
             await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
             return
-        if key in ['wired_to_power', 'disable_webrtc', 'enable_local_rtsp']:
+        if key in ['wired_to_power', 'disable_webrtc']:
             self.storage.setItem(key, value == 'true' or value is True)
             if key == 'wired_to_power':
                 self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
             await self.refresh_device()
+            if key == 'disable_webrtc':
+                await self.onDeviceEvent(ScryptedInterface.VideoCamera.value, None)
         elif key in ['eco_mode', 'disable_eager_streams']:
             self.storage.setItem(key, value == 'true' or value is True)
         elif key == 'print_debug':
@@ -592,15 +570,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 self.logger.error(f'Invalid snapshot throttle interval {val!r} - must be an integer')
                 return False
         return True
-    
-    def _check_basestation(self) -> bool:
-        if (
-            self.arlo_basestation['deviceId'] == self.arlo_device['deviceId']
-            or self.provider.arlo.user_id != self.arlo_device['owner']['ownerId']
-        ):
-            return False
-        basestation: ArloBasestation = self.provider.scrypted_devices.get(self.arlo_basestation['deviceId'])
-        return bool(getattr(basestation, 'has_local_live_streaming', False))
 
     async def _wait_for_state_change(self, name: str = None) -> None:
         start_time = asyncio.get_event_loop().time()
@@ -690,7 +659,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         try:
             await self._wait_for_state_change()
             snapshot_url: str = await asyncio.wait_for(
-                self.provider.arlo.trigger_full_frame_snapshot(self.arlo_device), timeout=10
+                self.provider.arlo.trigger_full_frame_snapshot(self.arlo_device), timeout=self.timeout
             )
         except Exception as e:
             raise ValueError(f'Failed to get snapshot URL: {e}')
@@ -762,7 +731,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 'userConfigurable': False,
             }
         ]
-        if self.has_local_live_streaming or self.enable_local_rtsp:
+        if self.has_local_live_streaming:
             options[0]['id'] = 'rtsp'
             if self.local_live_streaming_codec == 'h.264':
                 options = [

@@ -6,7 +6,7 @@ The Arlo Plugin connects Scrypted to Arlo Cloud, allowing you to access all of y
 
 Arlo no longer limits active logins per account, so you can use the Arlo app, website, and this plugin simultaneously without logging out of any devices. However, be mindful of any potential conflicts or issues that may arise when using the plugin concurrently with other Arlo services.
 
-The plugin now support Local RTSP streaming from cameras that support `local live streaming` in the Arlo App and the camera must be connected to a basestation that also supports `local live streaming`. This Local RTSP stream pulls the secured stream directly from the basestation without having to access the Arlo Cloud, creating less overhead. If using two-way audio for intercom, this is also directly accessed from the basestation so all communication is on the local network.
+The plugin now supports Local RTSP streaming from cameras that support `local live streaming` in the Arlo App and the camera must be connected to a basestation that also supports `local live streaming`. This Local RTSP stream pulls the secured stream directly from the basestation without having to access the Arlo Cloud, creating less overhead. If using two-way audio for intercom, this is also directly accessed from the basestation so all communication is on the local network.
 
 The account you use for this plugin must have either **SMS** or **EMAIL** set as the default MFA option. Once you enter your username and password on the plugin settings page, you should receive a MFA code through your default MFA option. Enter that code into the provided box, and your cameras will appear in Scrypted. Or, see below for configuring IMAP to auto-login with MFA.
 
@@ -41,7 +41,7 @@ If you experience any trouble logging in, clear the username and password boxes,
 
 - **Prebuffering:** Enable prebuffering only if the camera is connected to a constant power source (e.g., wall outlet). Solar panels often do not provide sufficient power for prebuffering to function correctly. This feature is most useful for wired cameras with a steady power supply, and will only work when the camera is plugged into an external power source or does not have a battery.
 
-> **Bandwidth Usage:** Keep in mind that using anything other than the Local RTSP strema type, streaming and recording video uses extra bandwidth, as video and audio streams must travel from your camera to Arlo Cloud, and then from Arlo Cloud to your network, before finally reaching Scrypted. This additional round-trip may affect your network speed and performance.
+> **Bandwidth Usage:** Keep in mind that using anything other than the Local RTSP stream type, streaming and recording video uses extra bandwidth, as video and audio streams must travel from your camera to Arlo Cloud, and then from Arlo Cloud to your network, before finally reaching Scrypted. This additional round-trip may affect your network speed and performance.
 
 ---
 
