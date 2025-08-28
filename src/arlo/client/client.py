@@ -709,44 +709,35 @@ class ArloClient(object):
             if not self.event_stream or not self.event_stream.connected:
                 raise RuntimeError('Event stream failed to initialize or connect.')
             if basestation_camera_tuples:
-                hardwired_models = {
+                basestations = {b['deviceId']: b for b, _ in basestation_camera_tuples}
+                cameras = {c['deviceId']: c for _, c in basestation_camera_tuples}
+                hardwired_models = (
                     'vmc3040', 'vmc3040s', 'vmc2060', 'vmc3060',
                     'vmc2040', 'abc1000', 'avd1001', 'flw2001',
                     'ac1001', 'ac2001',
                     'vmb3010', 'vmb3500', 'vmb4000', 'vmb4500',
                     'vmb4540', 'vmb5000', 'sh1001'
+                )
+                all_devices = {
+                    d['deviceId']: d
+                    for d in list(basestations.values()) + list(cameras.values())
                 }
-                basestations: dict[str, dict] = {}
-                cameras: dict[str, dict] = {}
-                devices_to_ping: dict[str, dict] = {}
-                topics: list[str] = []
-                for b, c in basestation_camera_tuples:
-                    for device in (b, c):
-                        if not device:
-                            continue
-                        device_id = device['deviceId']
-                        model_id = str(device.get('modelId', '')).lower()
-                        if device is b:
-                            basestations[device_id] = device
-                        else:
-                            cameras[device_id] = device
-                        if any(model_id.startswith(prefix) for prefix in hardwired_models):
-                            devices_to_ping[device_id] = device
-                        topics.extend(device.get('allowedMqttTopics', []))
-                logger.debug(f"Will send heartbeat to the following devices: {list(devices_to_ping.keys())}")
-                old_heartbeat_task: asyncio.Task | None = getattr(self, 'heartbeat_task', None)
-                if old_heartbeat_task:
-                    old_heartbeat_task.cancel()
+                devices_to_ping = {
+                    d['deviceId']: d
+                    for d in all_devices.values()
+                    if str(d.get('modelId', '')).lower().startswith(hardwired_models)
+                }
+                logger.debug(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
+                if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
+                    self.heartbeat_task.cancel()
                     try:
-                        await old_heartbeat_task
+                        await self.heartbeat_task
                     except Exception:
                         pass
                     self.heartbeat_task = None
-                self.heartbeat_task = asyncio.create_task(
-                    self._heartbeat(list(devices_to_ping.values()))
-                ) if devices_to_ping else None
-                if topics:
-                    self.event_stream.subscribe(topics)
+                self.heartbeat_task = asyncio.create_task(self._heartbeat(list(devices_to_ping.values())))
+                topics = self._collect_topics(basestations) + self._collect_topics(cameras)
+                self.event_stream.subscribe(topics)
         except UnauthorizedRestartException:
             logger.error('Session expired (401) in subscribe. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
