@@ -35,7 +35,7 @@ from .logging import logger
 class Request(object):
     """HTTP helper class"""
 
-    def __init__(self, timeout=5, mode="curl"):
+    def __init__(self, timeout=10, mode="curl"):
         self.mode = mode
         if mode == "curl":
             logger.debug("HTTP helper using curl_cffi")
