@@ -103,7 +103,6 @@ class ArloClient(object):
         self.password = self.provider.storage.getItem('arlo_password')
         self.username = self.provider.storage.getItem('arlo_username')
         self.mvss_enabled = self.provider.storage.getItem('mvss_enabled')
-        self.request_session_timeout = int(self.provider.storage.getItem('request_session_timeout') or 5)
 
     def _init_session(self) -> None:
         self.auth_host: str = None
@@ -236,7 +235,7 @@ class ArloClient(object):
     async def _get_auth_host(self) -> str:
         try:
             logger.debug('Attempting to use primary authentication host...')
-            self.request = Request(timeout=self.request_session_timeout, provider=self.provider)
+            self.request = Request(provider=self.provider)
             await self.request.options(f'https://{self.auth_url}/api/auth', headers=self.headers)
             logger.debug(f'Using primary authentication host: {self.auth_url}')
             return self.auth_url
@@ -245,7 +244,7 @@ class ArloClient(object):
             backup_auth_hosts: list[str] = [base64.b64decode(host.encode('utf-8')).decode('utf-8') for host in self.backup_auth_hosts]
             auth_host = await self.pick_host_async(backup_auth_hosts)
             logger.debug(f'Using backup authentication host: {auth_host}')
-            self.request = Request(timeout=self.request_session_timeout, mode='ip', provider=self.provider)
+            self.request = Request(mode='ip', provider=self.provider)
             return auth_host
 
     async def pick_host_async(self, hosts: list[str]) -> str:
@@ -469,7 +468,7 @@ class ArloClient(object):
 
     def _finalize_login(self) -> None:
         self.cookies = self.request.dumps_cookies()
-        self.request = Request(timeout=self.request_session_timeout, provider=self.provider)
+        self.request = Request(provider=self.provider)
         self.request.loads_cookies(self.cookies)
         self.provider.storage.setItem('arlo_cookies', self.cookies)
         self.finialized_login = True

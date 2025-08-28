@@ -28,7 +28,7 @@ class Request:
 
     def __init__(
         self,
-        timeout: int = 5,
+        timeout: int = 10,
         mode: str = 'curl',
         max_retries: int = 3,
         provider: ArloProvider | None = None,

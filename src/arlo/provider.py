@@ -416,14 +416,6 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             return False
 
     @property
-    def request_session_timeout(self) -> int:
-        timeout = self.storage.getItem('request_session_timeout')
-        if timeout is None:
-            timeout = 5
-            self.storage.setItem('request_session_timeout', timeout)
-        return int(timeout)
-
-    @property
     def mdns_services(self) -> dict:
         return self.storage.getItem('mdns_services')
 
@@ -932,14 +924,6 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 'type': 'boolean',
                 'value': self.disable_plugin,
             },
-            {
-                'group': 'Advanced',
-                'key': 'request_session_timeout',
-                'title': 'Request Session Timeout',
-                'description': 'Duration in seconds before the request session times out.',
-                'type': 'number',
-                'value': self.request_session_timeout,
-            },
         ])
         return results
 
@@ -1006,8 +990,6 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             verb = 'disabled' if value else 'enabled'
             self.logger.debug(f'Arlo plugin will be {verb}. Restarting...')
             await scrypted_sdk.deviceManager.requestRestart()
-        elif key == 'request_session_timeout':
-            self.storage.setItem(key, str(value))
         else:
             self.storage.setItem(key, value)
         if not skip_plugin_reset:
