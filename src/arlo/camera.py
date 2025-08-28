@@ -62,7 +62,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         100: 2
     }
     ARLO_TO_SCRYPTED_BRIGHTNESS_MAP = {v: k for k, v in SCRYPTED_TO_ARLO_BRIGHTNESS_MAP.items()}
-    timeout: int = 30
+    timeout: int = 15
     intercom: ArloIntercom = None
     light: ArloBaseLight = None
     speaker: Intercom = None
@@ -320,11 +320,12 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+                await self.onDeviceEvent(ScryptedInterface.VideoCamera.value, None)
                 self.logger.debug(f'Camera {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
                 self.logger.error(f'Error refreshing device {self.nativeId}: {e}', exc_info=True)
         except asyncio.CancelledError:
-            self.logger.debug('Device refresh task cancelled.')
+            pass
 
     @property
     def can_restart(self) -> bool:
@@ -392,19 +393,14 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
 
     @property
     def has_battery(self) -> bool:
-        power_source: dict = self._get_capability('PowerSource')
-        has_battery = 'Battery' in power_source
-        has_ac = 'AC' in power_source
-        if has_ac and not has_battery:
-            return False
-        if has_battery and has_ac:
-            battery: dict = power_source.get('Battery')
-            ac: dict = power_source.get('AC')
-            battery_indicator = battery.get('indicatorVisible', True)
-            ac_indicator = ac.get('indicatorVisible', True)
-            if battery_indicator is False and ac_indicator is False:
-                return False
-        return True
+        ps: dict = self._get_capability('PowerSource')
+        battery: dict = ps.get('Battery')
+        ac: dict = ps.get('AC')
+        return bool(
+            battery and
+            battery.get('indicatorVisible', True) and
+            (not ac or ac.get('indicatorVisible', True))
+        )
 
     @property
     def has_push_to_talk(self) -> bool:
@@ -583,8 +579,8 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 self.logger.debug('Activity State is idle or selected stream is currently active, continuing...')
                 break
             elif (asyncio.get_event_loop().time() - start_time) > self.timeout:
+                self.activity_state = 'idle'
                 raise TimeoutError('Waiting for activity state to be idle timed out')
-            self.logger.debug('Activity State is not idle or selected stream is not the current active stream, waiting...')
             await asyncio.sleep(1)
 
     async def getPictureOptions(self) -> list[ResponsePictureOptions]:

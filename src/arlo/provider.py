@@ -207,7 +207,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                         self.arlo.event_stream.process_buffered_events()
                 await asyncio.sleep(self.device_discovery_interval * 60)
         except asyncio.CancelledError:
-            self.logger.debug('Periodic discovery task cancelled.')
+            pass
 
     async def periodic_refresh(self):
         if self.device_refresh_interval == 0:
@@ -230,7 +230,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                     self.logger.error(f'Error during periodic device refresh: {e}', exc_info=True)
                 await asyncio.sleep(self.device_refresh_interval * 60)
         except asyncio.CancelledError:
-            self.logger.debug('Periodic refresh task cancelled.')
+            pass
 
     @property
     def arlo(self) -> ArloClient:
@@ -416,6 +416,14 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             return False
 
     @property
+    def request_session_timeout(self) -> int:
+        timeout = self.storage.getItem('request_session_timeout')
+        if timeout is None:
+            timeout = 5
+            self.storage.setItem('request_session_timeout', timeout)
+        return int(timeout)
+
+    @property
     def mdns_services(self) -> dict:
         return self.storage.getItem('mdns_services')
 
@@ -507,7 +515,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 self.logger.error('Arlo Cloud login failed, retrying in 10 seconds.')
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
-            self.logger.debug('Login to Arlo Cloud was cancelled.')
+            pass
             await asyncio.sleep(10)
         except Exception as e:
             self.logger.exception(f'Exception during login: {e}')
@@ -595,7 +603,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                     await self.login()
                     await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
         except asyncio.CancelledError:
-            self.logger.debug('Refresh Login Loop task was canceled.')
+            pass
 
     def imap_settings_ready(self) -> bool:
         ready = all([
@@ -924,6 +932,14 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 'type': 'boolean',
                 'value': self.disable_plugin,
             },
+            {
+                'group': 'Advanced',
+                'key': 'request_session_timeout',
+                'title': 'Request Session Timeout',
+                'description': 'Duration in seconds before the request session times out.',
+                'type': 'number',
+                'value': self.request_session_timeout,
+            },
         ])
         return results
 
@@ -990,6 +1006,8 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             verb = 'disabled' if value else 'enabled'
             self.logger.debug(f'Arlo plugin will be {verb}. Restarting...')
             await scrypted_sdk.deviceManager.requestRestart()
+        elif key == 'request_session_timeout':
+            self.storage.setItem(key, str(value))
         else:
             self.storage.setItem(key, value)
         if not skip_plugin_reset:

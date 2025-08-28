@@ -348,7 +348,7 @@ class SIPManager:
                 try:
                     await self.keepalive_task
                 except asyncio.CancelledError:
-                    self.logger.debug('Keepalive loop cancelled.')
+                    pass
                 self.keepalive_task = None
             async with self.invite_resp_lock:
                 if self.invite_resp:

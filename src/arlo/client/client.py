@@ -103,6 +103,7 @@ class ArloClient(object):
         self.password = self.provider.storage.getItem('arlo_password')
         self.username = self.provider.storage.getItem('arlo_username')
         self.mvss_enabled = self.provider.storage.getItem('mvss_enabled')
+        self.request_session_timeout = int(self.provider.storage.getItem('request_session_timeout') or 5)
 
     def _init_session(self) -> None:
         self.auth_host: str = None
@@ -235,7 +236,7 @@ class ArloClient(object):
     async def _get_auth_host(self) -> str:
         try:
             logger.debug('Attempting to use primary authentication host...')
-            self.request = Request(provider=self.provider)
+            self.request = Request(timeout=self.request_session_timeout, provider=self.provider)
             await self.request.options(f'https://{self.auth_url}/api/auth', headers=self.headers)
             logger.debug(f'Using primary authentication host: {self.auth_url}')
             return self.auth_url
@@ -244,7 +245,7 @@ class ArloClient(object):
             backup_auth_hosts: list[str] = [base64.b64decode(host.encode('utf-8')).decode('utf-8') for host in self.backup_auth_hosts]
             auth_host = await self.pick_host_async(backup_auth_hosts)
             logger.debug(f'Using backup authentication host: {auth_host}')
-            self.request = Request(mode='ip', provider=self.provider)
+            self.request = Request(timeout=self.request_session_timeout, mode='ip', provider=self.provider)
             return auth_host
 
     async def pick_host_async(self, hosts: list[str]) -> str:
@@ -468,7 +469,7 @@ class ArloClient(object):
 
     def _finalize_login(self) -> None:
         self.cookies = self.request.dumps_cookies()
-        self.request = Request(provider=self.provider)
+        self.request = Request(timeout=self.request_session_timeout, provider=self.provider)
         self.request.loads_cookies(self.cookies)
         self.provider.storage.setItem('arlo_cookies', self.cookies)
         self.finialized_login = True
@@ -709,55 +710,71 @@ class ArloClient(object):
             if not self.event_stream or not self.event_stream.connected:
                 raise RuntimeError('Event stream failed to initialize or connect.')
             if basestation_camera_tuples:
-                basestations = {b['deviceId']: b for b, _ in basestation_camera_tuples}
-                cameras = {c['deviceId']: c for _, c in basestation_camera_tuples}
-                devices_to_ping = {
-                    b['deviceId']: b for b in basestations.values()
-                    if not (
-                        b['deviceId'] == b.get('parentId')
-                        and b['deviceType'] not in ['doorbell', 'siren', 'arloq', 'arloqs']
-                        and str(b['modelId']).lower() not in ['abc1000', 'abc1000a']
-                    )
-                    and not str(b['modelId']).lower().startswith(('avd2001', 'avd3001', 'avd4001'))
+                hardwired_models = {
+                    'vmc3040', 'vmc3040s', 'vmc2060', 'vmc3060',
+                    'vmc2040', 'abc1000', 'avd1001', 'flw2001',
+                    'ac1001', 'ac2001',
+                    'vmb3010', 'vmb3500', 'vmb4000', 'vmb4500',
+                    'vmb4540', 'vmb5000', 'sh1001'
                 }
-                logger.debug(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
-                if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
-                    self.heartbeat_task.cancel()
+                basestations: dict[str, dict] = {}
+                cameras: dict[str, dict] = {}
+                devices_to_ping: dict[str, dict] = {}
+                topics: list[str] = []
+                for b, c in basestation_camera_tuples:
+                    for device in (b, c):
+                        if not device:
+                            continue
+                        device_id = device['deviceId']
+                        model_id = str(device.get('modelId', '')).lower()
+                        if device is b:
+                            basestations[device_id] = device
+                        else:
+                            cameras[device_id] = device
+                        if any(model_id.startswith(prefix) for prefix in hardwired_models):
+                            devices_to_ping[device_id] = device
+                        topics.extend(device.get('allowedMqttTopics', []))
+                logger.debug(f"Will send heartbeat to the following devices: {list(devices_to_ping.keys())}")
+                old_heartbeat_task: asyncio.Task | None = getattr(self, 'heartbeat_task', None)
+                if old_heartbeat_task:
+                    old_heartbeat_task.cancel()
                     try:
-                        await self.heartbeat_task
+                        await old_heartbeat_task
                     except Exception:
                         pass
                     self.heartbeat_task = None
-                self.heartbeat_task = asyncio.create_task(self._heartbeat(list(devices_to_ping.values())))
-                topics = self._collect_topics(basestations) + self._collect_topics(cameras)
-                self.event_stream.subscribe(topics)
+                self.heartbeat_task = asyncio.create_task(
+                    self._heartbeat(list(devices_to_ping.values()))
+                ) if devices_to_ping else None
+                if topics:
+                    self.event_stream.subscribe(topics)
         except UnauthorizedRestartException:
             logger.error('Session expired (401) in subscribe. Restarting plugin.')
             await scrypted_sdk.deviceManager.requestRestart()
             return
 
-    async def _heartbeat(self, basestations: list[dict[str, Any]], interval: int = 30) -> None:
+    async def _heartbeat(self, devices: list[dict[str, Any]], interval: int = 30) -> None:
         try:
             while self.event_stream and self.event_stream.active:
-                for basestation in basestations:
+                for device in devices:
                     try:
-                        await self._ping(basestation)
+                        await self._ping(device)
                     except Exception:
                         pass
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
-            logger.debug('Heartbeat task cancelled.')
+            pass
 
     def _collect_topics(self, devices: dict[Any, dict[str, Any]]) -> list:
         return [topic for d in devices.values() for topic in d.get('allowedMqttTopics', [])]
 
-    async def _ping(self, basestation: dict) -> None:
-        basestation_id = basestation.get('deviceId')
-        await self._notify(basestation, {
+    async def _ping(self, device: dict) -> None:
+        device_id = device.get('deviceId')
+        await self._notify(device, {
             'action': 'set',
             'resource': f'subscriptions/{self.user_id}_web',
             'publishResponse': False,
-            'properties': {'devices': [basestation_id]}
+            'properties': {'devices': [device_id]}
         })
 
     async def _notify(self, basestation: dict, body: dict) -> None:

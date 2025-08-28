@@ -227,11 +227,12 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
+                await self.onDeviceEvent(ScryptedInterface.DeviceProvider.value, None)
                 self.logger.debug(f'Basestation {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
                 self.logger.error(f'Error refreshing basestation {self.nativeId}: {e}', exc_info=True)
         except asyncio.CancelledError:
-            self.logger.debug('Device refresh task cancelled.')
+            pass
 
     async def getDevice(self, nativeId: str) -> ScryptedDeviceBase:
         if not nativeId.startswith(self.nativeId):
