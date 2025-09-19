@@ -14,7 +14,6 @@ import time
 from datetime import datetime, timedelta
 from logging import Logger
 from requests_toolbelt.adapters import host_header_ssl
-from scrypted_sdk.other import Storage
 from urllib.parse import parse_qs, ParseResult, urlparse
 from typing import Any, Callable, TYPE_CHECKING
 
