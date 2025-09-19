@@ -498,7 +498,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                         self.create_task(self.imap_mfa_loop(arlo, mfa_start_time), tag='mfa')
                     elif self.mfa_strategy == 'Manual':
                         self.logger.debug('Using Manual strategy for MFA code retrieval.')
-                        self.create_task(self.manual_mfa_loop(arlo), tag='mfa')
+                        self.create_task(self.manual_mfa_loop(), tag='mfa')
             await login_task
             if arlo.logged_in:
                 await self.on_login_success(arlo)
