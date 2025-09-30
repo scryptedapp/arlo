@@ -7,7 +7,7 @@ scrypted-arlo-go==0.7.6
 cloudscraper==1.2.71
 curl-cffi==0.13.0
 async-timeout==5.0.1
-beautifulsoup4==4.13.5
+beautifulsoup4==4.14.2
 sseclient==0.0.22
 --extra-index-url=https://bjia56.github.io/armv7l-wheels/
 --extra-index-url=https://bjia56.github.io/scrypted-arlo-go/
