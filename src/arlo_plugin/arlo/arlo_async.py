@@ -100,7 +100,17 @@ NO_MFA = object()
 class Arlo(object):
     BASE_URL = 'my.arlo.com'
     AUTH_URL = 'ocapi-app.arlo.com'
-    BACKUP_AUTH_HOSTS = ['MzQuMjQxLjU0LjE3MQ==', 'NjMuMzIuMjcuNjk=']
+    BACKUP_AUTH_HOSTS = [
+        'NTAuMjEyLjEzOS42OQ==',
+        'NTAuNTAuMjQuNDQ=',
+        'NTAuMjEwLjE4OS4xMDY=',
+        'NTAuMjA4LjE1NC40MQ==',
+        'MTA4LjEyOC40LjE5OQ==',
+        'MzQuMjQxLjE1Ni4xMzQ=',
+        'NTAuMjA5LjI1NC4yNTM=',
+        'MTA0LjE4LjMzLjcz',
+        'MTcyLjY0LjE1NC4xODM='
+    ]
     #BACKUP_AUTH_HOSTS = BACKUP_AUTH_HOSTS[1:2]
     TRANSID_PREFIX = 'web'
 
