@@ -63,7 +63,17 @@ class ArloClient(object):
     arlo_url: str = 'my.arlo.com'
     arlo_api_url: str = 'myapi.arlo.com'
     auth_url: str = 'ocapi-app.arlo.com'
-    backup_auth_hosts: list[str] = ['MzQuMjQxLjU0LjE3MQ==', 'NjMuMzIuMjcuNjk=']
+    backup_auth_hosts: list[str] = [
+        'NTAuMjEyLjEzOS42OQ==',
+        'NTAuNTAuMjQuNDQ=',
+        'NTAuMjEwLjE4OS4xMDY=',
+        'NTAuMjA4LjE1NC40MQ==',
+        'MTA4LjEyOC40LjE5OQ==',
+        'MzQuMjQxLjE1Ni4xMzQ=',
+        'NTAuMjA5LjI1NC4yNTM=',
+        'MTA0LjE4LjMzLjcz',
+        'MTcyLjY0LjE1NC4xODM='
+    ]
     random.shuffle(backup_auth_hosts)
 
     def __init__(self, provider: ArloProvider):
