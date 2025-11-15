@@ -7,9 +7,10 @@ This document outlines the phased refactoring plan to stabilize the Arlo plugin.
 The current plugin implementation has several stability issues:
 1. **Distributed restarts**: 401 errors trigger plugin restarts from multiple layers (request.py, client.py, mqtt_stream.py, sse_stream.py), causing unnecessary disruption
 2. **No centralized orchestration**: No single point controls when to attempt soft relogin vs. hard restart
-3. **Task cancellation bugs**: `cancel_pending_tasks(tag)` has inverted semantics - it cancels everything EXCEPT the specified tag
-4. **Stream lifecycle issues**: MQTT/SSE streams lack deterministic disconnect, reconnect, and backoff logic
-5. **Settings change handling**: No proper diff detection, causing unnecessary full restarts
+3. **Task cancellation bugs**: `cancel_pending_tasks(tag)` had inverted semantics - it cancelled everything EXCEPT the specified tag (FIXED in PR1)
+4. **Redundant task APIs**: Multiple overlapping functions (`cancel_pending_tasks`, `cancel_tasks_by_tag`, `cancel_and_await_tasks_by_tag`) made the API confusing (SIMPLIFIED in PR1)
+5. **Stream lifecycle issues**: MQTT/SSE streams lack deterministic disconnect, reconnect, and backoff logic
+6. **Settings change handling**: No proper diff detection, causing unnecessary full restarts
 
 ## Phased Refactor Plan
 
@@ -55,8 +56,18 @@ The current plugin implementation has several stability issues:
 6. **arlo/util.py**
    - Fix `BackgroundTaskMixin.cancel_pending_tasks(tag)` semantics:
      - If `tag` is None: cancel ALL tasks
-     - If `tag` is provided: cancel ONLY tasks with that tag (current behavior is inverted)
-   - Keep `cancel_and_await_tasks_by_tag` unchanged
+     - If `tag` is provided: cancel ONLY tasks with that tag (behavior was inverted)
+   - **BONUS SIMPLIFICATION**: Consolidate redundant task APIs:
+     - New unified method: `cancel_tasks(tags=None, await_completion=False)`
+       - `tags=None`: cancel all
+       - `tags='login'`: cancel single tag
+       - `tags=['login', 'refresh']`: cancel multiple tags
+       - `await_completion=True`: await cancelled tasks
+     - New helper methods:
+       - `get_tasks(tag=None)`: Get tasks by tag or all
+       - `has_tasks(tag=None)`: Check if tasks exist
+     - Keep old methods as deprecated wrappers for backward compatibility
+   - Update all usages in provider.py, base.py, webrtc_sip.py to use new API
 
 7. **arlo/provider.py**
    - Add fields in `__init__`:
@@ -66,17 +77,15 @@ The current plugin implementation has several stability issues:
      - Increment 401 counter with timestamp
      - Log warning (no relogin logic yet; full orchestration in PR 2)
    - In `_initialize_plugin()`:
-     - Replace `self.cancel_pending_tasks('initialize_plugin')` (old semantics)
-     - With targeted cancellations before starting new loops:
+     - Replace multiple `cancel_and_await_tasks_by_tag()` calls
+     - With single simplified call:
        ```python
-       await self.cancel_and_await_tasks_by_tag('periodic_discovery')
-       await self.cancel_and_await_tasks_by_tag('periodic_refresh')
-       await self.cancel_and_await_tasks_by_tag('mfa')
-       await self.cancel_and_await_tasks_by_tag('login-arlo')
-       await self.cancel_and_await_tasks_by_tag('login')
-       await self.cancel_and_await_tasks_by_tag('refresh')
-       await self.cancel_and_await_tasks_by_tag('heartbeat')
+       await self.cancel_tasks(
+           tags=['periodic_discovery', 'periodic_refresh', 'mfa', 'login-arlo', 'login', 'refresh', 'heartbeat'],
+           await_completion=True
+       )
        ```
+   - Update all other task cancellation calls to use simplified API
 
 #### What NOT to Change
 - Do NOT implement full orchestrator logic (soft relogin, graceful restart) - PR 2
@@ -90,6 +99,9 @@ The current plugin implementation has several stability issues:
 - ✅ No direct deviceManager.requestRestart in client Unauthorized handlers
 - ✅ No direct deviceManager.requestRestart in mqtt_stream.py/sse_stream.py start error paths
 - ✅ `cancel_pending_tasks(tag)` cancels only matching tags when provided (all when tag=None)
+- ✅ **NEW**: Simplified task API with single `cancel_tasks()` method replacing 3 redundant methods
+- ✅ **NEW**: Helper methods `get_tasks()` and `has_tasks()` for task inspection
+- ✅ All task cancellation calls updated to use simplified API throughout codebase
 - ✅ provider._initialize_plugin no longer cancels itself due to changed semantics
 - ✅ COPILOT_INSTRUCTIONS.md present with full plan
 

@@ -212,7 +212,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
 
     def __del__(self) -> None:
         self.stop_subscriptions = True
-        self.cancel_pending_tasks()
+        asyncio.create_task(self.cancel_tasks())  # Cancel all tasks in destructor
 
     async def delayed_init(self) -> None:
         try:

@@ -178,15 +178,11 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             if not self.arlo_username or not self.arlo_password:
                 self.logger.info('Arlo Cloud username or password not set. Waiting for user to enter credentials.')
                 return
-            # Cancel specific background tasks before starting new ones
-            # (Fixed: cancel_pending_tasks semantics were inverted in old code)
-            await self.cancel_and_await_tasks_by_tag('periodic_discovery')
-            await self.cancel_and_await_tasks_by_tag('periodic_refresh')
-            await self.cancel_and_await_tasks_by_tag('mfa')
-            await self.cancel_and_await_tasks_by_tag('login-arlo')
-            await self.cancel_and_await_tasks_by_tag('login')
-            await self.cancel_and_await_tasks_by_tag('refresh')
-            await self.cancel_and_await_tasks_by_tag('heartbeat')
+            # Cancel specific background tasks before starting new ones using simplified API
+            await self.cancel_tasks(
+                tags=['periodic_discovery', 'periodic_refresh', 'mfa', 'login-arlo', 'login', 'refresh', 'heartbeat'],
+                await_completion=True
+            )
             self.logger.info('Initializing Arlo plugin...')
             self._login_task = self.create_task(self.login(), tag='login')
             self.create_task(self.periodic_discovery(), tag='periodic_discovery')
@@ -542,9 +538,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             await asyncio.sleep(10)
         finally:
             self.logger.debug('Cleaning up login and MFA tasks.')
-            await self.cancel_and_await_tasks_by_tag('mfa')
-            await self.cancel_and_await_tasks_by_tag('login-arlo')
-            await self.cancel_and_await_tasks_by_tag('login')
+            await self.cancel_tasks(tags=['mfa', 'login-arlo', 'login'], await_completion=True)
             self.login_in_progress = False
 
     async def _reset_arlo_client(self) -> None:
@@ -596,7 +590,7 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
     async def on_login_success(self, arlo: ArloClient) -> None:
         self._arlo = arlo
         if self.full_reset_needed:
-            await self.cancel_and_await_tasks_by_tag('refresh')
+            await self.cancel_tasks(tags='refresh', await_completion=True)
             self.create_task(self.refresh_login_loop(), tag='refresh')
             await self.do_arlo_setup()
             self.full_reset_needed = False
@@ -1004,12 +998,12 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
                 skip_plugin_reset = True
         elif key == 'device_refresh_interval':
             self.storage.setItem(key, str(value))
-            await self.cancel_and_await_tasks_by_tag('periodic_refresh')
+            await self.cancel_tasks(tags='periodic_refresh', await_completion=True)
             self.create_task(self.periodic_refresh(), tag='periodic_refresh')
             skip_plugin_reset = True
         elif key == 'device_discovery_interval':
             self.storage.setItem(key, str(value))
-            await self.cancel_and_await_tasks_by_tag('periodic_discovery')
+            await self.cancel_tasks(tags='periodic_discovery', await_completion=True)
             self.create_task(self.periodic_discovery(), tag='periodic_discovery')
             skip_plugin_reset = True
         elif key == 'disable_plugin':
