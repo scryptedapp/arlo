@@ -62,12 +62,32 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         self.full_reset_needed: bool = False
         self.device_lock = asyncio.Lock()
         self.cleanup_devices: bool = False
+        self._401_count = 0
+        self._last_401_time = 0.0
         self._check_and_migrate_storage()
         self._propagate_log_level()
         self.create_task(self._initialize_plugin(), tag='initialize_plugin')
 
     def print(self, *args, **kwargs) -> None:
         print(*args, **kwargs)
+
+    def handle_unauthorized(self, context: str) -> None:
+        """
+        Handle 401 Unauthorized errors centrally.
+        This is a stub for PR 1. Full orchestration logic (soft relogin, graceful restart)
+        will be implemented in PR 2.
+        
+        Args:
+            context: Description of the operation that encountered the 401 (e.g., "GET /api/devices")
+        """
+        current_time = time.time()
+        self._401_count += 1
+        self._last_401_time = current_time
+        self.logger.warning(
+            f'Received 401 Unauthorized for: {context}. '
+            f'Count: {self._401_count}, Last: {current_time}. '
+            f'Recovery orchestration will be implemented in PR 2.'
+        )
 
     def _propagate_log_level(self) -> None:
         try:
@@ -158,7 +178,15 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             if not self.arlo_username or not self.arlo_password:
                 self.logger.info('Arlo Cloud username or password not set. Waiting for user to enter credentials.')
                 return
-            self.cancel_pending_tasks('initialize_plugin')
+            # Cancel specific background tasks before starting new ones
+            # (Fixed: cancel_pending_tasks semantics were inverted in old code)
+            await self.cancel_and_await_tasks_by_tag('periodic_discovery')
+            await self.cancel_and_await_tasks_by_tag('periodic_refresh')
+            await self.cancel_and_await_tasks_by_tag('mfa')
+            await self.cancel_and_await_tasks_by_tag('login-arlo')
+            await self.cancel_and_await_tasks_by_tag('login')
+            await self.cancel_and_await_tasks_by_tag('refresh')
+            await self.cancel_and_await_tasks_by_tag('heartbeat')
             self.logger.info('Initializing Arlo plugin...')
             self._login_task = self.create_task(self.login(), tag='login')
             self.create_task(self.periodic_discovery(), tag='periodic_discovery')

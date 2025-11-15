@@ -42,7 +42,9 @@ class BackgroundTaskMixin:
             return
         for task in list(self.background_tasks):
             task_tag = getattr(task, '_task_tag', None)
-            if tag is not None and task_tag == tag:
+            # If tag is None, cancel all tasks
+            # If tag is provided, cancel only tasks with that tag
+            if tag is not None and task_tag != tag:
                 continue
             task.cancel()
             self.background_tasks.discard(task)
