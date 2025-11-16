@@ -506,8 +506,8 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         self.login_in_progress = True
         try:
             self._logged_in_event.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f'Exception while clearing _logged_in_event: {e}')
         try:
             if self.full_reset_needed:
                 await self._reset_arlo_client()
@@ -561,8 +561,8 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
         self._arlo = None
         try:
             self._logged_in_event.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f'Exception while clearing _logged_in_event: {e}')
 
     def _set_login_futures(self) -> None:
         loop = asyncio.get_event_loop()
@@ -612,8 +612,8 @@ class ArloProvider(BackgroundTaskMixin, DeviceProvider, ScryptedDeviceBase, Scry
             self.full_reset_needed = False
         try:
             self._logged_in_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f'Exception while setting _logged_in_event: {e}')
 
     async def refresh_login_loop(self) -> None:
         hard_interval_days = self.imap_mfa_interval if self.mfa_strategy == 'IMAP' else 14

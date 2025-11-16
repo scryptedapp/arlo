@@ -1239,8 +1239,8 @@ class ArloClient(object):
             response = await self.request.get(f'https://{self.arlo_api_url}/hmsweb/users/devices/{self.user_id}_{camera.get("deviceId")}/pushtotalk')
             return response.get('uSessionId'), response.get('data')
         except UnauthorizedRestartException:
-            logger.error('Session expired (401) in start_push_to_talk. Returning None.')
-            return None
+            logger.error('Session expired (401) in start_push_to_talk. Returning (None, None).')
+            return (None, None)
 
     async def notify_push_to_talk_offer_sdp(self, basestation: dict, camera: dict, uSessionId: str, localSdp: str) -> None:
         try:

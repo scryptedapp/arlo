@@ -53,7 +53,7 @@ class BackgroundTaskMixin:
         await_completion: bool = False
     ) -> None:
         """
-        Cancel tasks by tag(s). This is the unified method for all task cancellation.
+        Cancel tasks by tag(s). This is the unified *async* method for all task cancellation.
         
         Args:
             tags: None to cancel all tasks, a single tag string, or a list of tag strings
