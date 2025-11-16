@@ -230,9 +230,12 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider, auto_init=False)
+        self._init_completed = False
         self._ready_event.set()
 
     def complete_init(self) -> None:
+        if self._init_completed:
+            return
         self.create_task(self._delayed_init())
 
     async def _delayed_init(self) -> None:
@@ -257,6 +260,7 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
                 mode, revision = await self._get_initial_mode_and_revision()
                 self._set_mode_and_revision(mode, revision)
                 self._start_active_mode_subscription()
+                self._init_completed = True
                 return
             except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')

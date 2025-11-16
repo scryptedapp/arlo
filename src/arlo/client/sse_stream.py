@@ -6,8 +6,6 @@ import sseclient as sse
 
 from typing import Any
 
-import scrypted_sdk
-
 from .stream import Stream
 
 class SSEEventStream(Stream):
@@ -71,11 +69,7 @@ class SSEEventStream(Stream):
                 await asyncio.sleep(0.5)
         except Exception as e:
             self.logger.error(f'Failed to initialize SSE Event Stream: {e}')
-            try:
-                await scrypted_sdk.deviceManager.requestRestart()
-                self.logger.error('Requested plugin restart due to persistent SSE connection failure.')
-            except Exception as restart_exc:
-                self.logger.error(f'Failed to request plugin restart: {restart_exc}')
+            return
 
     async def restart(self) -> None:
         self.logger.debug('Restarting SSE Event stream...')
