@@ -1,7 +1,9 @@
 # Arlo Plugin Refactor Plan - Copilot Instructions
 
 ## Overview
-This document outlines the phased refactoring plan to stabilize the Arlo plugin. The goal is to eliminate distributed plugin restarts on transient 401 errors, centralize session recovery, improve connection management, and ensure graceful handling of authorization failures.
+This document outlines the phased refactoring plan to stabilize the Arlo plugin. The goal is to eliminate distributed plugin restarts on transient 401 errors, centralize session recovery, improve connection management, ensure graceful handling of authorization failures, and achieve a clean, maintainable codebase with consistent patterns throughout.
+
+The refactor is structured as 7 PRs, with PR 7 serving as a comprehensive cleanup pass to ensure the codebase is as clean and consistent as possible.
 
 ## Background
 The current plugin implementation has several stability issues:
@@ -73,10 +75,13 @@ The current plugin implementation has several stability issues:
    - Add fields in `__init__`:
      - `self._401_count = 0`
      - `self._last_401_time = 0.0`
+     - `self.initialize_lock = asyncio.Lock()` (prevent concurrent initialization)
+     - `self._logged_in_event = asyncio.Event()` (sync periodic tasks with login state)
    - Add `handle_unauthorized(self, context: str)` stub:
      - Increment 401 counter with timestamp
      - Log warning (no relogin logic yet; full orchestration in PR 2)
    - In `_initialize_plugin()`:
+     - Add initialization lock to prevent race conditions
      - Replace multiple `cancel_and_await_tasks_by_tag()` calls
      - With single simplified call:
        ```python
@@ -86,6 +91,16 @@ The current plugin implementation has several stability issues:
        )
        ```
    - Update all other task cancellation calls to use simplified API
+   - **ADDITIONAL (discovered during testing)**: Add `_logged_in_event` synchronization
+     - `periodic_discovery()` and `periodic_refresh()` now wait for login before starting
+     - Event is set on login success, cleared on login start/restart
+     - Prevents tasks from running before client is authenticated
+     - This addresses a race condition discovered during testing where periodic tasks could start before login completed
+
+8. **arlo/vss.py**
+   - **ADDITIONAL (bug fix)**: Add `_init_completed` flag to prevent duplicate initialization
+     - Guards `complete_init()` from being called multiple times
+     - Sets flag after successful initialization
 
 #### What NOT to Change
 - Do NOT implement full orchestrator logic (soft relogin, graceful restart) - PR 2
@@ -101,6 +116,9 @@ The current plugin implementation has several stability issues:
 - ✅ `cancel_pending_tasks(tag)` cancels only matching tags when provided (all when tag=None)
 - ✅ **NEW**: Simplified task API with single `cancel_tasks()` method replacing 3 redundant methods
 - ✅ **NEW**: Helper methods `get_tasks()` and `has_tasks()` for task inspection
+- ✅ **NEW**: `_logged_in_event` prevents periodic tasks from starting before login completes
+- ✅ **NEW**: `initialize_lock` prevents concurrent initialization race conditions
+- ✅ **NEW**: `_init_completed` in vss.py prevents duplicate initialization
 - ✅ All task cancellation calls updated to use simplified API throughout codebase
 - ✅ provider._initialize_plugin no longer cancels itself due to changed semantics
 - ✅ COPILOT_INSTRUCTIONS.md present with full plan
@@ -289,6 +307,72 @@ The current plugin implementation has several stability issues:
 - ✅ Simultaneous identical requests deduplicated
 - ✅ Graceful backoff on rate limit errors
 - ✅ Improved performance (reduced latency)
+
+---
+
+### PR 7: Comprehensive Flow Analysis & Code Cleanup
+**Status**: Not Started  
+**Target Branch**: purepython_wip
+
+#### Goals
+- Analyze the entire plugin flow from initialization to shutdown
+- Identify and eliminate redundant code paths
+- Ensure consistent logging patterns across all modules
+- Standardize error handling throughout the codebase
+- Consolidate similar functionality
+- Remove unnecessary complexity ("fluff")
+- Maintain current working logic while improving code quality
+
+#### Approach
+1. **Flow Mapping**
+   - Document complete initialization sequence
+   - Map all async task lifecycles
+   - Identify all error paths and their handling
+   - Document login/relogin flows
+   - Map event stream lifecycle
+
+2. **Code Analysis**
+   - Identify duplicate or near-duplicate code
+   - Find inconsistent patterns (logging, error handling, etc.)
+   - Locate dead code or unused paths
+   - Review exception handling patterns
+   - Check for proper cleanup in all paths
+
+3. **Cleanup & Consolidation**
+   - Merge duplicate code into shared utilities
+   - Standardize logging format: `[Module:Method] Message`
+   - Consolidate error handling patterns
+   - Remove dead code
+   - Simplify complex conditionals
+   - Document remaining complexity with inline comments
+
+4. **Validation**
+   - Ensure no behavioral changes to working functionality
+   - Verify all error paths are still handled
+   - Test initialization and shutdown sequences
+   - Validate logging is complete and consistent
+
+#### Key Principles
+- **Preserve working logic**: Don't fix what isn't broken
+- **Improve clarity**: Make code easier to understand and maintain
+- **Stay consistent**: Use same patterns throughout
+- **Remove fluff**: Eliminate unnecessary complexity
+- **Document intent**: Add comments where logic is necessarily complex
+
+#### Files to Review
+- All files in `src/arlo/` and `src/arlo/client/`
+- Focus on: provider.py, client.py, base.py, camera.py, basestation.py
+- Review: util.py, logging.py for shared utilities
+
+#### Acceptance Criteria
+- ✅ Complete flow documentation exists
+- ✅ Logging format is consistent across all modules
+- ✅ Error handling follows consistent patterns
+- ✅ No duplicate code remains
+- ✅ Dead code removed
+- ✅ All tests pass
+- ✅ No behavioral regressions
+- ✅ Code is more maintainable than before
 
 ---
 
