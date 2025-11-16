@@ -39,7 +39,8 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
 
     def __del__(self) -> None:
         self.stop_subscriptions = True
-        asyncio.create_task(self.cancel_tasks())  # Cancel all tasks in destructor
+        # Cancel all tasks synchronously - safe for destructor
+        self.cancel_pending_tasks()
         self._cleanup()
 
     async def _delayed_init(self) -> None:

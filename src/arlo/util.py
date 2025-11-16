@@ -143,15 +143,39 @@ class BackgroundTaskMixin:
         """
         DEPRECATED: Use cancel_tasks() instead.
         Kept for backward compatibility during migration.
+        
+        Note: This is a synchronous wrapper that schedules the async cancel_tasks.
+        For proper cleanup, use the async cancel_tasks() directly.
         """
-        asyncio.create_task(self.cancel_tasks(tags=tag, await_completion=False))
+        if not hasattr(self, 'background_tasks'):
+            return
+        # Synchronous cancellation - just cancel without awaiting
+        tag_set = None
+        if tag is not None:
+            tag_set = {tag} if isinstance(tag, str) else set(tag)
+        
+        for task in list(self.background_tasks):
+            task_tag = getattr(task, '_task_tag', None)
+            should_cancel = False
+            if tag_set is None:
+                should_cancel = True
+            elif task_tag in tag_set:
+                should_cancel = True
+            
+            if should_cancel:
+                if not task.done():
+                    task.cancel()
+                self.background_tasks.discard(task)
 
     def cancel_tasks_by_tag(self, tag: str) -> None:
         """
         DEPRECATED: Use cancel_tasks(tag) instead.
         Kept for backward compatibility during migration.
+        
+        Note: This is a synchronous wrapper. For proper cleanup with await,
+        use the async cancel_tasks() directly.
         """
-        asyncio.create_task(self.cancel_tasks(tags=tag, await_completion=False))
+        self.cancel_pending_tasks(tag)
 
     async def cancel_and_await_tasks_by_tag(self, tag: str) -> None:
         """
