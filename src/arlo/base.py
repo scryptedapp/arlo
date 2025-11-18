@@ -39,7 +39,6 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
 
     def __del__(self) -> None:
         self.stop_subscriptions = True
-        # Cancel all tasks synchronously - safe for destructor
         self.cancel_pending_tasks()
         self._cleanup()
 
