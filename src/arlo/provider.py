@@ -556,7 +556,7 @@ class ArloProvider(
         await self.cancel_and_await_tasks_by_tag('login')
 
     async def imap_mfa_loop(self, arlo: ArloClient, mfa_start_time: float) -> None:
-        while not self.imap_settings_ready():
+        if not self.imap_settings_ready():
             self.logger.info('IMAP MFA settings not ready, waiting for user input.')
             await self._imap_ready_event.wait()
         self.logger.debug('IMAP MFA Loop started.')
@@ -787,12 +787,10 @@ class ArloProvider(
                 'refresh_login_loop': lambda: asyncio.run_coroutine_threadsafe(self._handle_restart(refresh_login_loop=True), self._loop),
                 'event_stream': lambda: asyncio.run_coroutine_threadsafe(self._handle_restart(event_stream=True), self._loop),
             }
-            self.logger.warning(f'Restarting scope "{scope}".')
             action = scope_map.get(scope)
             if action:
                 action()
             else:
-                self.logger.warning(f'Unknown restart scope: {scope}. Falling back to full restart.')
                 asyncio.run_coroutine_threadsafe(scrypted_sdk.deviceManager.requestRestart(), self._loop)
         except Exception as e:
             self.logger.error(f'Failed to request restart for scope {scope}: {e}', exc_info=True)
@@ -1044,6 +1042,7 @@ class ArloProvider(
                 self.storage.setItem(key, 'true' if value else 'false')
             else:
                 self.storage.setItem(key, value)
+            self.imap_settings_ready()
             self.request_restart('refresh_login_loop')
         elif key in ('hidden_devices', 'mvss_enabled'):
             self.storage.setItem(key, 'true' if (key == 'mvss_enabled' and value) else value)
