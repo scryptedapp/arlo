@@ -98,8 +98,10 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
                 provider_native_id = parent_id
             if provider_native_id in getattr(self.provider, 'hidden_device_ids', []):
                 provider_native_id = None
+        hw_version: str = str(self.arlo_properties.get('hwVersion', '')).replace(self.arlo_device.get('modelId', ''), '') if self.arlo_properties else ''
+        hw_version_cleaned = hw_version.replace('er', '').replace('r', '')
         info = {
-            'model': f'{self.arlo_device["modelId"]} {str(self.arlo_properties.get("hwVersion", "")).replace(self.arlo_device.get("modelId", ""), "") if self.arlo_properties else ""}'.strip(),
+            'model': f'{self.arlo_device["modelId"]} {hw_version_cleaned}'.strip(),
             'manufacturer': 'Arlo',
             'firmware': self.arlo_device.get('firmwareVersion'),
             'serialNumber': self.arlo_device['deviceId'],
