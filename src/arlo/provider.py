@@ -20,7 +20,6 @@ import scrypted_sdk
 from scrypted_sdk import ScryptedDeviceBase
 from scrypted_sdk.types import (
     DeviceProvider,
-    ScryptedDevice,
     ScryptedDeviceType,
     ScryptedInterface,
     Setting,
@@ -106,24 +105,24 @@ class ArloProvider(
         return ArloProvider.plugin_log_level_choices[self.plugin_log_level]
 
     def _check_and_migrate_storage(self):
-        self.logger.info(f"[Migration] Checking for migration...")
+        self.logger.info(f'[Migration] Checking for migration...')
         stored_version = self.storage.getItem('plugin_version')
         if stored_version is not None:
             stored_version = int(stored_version)
         if stored_version is None:
-            self.logger.info(f"[Migration] First install: setting plugin_version to {PLUGIN_VERSION}")
+            self.logger.info(f'[Migration] First install: setting plugin_version to {PLUGIN_VERSION}')
             self.storage.setItem('plugin_version', PLUGIN_VERSION)
             self.cleanup_devices = False
         elif stored_version < PLUGIN_VERSION:
-            self.logger.info(f"[Migration] Upgrading plugin version {stored_version} → {PLUGIN_VERSION}")
+            self.logger.info(f'[Migration] Upgrading plugin version {stored_version} → {PLUGIN_VERSION}')
             self._migrate_storage()
             self.cleanup_devices = True
         else:
-            self.logger.info(f"[Migration] Plugin version matches ({PLUGIN_VERSION}), no migration needed.")
+            self.logger.info(f'[Migration] Plugin version matches ({PLUGIN_VERSION}), no migration needed.')
             self.cleanup_devices = False
 
     def _migrate_storage(self) -> None:
-        self.logger.info("[Migration] Migrating storage keys and values...")
+        self.logger.info('[Migration] Migrating storage keys and values...')
         migrations = [
             ('arlo_transport', 'arlo_event_stream_transport',
             lambda v: v if v in ArloProvider.arlo_event_stream_transport_choices else 'MQTT'),
@@ -136,13 +135,13 @@ class ArloProvider(
             value = self.storage.getItem(old_key)
             if value is not None:
                 new_value = map_fn(value) if map_fn else value
-                self.logger.info(f"[Migration] Migrating {old_key}='{value}' → {new_key}='{new_value}'")
+                self.logger.info(f'[Migration] Migrating {old_key}="{value}" → {new_key}="{new_value}"')
                 self.storage.setItem(new_key, new_value)
             self.storage.removeItem(old_key)
         old_only_keys = ['arlo_auth_headers', 'last_mfa']
         for key in old_only_keys:
             if self.storage.getItem(key) is not None:
-                self.logger.info(f"[Migration] Removing deprecated key: {key}")
+                self.logger.info(f'[Migration] Removing deprecated key: {key}')
                 self.storage.removeItem(key)
         defaults = {
             'arlo_device_id': str(uuid.uuid4()),
@@ -156,7 +155,7 @@ class ArloProvider(
         }
         for key, default in defaults.items():
             if self.storage.getItem(key) is None:
-                self.logger.info(f"[Migration] Setting default for key: {key}='{default}'")
+                self.logger.info(f'[Migration] Setting default for key: {key}="{default}"')
                 self.storage.setItem(key, default)
 
     async def _initialize_plugin(self) -> None:
@@ -652,6 +651,7 @@ class ArloProvider(
         code = None
         imap = None
         try:
+            self.logger.debug(f'Connecting to IMAP server {self.imap_mfa_host}:{self.imap_mfa_port} as {self.imap_mfa_username}')
             imap = imaplib.IMAP4_SSL(self.imap_mfa_host, self.imap_mfa_port)
             imap.login(self.imap_mfa_username, self.imap_mfa_password)
             first = True
@@ -1111,54 +1111,61 @@ class ArloProvider(
             self.create_task(coroutine(), tag=tag)
 
     async def _cleanup_devices(self) -> None:
-        self.logger.info("[Migration] Starting cleanup of plugin devices...")
+        self.logger.info('[Migration] Starting cleanup of plugin devices...')
         system_state: dict[str, dict[str, dict]] = scrypted_sdk.systemManager.getSystemState()
         if not system_state:
-            self.logger.info("[Migration] No system state found for device cleanup.")
+            self.logger.info('[Migration] No system state found for device cleanup.')
             return
-        device_ids_and_names = {
-            device_id: device_info.get('name', {}).get('value', '')
+        device_ids_names_nativeids: dict[str, dict[str, str]] = {
+            device_id: {
+                "name": device_info.get("name", {}).get("value", ""),
+                "nativeId": device_info.get("nativeId", {}).get("value", ""),
+            }
             for device_id, device_info in system_state.items()
         }
-        if not device_ids_and_names:
-            self.logger.info("[Migration] No devices found for device cleanup.")
-            return
-        filtered_names = [
-            name
-            for name in device_ids_and_names.values()
-            if str(name).endswith(' Siren')
-            or str(name).endswith('Siren Virtual Security System')
-            or 'Security Mode Security System' in str(name)
-        ]
-        if not filtered_names:
-            self.logger.info("[Migration] No plugin devices found for device cleanup.")
+
+        def _matches(name: str) -> bool:
+            return (
+                name.endswith(' Siren')
+                or name.endswith(' Siren Virtual Security System')
+                or 'Security Mode Security System' in name
+            )
+
+        filtered: dict[str, dict[str, str]] = {
+            device_id: info
+            for device_id, info in device_ids_names_nativeids.items()
+            if _matches(info["name"])
+        }
+        if not filtered:
+            self.logger.info('[Migration] No plugin devices found for device cleanup.')
             return
 
-        def sort_key(name: str) -> tuple[int, str]:
+        def _sort_key(name: str) -> tuple[int, str]:
             if name.endswith(' Siren'):
                 return (0, name)
-            elif name.endswith('Siren Virtual Security System'):
+            if name.endswith(' Siren Virtual Security System'):
                 return (1, name)
-            elif 'Security Mode Security System' in name:
+            if 'Security Mode Security System' in name:
                 return (2, name)
-            else:
-                return (3, name)
+            return (3, name)
 
-        sorted_names = sorted(filtered_names, key=sort_key)
-        self.logger.info(f"[Migration] Found {len(sorted_names)} plugin devices to clean up.")
-        for name in sorted_names:
+        sorted_items: list[tuple[str, dict[str, str]]] = sorted(filtered.items(), key=lambda kv: _sort_key(kv[1]["name"]))
+        self.logger.info(f'[Migration] Found {len(sorted_items)} plugin devices to clean up.')
+        for device_id, info in sorted_items:
+            name: str = info["name"]
+            nativeId: str = info["nativeId"]
             try:
-                device: ScryptedDevice = scrypted_sdk.systemManager.getDeviceByName(name)
-                if not device:
-                    self.logger.info(f"[Migration] Device not found by name: {name}")
+                self.logger.info(f'[Migration] Removing plugin device: {name} (nativeId={nativeId})')
+                if device_id not in scrypted_sdk.systemManager.getSystemState():
+                    self.logger.info(f'[Migration] Skipping removal; device already absent: {name} (nativeId={nativeId})')
                     continue
-                self.logger.info(f"[Migration] Removing plugin device: {name}")
-                native_id = device.nativeId
-                device = None
-                await scrypted_sdk.deviceManager.onDeviceRemoved(native_id)
-            except Exception as e:
-                self.logger.error(f'[Migration] Error during cleanup for plugin device {name}: {e}', exc_info=True)
-        self.logger.info("[Migration] Plugin device cleanup complete.")
+                await scrypted_sdk.deviceManager.onDeviceRemoved(nativeId)
+            except Exception:
+                self.logger.error(
+                    f'[Migration] Error during cleanup for device {name} (nativeId={nativeId})',
+                    exc_info=True
+                )
+        self.logger.info('[Migration] Plugin device cleanup complete.')
 
     async def mdns(self) -> None:
         self.logger.debug('Initializing mDNS Discovery for basestation(s).')

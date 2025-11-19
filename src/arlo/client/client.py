@@ -524,7 +524,9 @@ class ArloClient(object):
                 logger.warning(f'Error disconnecting event stream: {e}')
         if self.request:
             try:
-                await self.request.put(f'https://{self.arlo_api_url}/hmsweb/logout')
+                await self.request.put(f'https://{self.arlo_api_url}/hmsweb/logout', suppress_restart_on_401=True)
+            except UnauthorizedRestartException:
+                logger.info('Logout returned 401 (session already invalid). Proceeding with cleanup.')
             except Exception as e:
                 logger.warning(f'Error during logout request: {e}')
         logger.debug('Arlo client logged out.')
@@ -806,7 +808,7 @@ class ArloClient(object):
         try:
             if self.event_stream and self.event_stream.connected:
                 self.event_stream.disconnect()
-                await self.request.get(f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe')
+                await self.request.get(f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe', suppress_restart_on_401=True)
             self.event_stream = None
         except UnauthorizedRestartException:
             logger.warning('Session expired (401) in unsubscribe; clearing event_stream.')

@@ -115,6 +115,7 @@ class Request:
         headers: dict[str, str] | None = None,
         raw: bool = False,
         skip_event_id: bool = False,
+        suppress_restart_on_401: bool = False,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         params = params or {}
         headers = headers or {}
@@ -133,6 +134,9 @@ class Request:
                 response = self._send_request(url, method, params, headers)
                 status_code = response.status_code
                 if status_code == 401:
+                    if suppress_restart_on_401:
+                        self.logger.warning(f'HTTP 401 Unauthorized for {method} {url} during logout/unsubscribe. Skipping relogin.')
+                        raise UnauthorizedRestartException('401 Unauthorized')
                     self.logger.error(f'HTTP 401 Unauthorized for {method} {url}. Triggering login restart.')
                     self.provider.request_restart(scope='relogin')
                     raise UnauthorizedRestartException('401 Unauthorized')
