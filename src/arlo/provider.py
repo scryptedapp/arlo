@@ -14,6 +14,7 @@ from collections import defaultdict, OrderedDict
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 import scrypted_sdk
@@ -648,10 +649,13 @@ class ArloProvider(
         return code
 
     def _poll_imap_for_mfa_code_sync(self, mfa_start_time: float) -> str:
+        def _minute_floor(times: float) -> datetime:
+            return datetime.fromtimestamp(times).replace(second=0, microsecond=0)
+
+        mfa_start_time_clean = _minute_floor(mfa_start_time)
         code = None
         imap = None
         try:
-            self.logger.debug(f'Connecting to IMAP server {self.imap_mfa_host}:{self.imap_mfa_port} as {self.imap_mfa_username}')
             imap = imaplib.IMAP4_SSL(self.imap_mfa_host, self.imap_mfa_port)
             imap.login(self.imap_mfa_username, self.imap_mfa_password)
             first = True
@@ -677,9 +681,11 @@ class ArloProvider(
                         msg = email.message_from_bytes(msg_data[0][1])
                         date_tuple = email.utils.parsedate_tz(msg.get('Date'))
                         msg_time = email.utils.mktime_tz(date_tuple) if date_tuple else None
-                        if msg_time and msg_time < mfa_start_time:
-                            self.logger.debug(f'No email found yet, will retry after {wait_time}s.')
-                            break
+                        if msg_time:
+                            msg_time_clean = _minute_floor(msg_time)
+                            if msg_time_clean < mfa_start_time_clean:
+                                self.logger.debug(f'No email found yet, will retry after {wait_time}s.')
+                                break
                         found = None
                         for part in msg.walk():
                             if part.get_content_type() == 'text/plain':
@@ -711,9 +717,11 @@ class ArloProvider(
                         msg = email.message_from_bytes(msg_data[0][1])
                         date_tuple = email.utils.parsedate_tz(msg.get('Date'))
                         msg_time = email.utils.mktime_tz(date_tuple) if date_tuple else None
-                        if msg_time and msg_time < mfa_start_time:
-                            self.logger.debug(f'No emails found yet, will retry after {wait_time}s.')
-                            break
+                        if msg_time:
+                            msg_time_clean = _minute_floor(msg_time)
+                            if msg_time_clean < mfa_start_time_clean:
+                                self.logger.debug(f'No emails found yet, will retry after {wait_time}s.')
+                                break
                         if msg.get('From') and self.imap_mfa_sender.lower() in msg.get('From').lower():
                             found = None
                             for part in msg.walk():
