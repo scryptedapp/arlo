@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from .camera import ArloCamera
     from .provider import ArloProvider
 
+
 class ArloBaseLight(ArloDeviceBase, OnOff):
     camera: ArloCamera = None
 
@@ -38,6 +39,7 @@ class ArloBaseLight(ArloDeviceBase, OnOff):
     async def _set_light_state(self, state: bool) -> None:
         raise NotImplementedError('Subclasses must implement _set_light_state')
 
+
 class ArloSpotlight(ArloBaseLight):
     async def _set_light_state(self, state: bool) -> None:
         self.logger.info('Turning spotlight %s', 'on' if state else 'off')
@@ -47,6 +49,7 @@ class ArloSpotlight(ArloBaseLight):
             await self.provider.arlo.spotlight_off(self.arlo_basestation, self.arlo_device)
         self.on = state
 
+
 class ArloFloodlight(ArloBaseLight):
     async def _set_light_state(self, state: bool) -> None:
         self.logger.info('Turning floodlight %s', 'on' if state else 'off')
@@ -55,6 +58,7 @@ class ArloFloodlight(ArloBaseLight):
         else:
             await self.provider.arlo.floodlight_off(self.arlo_basestation, self.arlo_device)
         self.on = state
+
 
 class ArloNightlight(ArloBaseLight):
     def __init__(self, nativeId: str, arlo_device: dict, arlo_properties: dict, provider: ArloProvider, camera: ArloCamera = None) -> None:

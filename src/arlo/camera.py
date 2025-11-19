@@ -24,6 +24,7 @@ from scrypted_sdk.types import (
     ObjectDetectionTypes,
     ObjectDetector,
     OnOff,
+    Refresh,
     RequestMediaStreamOptions,
     ResponseMediaStreamOptions,
     ResponsePictureOptions,
@@ -53,7 +54,23 @@ if TYPE_CHECKING:
     from .provider import ArloProvider
     from .basestation import ArloBasestation
 
-class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger, OnOff):
+
+class ArloCamera(
+    ArloDeviceBase,
+    AudioSensor,
+    Battery,
+    Brightness,
+    Camera,
+    Charger,
+    DeviceProvider,
+    MotionSensor,
+    ObjectDetector,
+    OnOff,
+    Refresh,
+    Settings,
+    VideoCamera,
+    VideoClips
+):
     SCRYPTED_TO_ARLO_BRIGHTNESS_MAP = {
         0: -2,
         25: -1,
@@ -61,7 +78,10 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         75: 1,
         100: 2
     }
-    ARLO_TO_SCRYPTED_BRIGHTNESS_MAP = {v: k for k, v in SCRYPTED_TO_ARLO_BRIGHTNESS_MAP.items()}
+    ARLO_TO_SCRYPTED_BRIGHTNESS_MAP = {
+        v: k for k, v in SCRYPTED_TO_ARLO_BRIGHTNESS_MAP.items()
+    }
+
     timeout: int = 15
     intercom: ArloIntercom = None
     light: ArloBaseLight = None
@@ -69,14 +89,13 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
     svss: ArloSirenVirtualSecuritySystem = None
     device_state: str = None
     activity_state: str = None
-    snapshot_lock: asyncio.Lock = None
+    snapshot_lock: asyncio.Lock = asyncio.Lock()
     last_snapshot: MediaObject = None
     last_snapshot_time: datetime = datetime(1970, 1, 1)
     intercom_active: bool = False
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
-        self.snapshot_lock = asyncio.Lock()
 
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
@@ -94,7 +113,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 return
             try:
                 if not self.arlo_properties:
-                    self.create_task(self.refresh_device())
+                    await self.refresh_device()
                 if self.has_battery:
                     self.batteryLevel = self.arlo_properties.get('batteryLevel', 0)
                     self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
@@ -320,7 +339,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 manifests.extend(self.get_builtin_child_device_manifests())
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
-                await self.onDeviceEvent(ScryptedInterface.VideoCamera.value, None)
+                await self.refresh(ScryptedInterface.VideoCamera.value, True)
                 self.logger.debug(f'Camera {self.nativeId} and children refreshed and updated in Scrypted.')
             except Exception as e:
                 self.logger.error(f'Error refreshing device {self.nativeId}: {e}', exc_info=True)
@@ -538,8 +557,6 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             if key == 'wired_to_power':
                 self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
             await self.refresh_device()
-            if key == 'disable_webrtc':
-                await self.onDeviceEvent(ScryptedInterface.VideoCamera.value, None)
         elif key in ['eco_mode', 'disable_eager_streams']:
             self.storage.setItem(key, value == 'true' or value is True)
         elif key == 'print_debug':

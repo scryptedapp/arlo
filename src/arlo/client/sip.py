@@ -8,6 +8,7 @@ import websockets
 
 from typing import Any
 
+
 SIP_DIGEST = 'Digest'
 SIP_MD5 = 'MD5'
 
@@ -23,6 +24,7 @@ def _gen_branch() -> str:
 def _md5_digest(*args) -> str:
     s = ':'.join(args)
     return hashlib.md5(s.encode()).hexdigest()
+
 
 class SIPMessage:
     def __init__(self, raw: str | None = None):
@@ -100,6 +102,7 @@ class SIPMessage:
             logging.getLogger(__name__).error(f'Error building SIP message: {e}', exc_info=True)
             raise
 
+
 class AuthHeader:
     def __init__(self, mode: str, params: dict[str, dict]):
         self.mode = mode
@@ -145,6 +148,7 @@ class AuthHeader:
         if params.get('algorithm') != SIP_MD5:
             raise Exception(f'unsupported auth digest {params.get("algorithm")}')
         return AuthHeader(SIP_DIGEST, params)
+
 
 class SIPManager:
     def __init__(self, logger: logging.Logger, sip_cfg: dict[str, Any]):

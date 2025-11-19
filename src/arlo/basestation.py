@@ -19,19 +19,15 @@ from .vss import ArloSirenVirtualSecuritySystem
 if TYPE_CHECKING:
     from .provider import ArloProvider
 
+
 class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
     device_state: str = None
-    reboot_time: datetime = None
+    reboot_time: datetime = datetime.now()
     svss: ArloSirenVirtualSecuritySystem | None = None
 
     def __init__(self, nativeId: str, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_basestation, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
-        self.device_state: str = 'available' if self.arlo_properties.get('state', '') == 'idle' else 'unavailable'
-        self.reboot_time: datetime = datetime.now()
-        self.svss: ArloSirenVirtualSecuritySystem | None = None
         self._start_device_state_subscription()
-        if not self.arlo_properties:
-            self.create_task(self.refresh_device())
 
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
@@ -39,10 +35,13 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
             if self.stop_subscriptions:
                 return
             try:
+                if not self.arlo_properties:
+                    await self.refresh_device()
                 if self.has_local_live_streaming:
                     await self._check_certificates()
                 if self.has_local_live_streaming:
                     await self._mdns()
+                self.device_state: str = 'available' if self.arlo_properties.get('state', '') == 'idle' else 'unavailable'
                 return
             except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloBasestation {self.nativeId}, will try again: {e}')

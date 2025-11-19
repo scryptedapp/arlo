@@ -17,6 +17,7 @@ from ..logging import StdoutLoggerFactory
 if TYPE_CHECKING:
     from .client import ArloClient
 
+
 class StreamEvent:
     def __init__(self, item: dict[str, Any], timestamp: float, expiration: float) -> None:
         self.item: dict[str, Any] = item
@@ -27,6 +28,7 @@ class StreamEvent:
     @property
     def expired(self) -> bool:
         return time.time() > self.expiration
+
 
 class Stream:
     logger: logging.Logger = StdoutLoggerFactory.get_logger(name='Client')

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from .base import ArloDeviceBase
     from .provider import ArloProvider
 
+
 class StdoutLoggerFactory:
     @staticmethod
     def get_logger(name: str, level=logging.INFO, format='[Arlo %(name)s]: %(message)s'):
@@ -20,6 +21,7 @@ class StdoutLoggerFactory:
             logger.addHandler(new_handler)
         return logger
 
+
 class ScryptedDeviceLoggingWrapper(logging.Handler):
     def __init__(self, scrypted_device: ArloProvider | ArloDeviceBase):
         super().__init__()
@@ -27,6 +29,7 @@ class ScryptedDeviceLoggingWrapper(logging.Handler):
 
     def emit(self, record):
         self.scrypted_device.print(self.format(record))
+
 
 class ScryptedDeviceLoggerFactory:
     @staticmethod
@@ -38,6 +41,7 @@ class ScryptedDeviceLoggerFactory:
             new_handler.setFormatter(logging.Formatter(format))
             logger.addHandler(new_handler)
         return logger
+
 
 class ScryptedDeviceLoggerMixin:
     _logger = None

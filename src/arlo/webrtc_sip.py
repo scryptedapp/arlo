@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .intercom import ArloIntercom
     from .provider import ArloProvider
 
+
 class BaseArloSignalingSession(BackgroundTaskMixin):
     def __init__(self, device: ArloCamera | ArloIntercom):
         super().__init__()
@@ -104,6 +105,7 @@ class BaseArloSignalingSession(BackgroundTaskMixin):
     async def close(self):
         raise NotImplementedError('Subclasses must implement close() method.')
 
+
 class BaseArloSessionControl:
     def __init__(self, arlo_session: BaseArloSignalingSession) -> None:
         self.arlo_session = arlo_session
@@ -114,6 +116,7 @@ class BaseArloSessionControl:
         except Exception as e:
             self.arlo_session.logger.error(f'Error ending session: {e}', exc_info=True)
             raise
+
 
 class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
     def __init__(self, camera: ArloCamera) -> None:
@@ -185,6 +188,7 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
             self.logger.error(f'Error in close: {e}', exc_info=True)
             raise
 
+
 class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
     def __init__(self, arlo_session: ArloCameraWebRTCSignalingSession) -> None:
         super().__init__(arlo_session)
@@ -199,6 +203,7 @@ class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
         except Exception as e:
             self.arlo_session.logger.error(f'Error in setPlayback: {e}', exc_info=True)
             raise
+
 
 class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
     active_event_subscriptions: dict[str, asyncio.Task] = None
@@ -315,8 +320,10 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
             self.logger.error(f'Error in close: {e}', exc_info=True)
             raise
 
+
 class ArloIntercomWebRTCSessionControl(BaseArloSessionControl):
     pass
+
 
 class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
     def __init__(self, intercom: ArloIntercom) -> None:
@@ -388,8 +395,10 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
             self.logger.error(f'Error in close: {e}', exc_info=True)
             raise
 
+
 class ArloIntercomSIPSessionControl(BaseArloSessionControl):
     pass
+
 
 class RTCSignalingSession(Protocol):
     async def createLocalDescription(self, type: str, setup: dict, sendIceCandidate: Callable = None) -> dict: ...

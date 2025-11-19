@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .basestation import ArloBasestation
     from .camera import ArloCamera
 
+
 class RTSPMessage:
     HEADER_NORMALIZATION = {
         'cseq': 'CSeq',
@@ -82,6 +83,7 @@ class RTSPMessage:
                 self.headers[i] = (normalized, value)
                 return
         self.headers.append((normalized, value))
+
 
 class ArloLocalStreamProxy:
     def __init__(self, provider: ArloProvider, basestation: ArloBasestation, camera: ArloCamera):

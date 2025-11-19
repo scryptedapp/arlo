@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .camera import ArloCamera
     from .provider import ArloProvider
 
+
 class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Readme):
     SUPPORTED_MODES = [
         SecuritySystemMode.AwayArmed.value,
@@ -132,6 +133,7 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
         except Exception as e:
             self.logger.error(f'Error disarming security system: {e}')
 
+
 class ArloSirenVirtualSecuritySystem(ArloBaseVirtualSecuritySystem, DeviceProvider):
     parent: ArloBasestation | ArloCamera = None
     siren: ArloSiren | None = None
@@ -220,6 +222,7 @@ When the system is Disarmed, any triggers of the siren will be ignored. To allow
 If synced to HomeKit, the siren will appear as a switch within the same security system accessory. To use the siren as a standalone switch, disable syncing of the virtual security system and enable syncing of the siren, then manually arm the virtual security system in Scrypted.
 """.strip()
 
+
 class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
     ARLO_TO_SCRYPTED = {
         'armAway': SecuritySystemMode.AwayArmed.value,
@@ -227,12 +230,15 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
         'standby': SecuritySystemMode.Disarmed.value,
     }
     SCRYPTED_TO_ARLO = {v: k for k, v in ARLO_TO_SCRYPTED.items()}
+    _init_completed: bool = False
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider, auto_init=False)
         self._ready_event.set()
 
     def complete_init(self) -> None:
+        if self._init_completed:
+            return
         self.create_task(self._delayed_init())
 
     async def _delayed_init(self) -> None:
@@ -257,6 +263,7 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
                 mode, revision = await self._get_initial_mode_and_revision()
                 self._set_mode_and_revision(mode, revision)
                 self._start_active_mode_subscription()
+                self._init_completed = True
                 return
             except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')

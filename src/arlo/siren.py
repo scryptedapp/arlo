@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from .provider import ArloProvider
     from .vss import ArloSirenVirtualSecuritySystem
 
+
 class ArloSiren(ArloDeviceBase, OnOff):
     svss: ArloSirenVirtualSecuritySystem = None
 

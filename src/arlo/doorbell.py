@@ -9,6 +9,7 @@ from .camera import ArloCamera
 if TYPE_CHECKING:
     from .provider import ArloProvider
 
+
 class ArloDoorbell(ArloCamera, BinarySensor):
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)

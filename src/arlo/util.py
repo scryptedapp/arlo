@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 
+
 class BackgroundTaskMixin:
     background_tasks: set[asyncio.Task]
     logger: logging.Logger
@@ -68,4 +69,29 @@ class BackgroundTaskMixin:
 
 class UnauthorizedRestartException(Exception):
     """Raised when a 401 Unauthorized is encountered and a plugin restart is needed."""
+    pass
+
+
+class RequestError(Exception):
+    """Base error for request-related failures."""
+    pass
+
+
+class TransientNetworkError(RequestError):
+    """Network or server transient error (retry suggested)."""
+    pass
+
+
+class RateLimitError(RequestError):
+    """HTTP 429 Too Many Requests encountered."""
+    pass
+
+
+class InvalidResponseError(RequestError):
+    """Response could not be parsed or was invalid for expected schema."""
+    pass
+
+
+class BadRequestError(RequestError):
+    """HTTP 4xx non-auth client errors that should not trigger restart."""
     pass

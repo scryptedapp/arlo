@@ -13,6 +13,7 @@ from .util import BackgroundTaskMixin
 if TYPE_CHECKING:
     from .provider import ArloProvider
 
+
 class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTaskMixin):
     nativeId: str = None
     arlo_device: dict = None

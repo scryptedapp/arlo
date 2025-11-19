@@ -20,7 +20,10 @@ if TYPE_CHECKING:
     from .camera import ArloCamera
     from .provider import ArloProvider
 
+
 class ArloIntercom(ArloDeviceBase):
+    camera: ArloCamera = None
+
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, camera: ArloCamera) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.camera = camera

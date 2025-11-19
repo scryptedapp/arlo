@@ -5,6 +5,7 @@ from typing import Any
 from zeroconf import ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
+
 class ArloAsyncListener:
     def __init__(self, logger: logging.Logger) -> None:
         self.logger: logging.Logger = logger
@@ -27,6 +28,7 @@ class ArloAsyncListener:
             }
             self.services[item['deviceId']] = item
             self.logger.debug(f'Service added: {item}')
+
 
 class ArloAsyncBrowser:
     def __init__(self, logger: logging.Logger) -> None:

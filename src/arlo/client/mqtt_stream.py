@@ -7,9 +7,8 @@ import paho.mqtt.client as mqtt
 
 from typing import Any
 
-import scrypted_sdk
-
 from .stream import Stream
+
 
 class MQTTEventStream(Stream):
     def __init__(self, *args, **kwargs) -> None:
@@ -150,11 +149,6 @@ class MQTTEventStream(Stream):
         if not await try_connect():
             self.logger.error(f'MQTTStream start failed: could not establish connection after {retry_limit - 1} retries.')
             self.event_stream = None
-            try:
-                await scrypted_sdk.deviceManager.requestRestart()
-                self.logger.error('Requested plugin restart due to persistent MQTT connection failure.')
-            except Exception as e:
-                self.logger.error(f'Failed to request plugin restart: {e}')
             return
         wait_timeout = 10
         waited = 0
@@ -165,11 +159,6 @@ class MQTTEventStream(Stream):
         if not self.connected:
             self.logger.error('MQTT Event Stream failed to connect within timeout.')
             self.event_stream = None
-            try:
-                await scrypted_sdk.deviceManager.requestRestart()
-                self.logger.error('Requested plugin restart due to connection wait timeout.')
-            except Exception as e:
-                self.logger.error(f'Failed to request plugin restart: {e}')
             return
         if not self.event_stream_stop_event.is_set():
             self.resubscribe()
