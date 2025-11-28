@@ -1164,49 +1164,51 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         if not system_state:
             self.logger.info("[Migration] No system state found for device cleanup.")
             return
-        device_ids_and_names = {
-            device_id: device_info.get('name', {}).get('value', '')
+        device_ids_nativeids: dict[str, str] = {
+            device_id: device_info.get("nativeId", {}).get("value", "")
             for device_id, device_info in system_state.items()
         }
-        if not device_ids_and_names:
-            self.logger.info("[Migration] No devices found for device cleanup.")
-            return
-        filtered_names = [
-            name
-            for name in device_ids_and_names.values()
-            if str(name).endswith(" Siren")
-            or str(name).endswith("Siren Virtual Security System")
-            or "Mode Virtual Security System" in str(name)
-        ]
-        if not filtered_names:
-            self.logger.info("[Migration] No plugin devices found for device cleanup.")
+
+        def _matches(native_id: str) -> bool:
+            return (
+                native_id.endswith('.siren')
+                or native_id.endswith('.svss')
+                or native_id.endswith('.mvss')
+            )
+
+        filtered: dict[str, str] = {
+            device_id: native_id
+            for device_id, native_id in device_ids_nativeids.items()
+            if _matches(native_id)
+        }
+        if not filtered:
+            self.logger.info('[Migration] No plugin devices found for device cleanup.')
             return
 
-        def sort_key(name: str) -> tuple[int, str]:
-            if name.endswith(" Siren"):
-                return (0, name)
-            elif name.endswith("Siren Virtual Security System"):
-                return (1, name)
-            elif "Mode Virtual Security System" in name:
-                return (2, name)
-            else:
-                return (3, name)
+        def _sort_key(native_id: str) -> tuple[int, str]:
+            if native_id.endswith('.siren'):
+                return (0, native_id)
+            if native_id.endswith('.svss'):
+                return (1, native_id)
+            if native_id.endswith('.mvss'):
+                return (2, native_id)
+            return (3, native_id)
 
-        sorted_names = sorted(filtered_names, key=sort_key)
-        self.logger.info(f"[Migration] Found {len(sorted_names)} plugin devices to clean up.")
-        for name in sorted_names:
+        sorted_items: list[tuple[str, str]] = sorted(filtered.items(), key=lambda item: _sort_key(item[1]))
+        self.logger.info(f'[Migration] Found {len(sorted_items)} plugin devices to clean up.')
+        for device_id, native_id in sorted_items:
             try:
-                device: ScryptedDevice = scrypted_sdk.systemManager.getDeviceByName(name)
-                if not device:
-                    self.logger.info(f"[Migration] Device not found by name: {name}")
+                self.logger.info(f'[Migration] Removing plugin device: {native_id}')
+                if device_id not in scrypted_sdk.systemManager.getSystemState():
+                    self.logger.info(f'[Migration] Skipping removal; device already absent: {native_id}')
                     continue
-                self.logger.info(f"[Migration] Removing plugin device: {name}")
-                native_id = device.nativeId
-                device = None
                 await scrypted_sdk.deviceManager.onDeviceRemoved(native_id)
-            except Exception as e:
-                self.logger.error(f"[Migration] Error during cleanup for plugin device {name}: {e}", exc_info=True)
-        self.logger.info("[Migration] Plugin device cleanup complete.")
+            except Exception:
+                self.logger.error(
+                    f'[Migration] Error during cleanup for device {native_id})',
+                    exc_info=True
+                )
+        self.logger.info('[Migration] Plugin device cleanup complete.')
 
     async def getDevice(self, nativeId: str) -> ArloDeviceBase:
         self.logger.debug(f"Scrypted requested to load device {nativeId}")
