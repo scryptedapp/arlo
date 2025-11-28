@@ -1124,53 +1124,48 @@ class ArloProvider(
         if not system_state:
             self.logger.info('[Migration] No system state found for device cleanup.')
             return
-        device_ids_names_nativeids: dict[str, dict[str, str]] = {
-            device_id: {
-                "name": device_info.get("name", {}).get("value", ""),
-                "nativeId": device_info.get("nativeId", {}).get("value", ""),
-            }
+        device_ids_nativeids: dict[str, str] = {
+            device_id: device_info.get("nativeId", {}).get("value", "")
             for device_id, device_info in system_state.items()
         }
 
-        def _matches(name: str) -> bool:
+        def _matches(native_id: str) -> bool:
             return (
-                name.endswith(' Siren')
-                or name.endswith(' Siren Virtual Security System')
-                or 'Security Mode Security System' in name
+                native_id.endswith('.siren')
+                or native_id.endswith('.vss')
+                or native_id.endswith('.smss')
             )
 
-        filtered: dict[str, dict[str, str]] = {
-            device_id: info
-            for device_id, info in device_ids_names_nativeids.items()
-            if _matches(info["name"])
+        filtered: dict[str, str] = {
+            device_id: native_id
+            for device_id, native_id in device_ids_nativeids.items()
+            if _matches(native_id)
         }
         if not filtered:
             self.logger.info('[Migration] No plugin devices found for device cleanup.')
             return
 
-        def _sort_key(name: str) -> tuple[int, str]:
-            if name.endswith(' Siren'):
-                return (0, name)
-            if name.endswith(' Siren Virtual Security System'):
-                return (1, name)
-            if 'Security Mode Security System' in name:
-                return (2, name)
-            return (3, name)
+        def _sort_key(native_id: str) -> tuple[int, str]:
+            if native_id.endswith('.siren'):
+                return (0, native_id)
+            if native_id.endswith('.vss'):
+                return (1, native_id)
+            if native_id.endswith('.smss'):
+                return (2, native_id)
+            return (3, native_id)
 
-        sorted_items: list[tuple[str, dict[str, str]]] = sorted(filtered.items(), key=lambda kv: _sort_key(kv[1]["name"]))
+        sorted_items: list[tuple[str, str]] = sorted(filtered.items(), key=lambda item: _sort_key(item[1]))
         self.logger.info(f'[Migration] Found {len(sorted_items)} plugin devices to clean up.')
-        for device_id, info in sorted_items:
-            name: str = info["name"]
-            nativeId: str = info["nativeId"]
+        for device_id, native_id in sorted_items:
             try:
-                self.logger.info(f'[Migration] Removing plugin device: {name} (nativeId={nativeId})')
+                self.logger.info(f'[Migration] Removing plugin device: {native_id}')
                 if device_id not in scrypted_sdk.systemManager.getSystemState():
-                    self.logger.info(f'[Migration] Skipping removal; device already absent: {name} (nativeId={nativeId})')
+                    self.logger.info(f'[Migration] Skipping removal; device already absent: {native_id}')
                     continue
-                await scrypted_sdk.deviceManager.onDeviceRemoved(nativeId)
+                await scrypted_sdk.deviceManager.onDeviceRemoved(native_id)
             except Exception:
                 self.logger.error(
-                    f'[Migration] Error during cleanup for device {name} (nativeId={nativeId})',
+                    f'[Migration] Error during cleanup for device {native_id})',
                     exc_info=True
                 )
         self.logger.info('[Migration] Plugin device cleanup complete.')
