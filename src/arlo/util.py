@@ -77,16 +77,6 @@ class RequestError(Exception):
     pass
 
 
-class TransientNetworkError(RequestError):
-    """Network or server transient error (retry suggested)."""
-    pass
-
-
-class RateLimitError(RequestError):
-    """HTTP 429 Too Many Requests encountered."""
-    pass
-
-
 class InvalidResponseError(RequestError):
     """Response could not be parsed or was invalid for expected schema."""
     pass

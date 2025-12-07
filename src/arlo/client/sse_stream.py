@@ -50,8 +50,12 @@ class SSEEventStream(Stream):
                     else:
                         self.event_loop.call_soon_threadsafe(self._queue_response, response)
             except Exception:
-                self.logger.exception('Unhandled exception in SSE Event Stream thread.')
-                self.event_loop.call_soon_threadsafe(self.event_loop.create_task, self.restart())
+                self.logger.exception('Unhandled exception in SSE Event Stream thread. Triggering login restart.')
+                try:
+                    if self.arlo and getattr(self.arlo, 'provider', None) is not None:
+                        self.arlo.provider.request_restart(scope='relogin')
+                except Exception as e:
+                    self.logger.error(f'Error requesting provider restart after SSE failure: {e}')
 
         try:
             self.event_stream = sse.SSEClient(
@@ -69,19 +73,14 @@ class SSEEventStream(Stream):
             while not self.connected and not self.event_stream_stop_event.is_set():
                 await asyncio.sleep(0.5)
         except Exception as e:
-            self.logger.error(f'Failed to initialize SSE Event Stream: {e}')
-
-    async def restart(self) -> None:
-        self.logger.debug('Restarting SSE Event stream...')
-        self.reconnecting = True
-        self.connected = False
-        if self.event_stream:
-            self.shutting_down_stream = self.event_stream
-            self.event_stream = None
-        await self.start()
-        await asyncio.sleep(1)
-        self.shutting_down_stream = None
-        self.reconnecting = False
+            self.logger.error(
+                f'Failed to initialize SSE Event Stream: {e}. Triggering login restart.'
+            )
+            try:
+                if self.arlo and getattr(self.arlo, 'provider', None) is not None:
+                    self.arlo.provider.request_restart(scope='relogin')
+            except Exception as e2:
+                self.logger.error(f'Error requesting provider restart after SSE init failure: {e2}')
 
     def subscribe(self, topics: list[str]) -> None:
         self.logger.debug('SSE Event Stream does not support topic subscriptions.')

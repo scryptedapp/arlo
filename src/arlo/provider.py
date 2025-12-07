@@ -822,12 +822,10 @@ class ArloProvider(
                 await self._cleaning_up_login_tasks()
                 if relogin:
                     self.logger.info('Forcing account relogin.')
-                    self.full_reset_needed = True
                     await self._initialize_plugin()
                 if restart:
                     self.logger.info('Forcing full restart.')
                     self.storage.setItem('arlo_cookies', None)
-                    self.full_reset_needed = True
                     await self._initialize_plugin()
             elif event_stream:
                     self.arlo.event_stream_transport = self.arlo_event_stream_transport

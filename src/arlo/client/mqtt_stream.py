@@ -64,8 +64,14 @@ class MQTTEventStream(Stream):
         def on_disconnect(client: mqtt.Client, userdata: Any, rc: int) -> None:
             self.logger.warning(f'MQTT Event Stream {id(client)} disconnected with return code {rc}.')
             if rc != 0:
-                self.logger.error(f'MQTT Event Stream {id(client)} unexpected disconnection. Attempting to reconnect...')
-                self.event_loop.call_soon_threadsafe(self._safe_reconnect)
+                self.logger.error(
+                    f'MQTT Event Stream {id(client)} unexpected disconnection. Triggering login restart.'
+                )
+                try:
+                    if self.arlo and getattr(self.arlo, 'provider', None) is not None:
+                        self.arlo.provider.request_restart(scope='relogin')
+                except Exception as e:
+                    self.logger.error(f'Error requesting provider restart after MQTT disconnect: {e}')
 
         def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
             try:
@@ -147,8 +153,16 @@ class MQTTEventStream(Stream):
             return False
 
         if not await try_connect():
-            self.logger.error(f'MQTTStream start failed: could not establish connection after {retry_limit - 1} retries.')
+            self.logger.error(
+                f'MQTTStream start failed: could not establish connection after {retry_limit - 1} retries. '
+                f'Triggering login restart.'
+            )
             self.event_stream = None
+            try:
+                if self.arlo and getattr(self.arlo, 'provider', None) is not None:
+                    self.arlo.provider.request_restart(scope='relogin')
+            except Exception as e:
+                self.logger.error(f'Error requesting provider restart after MQTT start failure: {e}')
             return
         wait_timeout = 10
         waited = 0
@@ -162,24 +176,6 @@ class MQTTEventStream(Stream):
             return
         if not self.event_stream_stop_event.is_set():
             self.resubscribe()
-
-    async def restart(self) -> None:
-        self.reconnecting = True
-        self.connected = False
-        self.logger.debug('Restarting MQTT Event Stream...')
-        if self.event_stream:
-            try:
-                self.event_stream.disconnect()
-            except Exception as e:
-                self.logger.warning(f'Error during MQTT Event Stream disconnect: {e}')
-            try:
-                self.event_stream.loop_stop()
-            except Exception:
-                pass
-        self.event_stream = None
-        await self.start()
-        await asyncio.sleep(1)
-        self.reconnecting = False
 
     def subscribe(self, topics: list[str]) -> None:
         if self.event_stream and self.connected:
@@ -205,7 +201,3 @@ class MQTTEventStream(Stream):
             except Exception as e:
                 self.logger.warning(f'Error during MQTT Event Stream disconnect: {e}')
             self.event_stream = None
-
-    def _safe_reconnect(self) -> None:
-        if not self.reconnecting:
-            asyncio.ensure_future(self.restart())

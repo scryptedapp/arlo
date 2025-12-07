@@ -20,8 +20,6 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from ..logging import StdoutLoggerFactory
 from ..util import (
     UnauthorizedRestartException,
-    TransientNetworkError,
-    RateLimitError,
     InvalidResponseError,
     BadRequestError,
 )
@@ -133,27 +131,13 @@ class Request:
             try:
                 response = self._send_request(url, method, params, headers)
                 status_code = response.status_code
-                if status_code == 401:
-                    if suppress_restart_on_401:
-                        self.logger.warning(f'HTTP 401 Unauthorized for {method} {url} during logout/unsubscribe. Skipping relogin.')
-                        raise UnauthorizedRestartException('401 Unauthorized')
-                    self.logger.error(f'HTTP 401 Unauthorized for {method} {url}. Triggering login restart.')
-                    self.provider.request_restart(scope='relogin')
-                    raise UnauthorizedRestartException('401 Unauthorized')
-                if status_code == 429:
-                    if attempt < self.max_retries - 1:
-                        self.logger.warning(f'429 Rate Limited for {method} {url}. Backoff {backoff}s.')
-                        time.sleep(backoff)
-                        continue
-                    raise RateLimitError(f'Rate limited for {method} {url}')
-                if 500 <= status_code < 600:
-                    if attempt < self.max_retries - 1:
-                        self.logger.warning(f'{status_code} Server error for {method} {url}. Backoff {backoff}s.')
-                        time.sleep(backoff)
-                        continue
-                    raise TransientNetworkError(f'Server error {status_code} for {method} {url}')
-                if 400 <= status_code < 500:
-                    raise BadRequestError(f'Client error {status_code} for {method} {url}')
+                if not (200 <= status_code < 300):
+                    if not suppress_restart_on_401 and self.provider is not None:
+                        self.logger.error(
+                            f'HTTP error {status_code} for {method} {url}. Triggering login restart.'
+                        )
+                        self.provider.request_restart(scope='relogin')
+                    raise UnauthorizedRestartException(f'HTTP error {status_code} for {method} {url}')
                 if 200 <= status_code < 300:
                     if method == 'OPTIONS':
                         return {}
@@ -169,18 +153,27 @@ class Request:
                     if self._is_success(body):
                         return body.get('data', body)
                     raise BadRequestError(f'Request ({method} {url}) failed: {body}')
-                raise TransientNetworkError(f'Unexpected status {status_code} for {method} {url}')
             except UnauthorizedRestartException:
-                raise
-            except (RateLimitError, TransientNetworkError, BadRequestError, InvalidResponseError):
                 raise
             except RequestException as e:
                 if attempt < self.max_retries - 1:
                     self.logger.warning(f'Network error {method} {url}: {e}. Backoff {backoff}s.')
                     time.sleep(backoff)
                     continue
-                raise TransientNetworkError(f'Network error for {method} {url}: {e}') from e
-        raise TransientNetworkError(f'Failed after {self.max_retries} attempts for {method} {url}')
+                if self.provider is not None:
+                    self.logger.error(
+                        f'Network error for {method} {url}: {e}. Triggering login restart after retries.'
+                    )
+                    self.provider.request_restart(scope='relogin')
+                raise UnauthorizedRestartException(f'Network error for {method} {url}: {e}') from e
+        if self.provider is not None:
+            self.logger.error(
+                f'Failed after {self.max_retries} attempts for {method} {url}. Triggering login restart.'
+            )
+            self.provider.request_restart(scope='relogin')
+        raise UnauthorizedRestartException(
+            f'Failed after {self.max_retries} attempts for {method} {url}'
+        )
 
     def _send_request(
         self,
