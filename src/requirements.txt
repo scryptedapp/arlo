@@ -5,7 +5,7 @@ urllib3==2.6.0
 cachetools==6.2.2
 scrypted-arlo-go==0.7.6
 cloudscraper==1.2.71
-curl-cffi==0.13.0
+curl-cffi==0.14.0
 async-timeout==5.0.1
 beautifulsoup4==4.14.3
 sseclient==0.0.22
