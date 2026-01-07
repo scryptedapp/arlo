@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ..provider import ArloProvider
 
 
-logger = StdoutLoggerFactory.get_logger(name='Client')
+logger = StdoutLoggerFactory.get_logger(name='Arlo Client')
 
 USER_AGENTS = {
     'arlo':
@@ -80,6 +80,7 @@ class ArloClient(object):
     def __init__(self, provider: ArloProvider):
         self.provider: ArloProvider = provider
         self.heartbeat_task: asyncio.Task | None = None
+        self.task_manager = self.provider.task_manager
         self._devices_cache = None
         self._devices_cache_time = 0
         self._devices_cache_lock = asyncio.Lock()
@@ -513,6 +514,10 @@ class ArloClient(object):
     async def _logout(self) -> None:
         logger.debug('Logging out of Arlo client.')
         try:
+            await self.provider.task_manager.cancel_and_await_all()
+        except Exception:
+            pass
+        try:
             await self.unsubscribe()
         except Exception as e:
             logger.warning(f'Error during unsubscribe: {e}')
@@ -733,14 +738,8 @@ class ArloClient(object):
                     if str(d.get('modelId', '')).lower().startswith(hardwired_models)
                 }
                 logger.debug(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
-                if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
-                    self.heartbeat_task.cancel()
-                    try:
-                        await self.heartbeat_task
-                    except Exception:
-                        pass
-                    self.heartbeat_task = None
-                self.heartbeat_task = asyncio.create_task(self._heartbeat(list(devices_to_ping.values())))
+                await self.cancel_heartbeat()
+                self.heartbeat_task = self.task_manager.create_task(self._heartbeat(list(devices_to_ping.values())), tag='heartbeat', owner=self)
                 topics = self._collect_topics(basestations) + self._collect_topics(cameras)
                 self.event_stream.subscribe(topics)
         except UnauthorizedRestartException:
@@ -814,6 +813,15 @@ class ArloClient(object):
             logger.warning('Session expired (401) in unsubscribe; clearing event_stream.')
             self.event_stream = None
 
+    async def cancel_heartbeat(self) -> None:
+        if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
+            self.heartbeat_task.cancel()
+            try:
+                await self.heartbeat_task
+            except Exception:
+                pass
+            self.heartbeat_task = None
+
     def subscribe_to_error_events(self, camera: dict, callback: Callable[[Any, Any], Any]) -> asyncio.Task:
         resource = f'cameras/{camera.get('deviceId')}'
 
@@ -828,9 +836,11 @@ class ArloClient(object):
                 return None
             return callback(error.get('code'), error.get('message'))
 
-        return asyncio.create_task(
-            self._handle_events(resource, ['error', ('is', 'stateChangeReason')], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, ['error', ('is', 'stateChangeReason')], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
 
     def subscribe_to_motion_events(self, camera: dict, callback: Callable, logger: Logger) -> asyncio.Task:
         return self._subscribe_to_motion_or_audio_events(camera, callback, logger, 'motionDetected')
@@ -875,15 +885,19 @@ class ArloClient(object):
             delayed_event_end_task = cancel_task(delayed_event_end_task, 'delay delivery')
             if event_detected:
                 stop = callback(event_detected)
-                force_reset_event_task = asyncio.create_task(reset_event(60))
+                t = self.task_manager.create_task(reset_event(60), tag=f'{event_key}:reset:{resource}', owner=self)
+                force_reset_event_task = t
             else:
                 stop = None
-                delayed_event_end_task = asyncio.create_task(reset_event(10))
+                t = self.task_manager.create_task(reset_event(10), tag=f'{event_key}:delay:{resource}', owner=self)
+                delayed_event_end_task = t
             return stop
 
-        return asyncio.create_task(
-            self._handle_events(resource, [('is', event_key)], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, [('is', event_key)], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
 
     def subscribe_to_smart_motion_events(self, camera: dict, callback: Callable) -> asyncio.Task:
         resource = 'feedNotification'
@@ -894,9 +908,11 @@ class ArloClient(object):
                 return callback(event)
             return None
 
-        return asyncio.create_task(
-            self._handle_events(resource, [None], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, [None], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
 
     def subscribe_to_battery_events(self, camera: dict, callback: Callable) -> asyncio.Task:
         return self._subscribe_to_property_event(camera, 'batteryLevel', callback)
@@ -916,9 +932,11 @@ class ArloClient(object):
                 return callback(properties[property_name])
             return None
 
-        return asyncio.create_task(
-            self._handle_events(resource, [('is', property_name)], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, [('is', property_name)], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
 
     def subscribe_to_doorbell_events(self, doorbell: dict, callback: Callable) -> asyncio.Task:
         resource = f'doorbells/{doorbell.get("deviceId")}'
@@ -930,13 +948,15 @@ class ArloClient(object):
         def callbackwrapper(event: dict):
             properties: dict = event.get('properties', {})
             if 'buttonPressed' in properties:
-                asyncio.create_task(unpress_doorbell())
+                t = self.task_manager.create_task(unpress_doorbell(), tag=f'doorbell_unpress:{resource}', owner=self)
                 return callback(properties.get('buttonPressed'))
             return None
 
-        return asyncio.create_task(
-            self._handle_events(resource, [('is', 'buttonPressed')], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, [('is', 'buttonPressed')], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
     
     def subscribe_to_active_mode_events(self, location_id: str, callback: Callable) -> asyncio.Task:
         resource = 'automation/activeMode'
@@ -949,9 +969,11 @@ class ArloClient(object):
                 return callback(properties)
             return None
 
-        return asyncio.create_task(
-            self._handle_events(resource, ['is'], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, ['is'], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
     
     def subscribe_to_device_state_events(self, device: dict, callback: Callable) -> asyncio.Task:
         device_id = device.get('deviceId', '')
@@ -985,17 +1007,19 @@ class ArloClient(object):
             return ('is', 'connectionState') if (resource != 'basestation' or is_wifi_camera) else ('is', 'state')
 
         tasks = [
-            asyncio.create_task(
+            self.task_manager.create_task(
                 self._handle_events(
                     resource,
                     [get_action(resource)],
                     callbackwrapper,
                     from_id
-                )
+                ),
+                tag=f'event_listener:{resource}', owner=self
             )
             for resource in resources
         ]
-        return asyncio.gather(*tasks)
+        gather_task = self.task_manager.create_task(asyncio.gather(*tasks), tag=f'event_listener:gather', owner=self)
+        return gather_task
 
     def subscribe_to_activity_state_events(self, camera: dict, callback: Callable) -> asyncio.Task:
         device_id = camera.get('deviceId', '')
@@ -1011,14 +1035,16 @@ class ArloClient(object):
                 return callback(properties.get('activityState'))
             return None
 
-        return asyncio.create_task(
+        task = self.task_manager.create_task(
             self._handle_events(
                 resource,
                 [('is', 'activityState')],
                 callbackwrapper,
                 from_id
-            )
+            ),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
 
     async def trigger_full_frame_snapshot(self, camera: dict) -> str:
         resource = f'cameras/{camera.get("deviceId")}'
@@ -1133,9 +1159,11 @@ class ArloClient(object):
                 return callback(properties.get('data'))
             return None
 
-        return asyncio.create_task(
-            self._handle_events(resource, ['pushToTalk'], callbackwrapper)
+        task = self.task_manager.create_task(
+            self._handle_events(resource, ['pushToTalk'], callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
         )
+        return task
 
     async def _handle_events(
         self,
@@ -1177,7 +1205,7 @@ class ArloClient(object):
                     del seen_events[uuid]
 
         if self.event_stream and self.event_stream.active:
-            listeners = [asyncio.create_task(loop_action_listener(action)) for action in actions]
+            listeners = [self.task_manager.create_task(loop_action_listener(action), tag=f'event_listener:{resource}', owner=self) for action in actions]
             done, pending = await asyncio.wait(listeners, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()

@@ -1,71 +1,112 @@
 import asyncio
-import contextlib
-import logging
+
+from typing import Any
 
 
-class BackgroundTaskMixin:
-    background_tasks: set[asyncio.Task]
-    logger: logging.Logger
+class TaskManager:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.tasks: set[asyncio.Task] = set()
+        self.task_tags: dict[asyncio.Task, str | None] = {}
+        self.task_owners: dict[asyncio.Task, Any] = {}
+        self.loop: asyncio.AbstractEventLoop = loop
 
-    def create_task(self, coroutine, tag=None) -> asyncio.Task:
-        task = asyncio.get_event_loop().create_task(coroutine)
-        if tag:
+    def create_task(self, coroutine_or_awaitable, *, tag: str, owner: Any) -> asyncio.Task:
+        if not tag:
+            raise ValueError('tag is required and must be a non-empty string')
+        if owner is None:
+            raise ValueError('owner is required')
+        if isinstance(coroutine_or_awaitable, asyncio.Task):
+            task = coroutine_or_awaitable
             setattr(task, '_task_tag', tag)
-        self.register_task(task)
+            self.register(task, tag=tag, owner=owner)
+            return task
+        if asyncio.iscoroutine(coroutine_or_awaitable):
+            task = self.loop.create_task(coroutine_or_awaitable)
+        else:
+            task = asyncio.ensure_future(coroutine_or_awaitable)
+        setattr(task, '_task_tag', tag)
+        self.register(task, tag=tag, owner=owner)
         return task
 
-    def register_task(self, task: asyncio.Task) -> None:
-        if not hasattr(self, 'background_tasks'):
-            self.background_tasks = set()
-        assert task is not None
-
-        def print_exception(task: asyncio.Task):
-            try:
-                exc = task.exception()
-            except asyncio.CancelledError:
-                return
-            if exc:
-                self.logger.error(f'task exception: {task.exception()}')
-
-        self.background_tasks.add(task)
-        task.add_done_callback(print_exception)
-        task.add_done_callback(self.background_tasks.discard)
-
-    def cancel_task(self, task: asyncio.Task) -> None:
-        if not hasattr(self, 'background_tasks'):
+    def register(self, task: asyncio.Task, tag: str, owner: Any) -> None:
+        if task is None:
             return
-        if task in self.background_tasks:
-            task.cancel()
-            self.background_tasks.discard(task)
+        if not tag:
+            raise ValueError('tag is required and must be a non-empty string')
+        if owner is None:
+            raise ValueError('owner is required')
+        self.tasks.add(task)
+        self.task_tags[task] = tag
+        self.task_owners[task] = owner
 
-    def cancel_pending_tasks(self, tag: str | None = None) -> None:
-        if not hasattr(self, 'background_tasks'):
-            return
-        for task in list(self.background_tasks):
-            task_tag = getattr(task, '_task_tag', None)
-            if tag is not None and task_tag == tag:
+        def _on_done(t: asyncio.Task) -> None:
+            self.tasks.discard(t)
+            self.task_tags.pop(t, None)
+            self.task_owners.pop(t, None)
+
+        task.add_done_callback(_on_done)
+
+    def cancel_by_tag(self, tag: str, owner: Any = None) -> None:
+        for t, tg in list(self.task_tags.items()):
+            if tg == tag and not t.done() and (owner is None or self.task_owners.get(t) == owner):
+                t.cancel()
+
+    async def cancel_and_await_by_tag(self, tag: str, owner: Any = None) -> None:
+        tasks = [t for t, tg in list(self.task_tags.items()) if tg == tag and (owner is None or self.task_owners.get(t) == owner)]
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def cancel_by_owner(self, owner: Any) -> None:
+        for t, o in list(self.task_owners.items()):
+            if o == owner and not t.done():
+                t.cancel()
+
+    async def cancel_and_await_by_owner(self, owner: Any) -> None:
+        tasks = [t for t, o in list(self.task_owners.items()) if o == owner]
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def cancel_all_except(self, tag: str | None = None, owner: Any = None) -> None:
+        for t in list(self.tasks):
+            t_tag = self.task_tags.get(t)
+            t_owner = self.task_owners.get(t)
+            if owner is not None and t_owner != owner:
                 continue
-            task.cancel()
-            self.background_tasks.discard(task)
+            if tag is not None and t_tag == tag:
+                continue
+            if not t.done():
+                t.cancel()
 
-    def cancel_tasks_by_tag(self, tag: str) -> None:
-        if not hasattr(self, 'background_tasks'):
-            return
-        for task in list(self.background_tasks):
-            if getattr(task, '_task_tag', None) == tag:
-                task.cancel()
-                self.background_tasks.discard(task)
+    async def cancel_and_await_all_except(self, tag: str | None = None, owner: Any = None) -> None:
+        tasks = [t for t in list(self.tasks) if (owner is None or self.task_owners.get(t) == owner) and not (tag is not None and self.task_tags.get(t) == tag)]
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def cancel_and_await_tasks_by_tag(self, tag: str) -> None:
-        if not hasattr(self, 'background_tasks'):
-            return
-        for task in list(self.background_tasks):
-            if getattr(task, '_task_tag', None) == tag:
-                if not task.done():
-                    task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-                self.background_tasks.discard(task)
+    def cancel_all(self) -> None:
+        for t in list(self.tasks):
+            if not t.done():
+                t.cancel()
+
+    async def cancel_and_await_all(self) -> None:
+        tasks = list(self.tasks)
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def list_tasks(self) -> list[tuple[asyncio.Task, str | None, Any]]:
+        return [(t, self.task_tags.get(t), self.task_owners.get(t)) for t in list(self.tasks)]
+
 
 class UnauthorizedRestartException(Exception):
     """Raised when a 401 Unauthorized is encountered and a plugin restart is needed."""

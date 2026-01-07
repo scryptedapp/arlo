@@ -8,6 +8,8 @@ import traceback
 
 from typing import TYPE_CHECKING
 
+from .util import TaskManager as _LocalTaskManager
+
 if TYPE_CHECKING:
     from .provider import ArloProvider
     from .basestation import ArloBasestation
@@ -88,6 +90,7 @@ class RTSPMessage:
 class ArloLocalStreamProxy:
     def __init__(self, provider: ArloProvider, basestation: ArloBasestation, camera: ArloCamera):
         self.provider = provider
+        self.task_manager = self.provider.task_manager
         self.basestation = basestation
         self.camera = camera
         self.logger = camera.logger
@@ -173,8 +176,8 @@ class ArloLocalStreamProxy:
                         pass
 
             connection_handlers = [
-                asyncio.create_task(_connection_handler(rebroadcast_reader, basestation_writer, True)),
-                asyncio.create_task(_connection_handler(basestation_reader, rebroadcast_writer, False)),
+                self.task_manager.create_task(_connection_handler(rebroadcast_reader, basestation_writer, True), tag=f'local_stream:{self.camera.arlo_device["deviceId"]}', owner=self),
+                self.task_manager.create_task(_connection_handler(basestation_reader, rebroadcast_writer, False), tag=f'local_stream:{self.camera.arlo_device["deviceId"]}', owner=self),
             ]
             _, pending = await asyncio.wait(connection_handlers, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:

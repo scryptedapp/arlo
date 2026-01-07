@@ -124,10 +124,10 @@ class ArloCamera(
                 self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[self.arlo_properties.get('brightness', 0)]
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloCamera: {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloCamera, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloCamera: {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloCamera, giving up.')
             return
 
     def _start_error_subscription(self) -> None:
@@ -245,7 +245,7 @@ class ArloCamera(
                     for cat in categories
                 ]
             }
-            self.create_task(self.onDeviceEvent(ScryptedInterface.ObjectDetector.value, detection))
+            self.task_manager.create_task(self.onDeviceEvent(ScryptedInterface.ObjectDetector.value, detection), tag=f'object_detector:{self.nativeId}', owner=self)
             return self.stop_subscriptions
 
         self._create_or_register_event_subscription(
@@ -340,9 +340,9 @@ class ArloCamera(
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
                 await self.refresh(ScryptedInterface.VideoCamera.value, True)
-                self.logger.debug(f'Camera {self.nativeId} and children refreshed and updated in Scrypted.')
+                self.logger.debug(f'Camera and children refreshed and updated in Scrypted.')
             except Exception as e:
-                self.logger.error(f'Error refreshing device {self.nativeId}: {e}', exc_info=True)
+                self.logger.error(f'Error refreshing camera: {e}', exc_info=True)
         except asyncio.CancelledError:
             pass
 
@@ -585,7 +585,7 @@ class ArloCamera(
         return True
 
     async def _wait_for_state_change(self, name: str = None) -> None:
-        start_time = asyncio.get_event_loop().time()
+        start_time = self.provider.loop.time()
         self.logger.debug('Checking activity state...')
         while True:
             scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
@@ -595,7 +595,7 @@ class ArloCamera(
             if self.activity_state == 'idle' or (prebuffer_name and name == prebuffer_name):
                 self.logger.debug('Activity State is idle or selected stream is currently active, continuing...')
                 break
-            elif (asyncio.get_event_loop().time() - start_time) > self.timeout:
+            elif (self.provider.loop.time() - start_time) > self.timeout:
                 self.activity_state = 'idle'
                 raise TimeoutError('Waiting for activity state to be idle timed out')
             await asyncio.sleep(1)

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 class StdoutLoggerFactory:
     @staticmethod
-    def get_logger(name: str, level=logging.INFO, format='[Arlo %(name)s]: %(message)s'):
+    def get_logger(name: str, level=logging.INFO, format='[%(name)s]: %(message)s'):
         logger = logging.getLogger(name)
         if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
             logger.setLevel(level)
@@ -33,7 +33,7 @@ class ScryptedDeviceLoggingWrapper(logging.Handler):
 
 class ScryptedDeviceLoggerFactory:
     @staticmethod
-    def get_logger(name, scrypted_device: ArloProvider | ArloDeviceBase, level=logging.INFO, format='[Arlo %(name)s]: %(message)s'):
+    def get_logger(name, scrypted_device: ArloProvider | ArloDeviceBase, level=logging.INFO, format='[%(name)s]: %(message)s'):
         logger = logging.getLogger(name)
         if not any(isinstance(handler, ScryptedDeviceLoggingWrapper) for handler in logger.handlers):
             logger.setLevel(level)

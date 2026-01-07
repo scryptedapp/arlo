@@ -5,25 +5,22 @@ import asyncio
 from typing import Callable, Protocol, TYPE_CHECKING
 
 from .client import SIPManager, USER_AGENTS
-from .util import BackgroundTaskMixin
 
 if TYPE_CHECKING:
     from logging import Logger
 
     from .camera import ArloCamera
     from .intercom import ArloIntercom
-    from .provider import ArloProvider
 
 
-class BaseArloSignalingSession(BackgroundTaskMixin):
+class BaseArloSignalingSession():
     def __init__(self, device: ArloCamera | ArloIntercom):
-        super().__init__()
         self.logger: Logger = device.logger
-        self.provider: ArloProvider = device.provider
+        self.provider = device.provider
         self.arlo_device: dict = device.arlo_device
         self.scrypted_session: RTCSignalingSession = None
         self.ice_servers: list[dict[str, str]] = None
-
+        self.task_manager = self.provider.task_manager
     def _clean_sdp(self, sdp: str) -> str:
         self.logger.debug('Cleaning SDP.')
         lines = sdp.split('\n')
@@ -156,6 +153,7 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
             self.arlo_sip = SIPManager(
                 self.logger,
                 sip_cfg,
+                provider=self.provider,
             )
             self.logger.debug('SIPManager initialized for camera session.')
         except Exception as e:
@@ -217,7 +215,16 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
 
     def __del__(self) -> None:
         self.stop_subscriptions = True
-        self.cancel_pending_tasks()
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.task_manager.cancel_and_await_by_owner(self),
+                self.provider.loop
+            )
+        except Exception:
+            try:
+                self.task_manager.cancel_by_owner(self)
+            except Exception:
+                pass
 
     async def delayed_init(self) -> None:
         try:
@@ -240,7 +247,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
                 except Exception as e:
                     self.logger.error(f'Error in SDP answer subscription: {e}', exc_info=True)
                 return self.stop_subscriptions
-            asyncio.create_task(async_callback())
+            self.task_manager.create_task(async_callback(), tag='webrtc-intercom-answer-sdp', owner=self)
             return self.stop_subscriptions
 
         self._create_or_register_event_subscription(
@@ -258,7 +265,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
                 except Exception as e:
                     self.logger.error(f'Error in candidate answer subscription: {e}', exc_info=True)
                 return self.stop_subscriptions
-            asyncio.create_task(async_callback())
+            self.task_manager.create_task(async_callback(), tag='webrtc-intercom-answer-candidate', owner=self)
             return self.stop_subscriptions
 
         self._create_or_register_event_subscription(
@@ -271,33 +278,22 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
         if self.active_event_subscriptions is None:
             self.active_event_subscriptions = {}
         key = event_key or getattr(subscribe_fn, '__name__', str(subscribe_fn))
-        task = self.active_event_subscriptions.get(key)
-        if task and not task.done():
+        existing = self.active_event_subscriptions.get(key)
+        if existing and (isinstance(existing, list) or not getattr(existing, 'done', lambda: False)()):
             self.logger.debug(f'Event subscription "{key}" already running for device {self.arlo_device["deviceId"]}.')
             return
         result = subscribe_fn(*args, **kwargs)
-        if asyncio.iscoroutine(result):
-            task = self.create_task(result)
-        elif isinstance(result, asyncio.Task):
-            task = result
-            self.register_task(task)
-        elif isinstance(result, (list, tuple, set)):
+        if isinstance(result, (list, tuple, set)):
             tasks = []
-            for t in result:
-                if asyncio.iscoroutine(t):
-                    tasks.append(self.create_task(t))
-                elif isinstance(t, asyncio.Task):
-                    self.register_task(t)
-                    tasks.append(t)
+            for item in result:
+                if isinstance(item, asyncio.Task):
+                    self.task_manager.register(item, tag=key, owner=self)
+                    tasks.append(item)
                 else:
-                    raise TypeError('Event Subscription must return a coroutine or task.')
+                    tasks.append(self.task_manager.create_task(item, tag=key, owner=self))
             self.active_event_subscriptions[key] = tasks
             return
-        elif isinstance(result, asyncio.Future):
-            task = result
-            self.register_task(task)
-        else:
-            raise TypeError('Event Subscription must return a coroutine, task, or collection of them.')
+        task = self.task_manager.create_task(result, tag=key, owner=self)
         self.active_event_subscriptions[key] = task
 
     async def setRemoteDescription(self, offer) -> None:
@@ -363,6 +359,7 @@ class ArloIntercomSIPSignalingSession(BaseArloSignalingSession):
             self.arlo_sip = SIPManager(
                 self.logger,
                 sip_cfg,
+                provider=self.provider,
             )
             self.logger.debug('SIPManager initialized for intercom SIP session.')
         except Exception as e:

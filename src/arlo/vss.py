@@ -28,6 +28,7 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, auto_init: bool = True) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider, auto_init=auto_init)
+        self.task_manager = self.provider.task_manager
 
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
@@ -104,7 +105,7 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
                 **self.securitySystemState,
                 'mode': value,
             }
-            self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
+            self.task_manager.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None), tag=f'settings_update:{self.nativeId}', owner=self)
         except Exception as e:
             self.logger.error(f'Error setting mode: {e}')
 
@@ -159,7 +160,7 @@ class ArloSirenVirtualSecuritySystem(ArloBaseVirtualSecuritySystem, DeviceProvid
             **self.securitySystemState,
             'mode': mode,
         }
-        self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
+        self.task_manager.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None), tag=f'settings_update:{self.nativeId}', owner=self)
 
     async def putSetting(self, key: str, value: SettingValue) -> None:
         await super().putSetting(key, value)
@@ -239,7 +240,7 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
     def complete_init(self) -> None:
         if self._init_completed:
             return
-        self.create_task(self._delayed_init())
+        self.task_manager.create_task(self._delayed_init(), tag=f'delayed_init:{self.nativeId}', owner=self)
 
     async def _delayed_init(self) -> None:
         for _ in range(100):
@@ -335,7 +336,7 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
             **self.securitySystemState,
             'mode': scrypted_mode,
         }
-        self.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None))
+        self.task_manager.create_task(self.onDeviceEvent(ScryptedInterface.Settings.value, None), tag=f'settings_update:{self.nativeId}', owner=self)
 
     @property
     def next_revision(self) -> str:

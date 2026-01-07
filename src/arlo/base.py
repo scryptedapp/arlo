@@ -8,13 +8,12 @@ from scrypted_sdk import ScryptedDeviceBase
 from scrypted_sdk.types import Device
 
 from .logging import ScryptedDeviceLoggerMixin
-from .util import BackgroundTaskMixin
 
 if TYPE_CHECKING:
     from .provider import ArloProvider
 
 
-class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTaskMixin):
+class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin):
     nativeId: str = None
     arlo_device: dict = None
     arlo_basestation: dict = None
@@ -27,7 +26,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, auto_init: bool = True) -> None:
         super().__init__(nativeId=nativeId)
-        self.logger_name = nativeId
+        self.logger_name = arlo_device['deviceName']
         self.nativeId = nativeId
         self.arlo_device = arlo_device
         self.arlo_basestation = arlo_basestation
@@ -35,12 +34,22 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
         self.provider = provider
         self.logger.setLevel(self.provider.get_current_log_level())
         self._ready_event = asyncio.Event()
+        self.task_manager = self.provider.task_manager
         if auto_init:
-            self.create_task(self._delayed_init())
+            self.task_manager.create_task(self._delayed_init(), tag=f'delayed_init:{self.nativeId}', owner=self)
 
     def __del__(self) -> None:
         self.stop_subscriptions = True
-        self.cancel_pending_tasks()
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.task_manager.cancel_and_await_by_owner(self),
+                self.provider.loop
+            )
+        except Exception:
+            try:
+                self.task_manager.cancel_by_owner(self)
+            except Exception:
+                pass
         self._cleanup()
 
     async def _delayed_init(self) -> None:
@@ -52,10 +61,10 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
                 self._ready_event.set()
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloBaseDevice {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloBaseDevice, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseDevice {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseDevice, giving up.')
             self._ready_event.set()
             return
 
@@ -125,33 +134,22 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin, BackgroundTa
         if self.active_event_subscriptions is None:
             self.active_event_subscriptions = {}
         key = event_key or getattr(subscribe_fn, '__name__', str(subscribe_fn))
-        task = self.active_event_subscriptions.get(key)
-        if task and not task.done():
+        existing = self.active_event_subscriptions.get(key)
+        if existing and (isinstance(existing, list) or not getattr(existing, 'done', lambda: False)()):
             self.logger.debug(f'Event subscription "{key}" already running for device {self.arlo_device["deviceId"]}.')
             return
         result = subscribe_fn(*args, **kwargs)
-        if asyncio.iscoroutine(result):
-            task = self.create_task(result)
-        elif isinstance(result, asyncio.Task):
-            task = result
-            self.register_task(task)
-        elif isinstance(result, (list, tuple, set)):
+        if isinstance(result, (list, tuple, set)):
             tasks = []
-            for t in result:
-                if asyncio.iscoroutine(t):
-                    tasks.append(self.create_task(t))
-                elif isinstance(t, asyncio.Task):
-                    self.register_task(t)
-                    tasks.append(t)
+            for item in result:
+                if isinstance(item, asyncio.Task):
+                    self.task_manager.register(item, tag=key, owner=self)
+                    tasks.append(item)
                 else:
-                    raise TypeError('Event Subscription must return a coroutine or task.')
+                    tasks.append(self.task_manager.create_task(item, tag=key, owner=self))
             self.active_event_subscriptions[key] = tasks
             return
-        elif isinstance(result, asyncio.Future):
-            task = result
-            self.register_task(task)
-        else:
-            raise TypeError('Event Subscription must return a coroutine, task, or collection of them.')
+        task = self.task_manager.create_task(result, tag=key, owner=self)
         self.active_event_subscriptions[key] = task
 
     def _has_feature(self, feature: str) -> bool:

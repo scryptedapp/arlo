@@ -31,11 +31,12 @@ class StreamEvent:
 
 
 class Stream:
-    logger: logging.Logger = StdoutLoggerFactory.get_logger(name='Client')
+    logger: logging.Logger = StdoutLoggerFactory.get_logger(name='Arlo Client')
 
     def __init__(self, arlo: ArloClient, expire: int = 5) -> None:
         self.arlo: ArloClient = arlo
         self.expire: int = expire
+        self.task_manager = self.arlo.provider.task_manager
         self.connected: bool = False
         self.reconnecting: bool = False
         self.initializing: bool = True
@@ -45,9 +46,9 @@ class Stream:
         self.event_stream_thread: threading.Thread | None = None
         self.event_stream_stop_event: threading.Event = threading.Event()
         self.refresh_loop_signal: asyncio.Queue[object | None] = asyncio.Queue()
-        self.event_loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
-        self.event_loop.create_task(self._refresh_interval())
-        self.event_loop.create_task(self._clean_queues())
+        self.event_loop = self.arlo.provider.loop
+        self._refresh_task = self.task_manager.create_task(self._refresh_interval(), tag='stream_refresh', owner=self)
+        self._clean_task = self.task_manager.create_task(self._clean_queues(), tag='stream_clean', owner=self)
         self._event_buffer: list[dict[str, Any]] = []
 
     def __del__(self) -> None:
@@ -70,11 +71,13 @@ class Stream:
                         return
                     continue
                 interval: int = self.refresh * 60
-                signal_task = asyncio.create_task(self.refresh_loop_signal.get())
-                sleep_task = asyncio.create_task(asyncio.sleep(interval))
+                signal_task = self.task_manager.create_task(self.refresh_loop_signal.get(), tag='stream_refresh_child', owner=self)
+                sleep_task = self.task_manager.create_task(asyncio.sleep(interval), tag='stream_refresh_child', owner=self)
                 done, pending = await asyncio.wait([signal_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)
                 for task in pending:
                     task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 done_task = done.pop()
                 if done_task is signal_task and done_task.result() is None:
                     return
@@ -196,12 +199,32 @@ class Stream:
             self.refresh_loop_signal.put_nowait(None)
 
         self.event_loop.call_soon_threadsafe(signal_all_queues)
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.task_manager.cancel_and_await_by_owner(self),
+                self.event_loop
+            )
+        except Exception as e:
+            self.logger.debug(f'Error scheduling stream task cancellation: {e}')
 
     async def start(self) -> None:
         raise NotImplementedError()
 
     async def restart(self) -> None:
-        raise NotImplementedError()
+        if self.reconnecting:
+            return
+        self.reconnecting = True
+        try:
+            self.disconnect()
+            await asyncio.sleep(0.1)
+            self.event_stream_stop_event = threading.Event()
+            self.event_stream = None
+            self.event_stream_thread = None
+            self.initializing = True
+            self.connected = False
+            await self.start()
+        finally:
+            self.reconnecting = False
 
     def subscribe(self, topics) -> None:
         raise NotImplementedError()

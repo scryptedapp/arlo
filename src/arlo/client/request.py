@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 class Request:
-    logger: Logger = StdoutLoggerFactory.get_logger(name='Client')
+    logger: Logger = StdoutLoggerFactory.get_logger(name='Arlo Client')
 
     def __init__(
         self,

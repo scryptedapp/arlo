@@ -44,10 +44,10 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                 self.device_state: str = 'available' if self.arlo_properties.get('state', '') == 'idle' else 'unavailable'
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloBasestation {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloBasestation, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloBasestation {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBasestation, giving up.')
             return
 
     def _start_device_state_subscription(self) -> None:
@@ -227,9 +227,9 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                 for manifest in manifests:
                     await scrypted_sdk.deviceManager.onDeviceDiscovered(manifest)
                 await self.onDeviceEvent(ScryptedInterface.DeviceProvider.value, None)
-                self.logger.debug(f'Basestation {self.nativeId} and children refreshed and updated in Scrypted.')
+                self.logger.debug(f'Basestation and children refreshed and updated in Scrypted.')
             except Exception as e:
-                self.logger.error(f'Error refreshing basestation {self.nativeId}: {e}', exc_info=True)
+                self.logger.error(f'Error refreshing basestation: {e}', exc_info=True)
         except asyncio.CancelledError:
             pass
 

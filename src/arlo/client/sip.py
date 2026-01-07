@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import collections
 import hashlib
@@ -6,7 +8,10 @@ import random
 import re
 import websockets
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..provider import ArloProvider
 
 
 SIP_DIGEST = 'Digest'
@@ -151,9 +156,11 @@ class AuthHeader:
 
 
 class SIPManager:
-    def __init__(self, logger: logging.Logger, sip_cfg: dict[str, Any]):
+    def __init__(self, logger: logging.Logger, sip_cfg: dict[str, Any], provider: ArloProvider):
         self.logger = logger
         self.sip_cfg = sip_cfg
+        self.provider = provider
+        self.task_manager = self.provider.task_manager
         self.keepalive_task: asyncio.Task | None = None
         self.rand_host = _rand_string(12) + '.invalid'
         self.timeout = 5
@@ -373,7 +380,7 @@ class SIPManager:
         self.logger.debug('Auto starting talk.')
         try:
             await self.start_talk()
-            self.keepalive_task = asyncio.create_task(self.keepalive_loop())
+            self.keepalive_task = self.task_manager.create_task(self.keepalive_loop(), tag='sip_keepalive', owner=self)
         except Exception as e:
             self.logger.error(f'Error in auto_start_talk: {e}', exc_info=True)
             raise
