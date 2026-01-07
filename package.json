@@ -1,6 +1,6 @@
 {
    "name": "@scrypted/arlo",
-   "version": "0.12.7",
+   "version": "0.12.8",
    "description": "Arlo Plugin for Scrypted",
    "license": "Apache",
    "repository": {
