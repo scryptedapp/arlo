@@ -35,6 +35,7 @@ class Stream:
 
     def __init__(self, arlo: ArloClient, expire: int = 5) -> None:
         self.arlo: ArloClient = arlo
+        self.provider = self.arlo.provider
         self.expire: int = expire
         self.task_manager = self.arlo.provider.task_manager
         self.connected: bool = False
@@ -82,7 +83,8 @@ class Stream:
                 if done_task is signal_task and done_task.result() is None:
                     return
                 self.logger.info('Refreshing event stream')
-                await self.restart()
+                async with self.provider.device_lock:
+                    await self.restart()
             except Exception as e:
                 self.logger.error(f'Error during stream refresh: {e}')
 

@@ -514,7 +514,7 @@ class ArloClient(object):
     async def _logout(self) -> None:
         logger.debug('Logging out of Arlo client.')
         try:
-            await self.provider.task_manager.cancel_and_await_all()
+            await self.provider.task_manager.cancel_and_await_by_owner(self)
         except Exception:
             pass
         try:
