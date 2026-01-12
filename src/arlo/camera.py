@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import aiohttp
 import asyncio
 import json
 import time
@@ -714,15 +713,15 @@ class ArloCamera(
 
     async def _get_buffer_from_url(self, snapshot_url: str) -> bytes:
         self.logger.debug('Attempting to get buffer from Arlo Cloud URL')
-        async with aiohttp.ClientSession() as session:
-            async with session.get(snapshot_url) as resp:
-                if resp.status != 200:
-                    raise ValueError(f'Unexpected status downloading snapshot image: {resp.status}')
-                buf: bytes = await resp.read()
-                if not buf:
-                    raise ValueError('Failed to get buffer from Arlo Cloud URL')
-                self.logger.debug('Successfully got buffer from Arlo Cloud URL')
-                return buf
+        session = await self.provider.get_http_session()
+        async with session.get(snapshot_url) as resp:
+            if resp.status != 200:
+                raise ValueError(f'Unexpected status downloading snapshot image: {resp.status}')
+            buf: bytes = await resp.read()
+            if not buf:
+                raise ValueError('Failed to get buffer from Arlo Cloud URL')
+            self.logger.debug('Successfully got buffer from Arlo Cloud URL')
+            return buf
 
     async def _create_snapshot_from_buffer(self, buf: bytearray | bytes) -> None:
         self.logger.debug('Creating snapshot from buffer')

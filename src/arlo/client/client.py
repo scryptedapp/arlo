@@ -263,6 +263,7 @@ class ArloClient(object):
 
     def _pick_host(self, hosts: list[str]) -> str:
         socket.setdefaulttimeout(5)
+        session: requests.Session | None = None
         try:
             session = requests.Session()
             session.mount('https://', host_header_ssl.HostHeaderSSLAdapter())
@@ -276,6 +277,11 @@ class ArloClient(object):
                     logger.warning(f'Backup Authentication Host {host} is invalid: {e}')
             raise Exception('No valid backup authentication hosts found!')
         finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
             socket.setdefaulttimeout(15)
 
     def _verify_hostname(self, host: str) -> None:
@@ -479,7 +485,13 @@ class ArloClient(object):
 
     def _finalize_login(self) -> None:
         self.cookies = self.request.dumps_cookies()
+        old_request = self.request
         self.request = Request(provider=self.provider)
+        if old_request is not None:
+            try:
+                old_request.close()
+            except Exception:
+                pass
         self.request.loads_cookies(self.cookies)
         self.provider.storage.setItem('arlo_cookies', self.cookies)
         self.finialized_login = True
@@ -535,6 +547,12 @@ class ArloClient(object):
                 logger.info('Logout returned 401 (session already invalid). Proceeding with cleanup.')
             except Exception as e:
                 logger.warning(f'Error during logout request: {e}')
+            try:
+                self.request.close()
+            except Exception:
+                pass
+            finally:
+                self.request = None
         logger.debug('Arlo client logged out.')
 
     async def get_devices(self, device_type=None, device_state=None) -> list[dict[str, Any]]:

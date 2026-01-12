@@ -1,3 +1,4 @@
+import aiohttp
 import asyncio
 import email
 import email.utils
@@ -76,6 +77,8 @@ class ArloProvider(
         self._login_future: asyncio.Future = None
         self._imap_ready_event: asyncio.Event = asyncio.Event()
         self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+        self._http_session: aiohttp.ClientSession | None = None
+        self._http_session_lock = asyncio.Lock()
         self._set_login_futures()
         self.full_reset_needed: bool = False
         self.device_lock = asyncio.Lock()
@@ -253,6 +256,27 @@ class ArloProvider(
                 await asyncio.sleep(self.device_refresh_interval * 60)
         except asyncio.CancelledError:
             pass
+
+    async def get_http_session(self) -> aiohttp.ClientSession:
+        async with self._http_session_lock:
+            if self._http_session is not None and not self._http_session.closed:
+                return self._http_session
+            timeout = aiohttp.ClientTimeout(total=30)
+            connector = aiohttp.TCPConnector(limit=20, ttl_dns_cache=300)
+            self._http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            return self._http_session
+
+    async def close_http_session(self) -> None:
+        session: aiohttp.ClientSession | None
+        async with self._http_session_lock:
+            session = self._http_session
+            self._http_session = None
+        if session is None or session.closed:
+            return
+        try:
+            await session.close()
+        except Exception:
+            self.logger.debug('Error closing shared aiohttp session', exc_info=True)
 
     @property
     def arlo(self) -> ArloClient:
@@ -884,6 +908,10 @@ class ArloProvider(
         async with self.device_lock:
             try:
                 self.storage.setItem('arlo_discovery_in_progress', 'false')
+            except Exception:
+                pass
+            try:
+                await self.close_http_session()
             except Exception:
                 pass
             if clear_cookies:
