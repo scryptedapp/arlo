@@ -47,12 +47,19 @@ class TaskManager:
         task.add_done_callback(_on_done)
 
     def cancel_by_tag(self, tag: str, owner: Any = None) -> None:
+        current = asyncio.current_task()
         for t, tg in list(self.task_tags.items()):
+            if t is current:
+                continue
             if tg == tag and not t.done() and (owner is None or self.task_owners.get(t) == owner):
                 t.cancel()
 
     async def cancel_and_await_by_tag(self, tag: str, owner: Any = None) -> None:
-        tasks = [t for t, tg in list(self.task_tags.items()) if tg == tag and (owner is None or self.task_owners.get(t) == owner)]
+        current = asyncio.current_task()
+        tasks = [
+            t for t, tg in list(self.task_tags.items())
+            if t is not current and tg == tag and (owner is None or self.task_owners.get(t) == owner)
+        ]
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -60,12 +67,16 @@ class TaskManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def cancel_by_owner(self, owner: Any) -> None:
+        current = asyncio.current_task()
         for t, o in list(self.task_owners.items()):
+            if t is current:
+                continue
             if o == owner and not t.done():
                 t.cancel()
 
     async def cancel_and_await_by_owner(self, owner: Any) -> None:
-        tasks = [t for t, o in list(self.task_owners.items()) if o == owner]
+        current = asyncio.current_task()
+        tasks = [t for t, o in list(self.task_owners.items()) if t is not current and o == owner]
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -73,7 +84,10 @@ class TaskManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def cancel_all_except(self, tag: str | None = None, owner: Any = None) -> None:
+        current = asyncio.current_task()
         for t in list(self.tasks):
+            if t is current:
+                continue
             t_tag = self.task_tags.get(t)
             t_owner = self.task_owners.get(t)
             if owner is not None and t_owner != owner:
@@ -84,7 +98,12 @@ class TaskManager:
                 t.cancel()
 
     async def cancel_and_await_all_except(self, tag: str | None = None, owner: Any = None) -> None:
-        tasks = [t for t in list(self.tasks) if (owner is None or self.task_owners.get(t) == owner) and not (tag is not None and self.task_tags.get(t) == tag)]
+        current = asyncio.current_task()
+        tasks = [
+            t for t in list(self.tasks)
+            if t is not current and (owner is None or self.task_owners.get(t) == owner)
+            and not (tag is not None and self.task_tags.get(t) == tag)
+        ]
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -92,12 +111,16 @@ class TaskManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def cancel_all(self) -> None:
+        current = asyncio.current_task()
         for t in list(self.tasks):
+            if t is current:
+                continue
             if not t.done():
                 t.cancel()
 
     async def cancel_and_await_all(self) -> None:
-        tasks = list(self.tasks)
+        current = asyncio.current_task()
+        tasks = [t for t in list(self.tasks) if t is not current]
         for t in tasks:
             if not t.done():
                 t.cancel()

@@ -150,6 +150,7 @@ class ArloProvider(
             'extra_debug_logging': 'false',
             'device_discovery_interval': 15,
             'device_refresh_interval': 240,
+            'arlo_discovery_in_progress': 'false',
             'disable_plugin': 'false',
             'arlo_public_key': None,
             'arlo_private_key': None,
@@ -304,6 +305,14 @@ class ArloProvider(
             interval = 90
             self.storage.setItem('event_stream_refresh_interval', interval)
         return int(interval)
+
+    @property
+    def arlo_discovery_in_progress(self) -> bool:
+        arlo_discovery_in_progress = self.storage.getItem('arlo_discovery_in_progress')
+        if arlo_discovery_in_progress is None:
+            arlo_discovery_in_progress = 'false'
+            self.storage.setItem('arlo_discovery_in_progress', arlo_discovery_in_progress)
+        return str(arlo_discovery_in_progress).lower() == 'true'
 
     @property
     def extra_debug_logging(self) -> bool:
@@ -586,7 +595,7 @@ class ArloProvider(
             return
         if not arlo.logged_in:
             self.logger.error('IMAP MFA Loop failed. Restarting plugin.')
-            await scrypted_sdk.deviceManager.requestRestart()
+            await self.request_restart('plugin')
 
     async def _manual_mfa_loop(self) -> None:
         self.manual_mfa_signal: asyncio.Queue[str] = asyncio.Queue()
@@ -603,7 +612,7 @@ class ArloProvider(
                 self.logger.error('Manual MFA code was not provided. Restarting plugin.')
         except asyncio.TimeoutError:
             self.logger.error('Manual MFA code not entered within 5 minutes. Restarting plugin.')
-        await scrypted_sdk.deviceManager.requestRestart()
+        await self.request_restart('plugin')
 
     async def _on_login_success(self, arlo: ArloClient) -> None:
         self._arlo = arlo
@@ -811,7 +820,7 @@ class ArloProvider(
     def request_restart(self, scope: str = 'plugin') -> None:
         try:
             scope_map = {
-                'plugin': lambda: asyncio.run_coroutine_threadsafe(scrypted_sdk.deviceManager.requestRestart(), self.loop),
+                'plugin': lambda: asyncio.run_coroutine_threadsafe(self._request_plugin_restart(clear_cookies=False), self.loop),
                 'restart': lambda: asyncio.run_coroutine_threadsafe(self._handle_restart(restart=True), self.loop),
                 'relogin': lambda: asyncio.run_coroutine_threadsafe(self._handle_restart(relogin=True), self.loop),
                 'refresh_login_loop': lambda: asyncio.run_coroutine_threadsafe(self._handle_restart(refresh_login_loop=True), self.loop),
@@ -821,9 +830,19 @@ class ArloProvider(
             if action:
                 action()
             else:
-                asyncio.run_coroutine_threadsafe(scrypted_sdk.deviceManager.requestRestart(), self.loop)
+                asyncio.run_coroutine_threadsafe(self._request_plugin_restart(clear_cookies=False), self.loop)
         except Exception as e:
             self.logger.error(f'Failed to request restart for scope {scope}: {e}', exc_info=True)
+
+    async def _request_plugin_restart(self, clear_cookies: bool) -> None:
+        try:
+            await self._shutdown(clear_cookies=clear_cookies)
+        except Exception as e:
+            self.logger.warning(f'Error during internal shutdown before requestRestart: {e}', exc_info=True)
+        try:
+            await scrypted_sdk.deviceManager.requestRestart()
+        except Exception as e:
+            self.logger.warning(f'Error requesting plugin restart: {e}', exc_info=True)
 
     async def _handle_restart(
         self,
@@ -843,14 +862,11 @@ class ArloProvider(
                     async with self.device_lock:
                         if relogin:
                             self.logger.info('Forcing account relogin.')
-                            if self.arlo and self.arlo.logged_in:
-                                await self.arlo.cancel_heartbeat()
+                            await self._shutdown(clear_cookies=False)
                             await self._initialize_plugin()
                         if restart:
                             self.logger.info('Forcing full restart.')
-                            self.storage.setItem('arlo_cookies', None)
-                            if self.arlo and self.arlo.logged_in:
-                                await self.arlo.cancel_heartbeat()
+                            await self._shutdown(clear_cookies=True)
                             await self._initialize_plugin()
                 elif event_stream:
                     async with self.device_lock:
@@ -863,6 +879,36 @@ class ArloProvider(
                 return
         except Exception as e:
             self.logger.error(f'Error during handle restart: {e}', exc_info=True)
+
+    async def _shutdown(self, clear_cookies: bool) -> None:
+        async with self.device_lock:
+            try:
+                self.storage.setItem('arlo_discovery_in_progress', 'false')
+            except Exception:
+                pass
+            if clear_cookies:
+                self.storage.setItem('arlo_cookies', None)
+            for device in list(self.scrypted_devices.values()):
+                try:
+                    await device.close()
+                except Exception:
+                    pass
+            try:
+                await self.task_manager.cancel_and_await_by_tag('initialize_plugin', owner=self)
+                await self.task_manager.cancel_and_await_by_tag('periodic_discovery', owner=self)
+                await self.task_manager.cancel_and_await_by_tag('periodic_refresh', owner=self)
+                await self.task_manager.cancel_and_await_by_tag('refresh', owner=self)
+            except Exception:
+                pass
+            try:
+                await self._cleaning_up_login_tasks()
+            except Exception:
+                pass
+            try:
+                await self._reset_arlo_client()
+            except Exception:
+                pass
+            self.logger.info(f'Provider shutdown finished')
 
     async def _device_handler(self, periodic_discovery: bool | None = None) -> None:
         async with self.device_lock:

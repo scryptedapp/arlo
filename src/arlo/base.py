@@ -35,22 +35,31 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin):
         self.logger.setLevel(self.provider.get_current_log_level())
         self._ready_event = asyncio.Event()
         self.task_manager = self.provider.task_manager
+        self._close_lock = asyncio.Lock()
+        self._closed: bool = False
         if auto_init:
             self.task_manager.create_task(self._delayed_init(), tag=f'delayed_init:{self.nativeId}', owner=self)
 
     def __del__(self) -> None:
-        self.stop_subscriptions = True
         try:
-            asyncio.run_coroutine_threadsafe(
-                self.task_manager.cancel_and_await_by_owner(self),
-                self.provider.loop
-            )
+            self.stop_subscriptions = True
+            asyncio.run_coroutine_threadsafe(self.close(), self.provider.loop)
         except Exception:
+            pass
+
+    async def close(self) -> None:
+        async with self._close_lock:
+            if self._closed:
+                return
+            self.stop_subscriptions = True
             try:
-                self.task_manager.cancel_by_owner(self)
+                await self.task_manager.cancel_and_await_by_owner(self)
             except Exception:
                 pass
-        self._cleanup()
+            try:
+                self._cleanup()
+            finally:
+                self._closed = True
 
     async def _delayed_init(self) -> None:
         for _ in range(100):

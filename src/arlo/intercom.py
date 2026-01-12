@@ -27,6 +27,16 @@ class ArloIntercom(ArloDeviceBase):
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider, camera: ArloCamera) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self.camera = camera
+        self._active_signaling_sessions: set[ArloIntercomSIPSignalingSession | ArloIntercomWebRTCSignalingSession] = set()
+
+    async def close(self) -> None:
+        for session in list(self._active_signaling_sessions):
+            try:
+                await session.close()
+            except Exception:
+                pass
+        self._active_signaling_sessions.clear()
+        await super().close()
 
     def get_applicable_interfaces(self) -> list[str]:
         return [ScryptedInterface.RTCSignalingChannel.value]
@@ -35,13 +45,18 @@ class ArloIntercom(ArloDeviceBase):
         return ScryptedDeviceType.Speaker.value
 
     async def startRTCSignalingSession(self, scrypted_session: RTCSignalingSession):
+        plugin_session = None
+        session_type = 'unknown'
         try:
             if self.camera.uses_sip_push_to_talk:
                 self.logger.debug('Using SIP for intercom session.')
                 plugin_session = ArloIntercomSIPSignalingSession(self)
+                session_type = 'SIP'
             else:
                 self.logger.debug('Using WebRTC for intercom session.')
                 plugin_session = ArloIntercomWebRTCSignalingSession(self)
+                session_type = 'WebRTC'
+            self._active_signaling_sessions.add(plugin_session)
             await plugin_session.delayed_init()
             plugin_session.scrypted_session = scrypted_session
             scrypted_setup = {
@@ -85,7 +100,10 @@ class ArloIntercom(ArloDeviceBase):
                     self.logger.debug(f'Setting remote description with answer: {plugin_session.answer['sdp']}')
                     await scrypted_session.setRemoteDescription(plugin_session.answer, scrypted_setup)
                     self.logger.debug('WebRTC signaling session established.')
-                    return ArloIntercomWebRTCSessionControl(plugin_session)
+                    return ArloIntercomWebRTCSessionControl(
+                        plugin_session,
+                        on_end=lambda: self._active_signaling_sessions.discard(plugin_session)
+                    )
                 except Exception as e:
                     self.logger.error(f'Error in WebRTC signaling session: {e}', exc_info=True)
                     raise
@@ -111,12 +129,21 @@ class ArloIntercom(ArloDeviceBase):
                     await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
                     await plugin_session.arlo_sip.auto_start_talk()
                     self.logger.debug('SIP signaling session established.')
-                    return ArloIntercomSIPSessionControl(plugin_session)
+                    return ArloIntercomSIPSessionControl(
+                        plugin_session,
+                        on_end=lambda: self._active_signaling_sessions.discard(plugin_session)
+                    )
                 except Exception as e:
                     self.logger.error(f'Error in SIP signaling session: {e}', exc_info=True)
                     raise
         except Exception as e:
-            self.logger.error(f'Failed to start RTC signaling session: {e}', exc_info=True)
+            if plugin_session is not None:
+                self._active_signaling_sessions.discard(plugin_session)
+                try:
+                    await plugin_session.close()
+                except Exception:
+                    pass
+            self.logger.error(f'Failed to start {session_type} signaling session: {e}', exc_info=True)
             raise
 
     def speaker(self):

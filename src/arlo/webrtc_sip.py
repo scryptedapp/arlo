@@ -104,8 +104,9 @@ class BaseArloSignalingSession():
 
 
 class BaseArloSessionControl:
-    def __init__(self, arlo_session: BaseArloSignalingSession) -> None:
+    def __init__(self, arlo_session: BaseArloSignalingSession, on_end: Callable[[], object] | None = None) -> None:
         self.arlo_session = arlo_session
+        self._on_end = on_end
 
     async def endSession(self):
         try:
@@ -113,6 +114,12 @@ class BaseArloSessionControl:
         except Exception as e:
             self.arlo_session.logger.error(f'Error ending session: {e}', exc_info=True)
             raise
+        finally:
+            try:
+                if self._on_end:
+                    self._on_end()
+            except Exception:
+                pass
 
 
 class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
@@ -188,8 +195,8 @@ class ArloCameraWebRTCSignalingSession(BaseArloSignalingSession):
 
 
 class ArloCameraWebRTCSessionControl(BaseArloSessionControl):
-    def __init__(self, arlo_session: ArloCameraWebRTCSignalingSession) -> None:
-        super().__init__(arlo_session)
+    def __init__(self, arlo_session: ArloCameraWebRTCSignalingSession, on_end: Callable[[], object] | None = None) -> None:
+        super().__init__(arlo_session, on_end=on_end)
         self.arlo_sip: SIPManager = arlo_session.arlo_sip
 
     async def setPlayback(self, options):
@@ -214,12 +221,9 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
         self.stop_subscriptions: bool | None = None
 
     def __del__(self) -> None:
-        self.stop_subscriptions = True
         try:
-            asyncio.run_coroutine_threadsafe(
-                self.task_manager.cancel_and_await_by_owner(self),
-                self.provider.loop
-            )
+            self.stop_subscriptions = True
+            asyncio.run_coroutine_threadsafe(self.close(), self.provider.loop)
         except Exception:
             try:
                 self.task_manager.cancel_by_owner(self)
@@ -311,6 +315,11 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
 
     async def close(self) -> None:
         try:
+            self.stop_subscriptions = True
+            try:
+                await self.task_manager.cancel_and_await_by_owner(self)
+            except Exception:
+                pass
             self.logger.debug('Intercom WebRTC session closed.')
         except Exception as e:
             self.logger.error(f'Error in close: {e}', exc_info=True)

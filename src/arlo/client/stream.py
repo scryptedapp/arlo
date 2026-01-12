@@ -48,12 +48,37 @@ class Stream:
         self.event_stream_stop_event: threading.Event = threading.Event()
         self.refresh_loop_signal: asyncio.Queue[object | None] = asyncio.Queue()
         self.event_loop = self.arlo.provider.loop
+        self._close_lock = asyncio.Lock()
+        self._closed: bool = False
         self._refresh_task = self.task_manager.create_task(self._refresh_interval(), tag='stream_refresh', owner=self)
         self._clean_task = self.task_manager.create_task(self._clean_queues(), tag='stream_clean', owner=self)
         self._event_buffer: list[dict[str, Any]] = []
 
     def __del__(self) -> None:
-        self.disconnect()
+        try:
+            asyncio.run_coroutine_threadsafe(self.close(), self.event_loop)
+        except Exception:
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+
+    async def close(self) -> None:
+        async with self._close_lock:
+            if self._closed:
+                return
+            try:
+                self.disconnect()
+                try:
+                    await self.task_manager.cancel_and_await_by_owner(self)
+                except Exception as e:
+                    self.logger.debug(f'Error awaiting stream task cancellation: {e}')
+                try:
+                    await self._close_transport()
+                except Exception as e:
+                    self.logger.debug(f'Error closing stream transport: {e}')
+            finally:
+                self._closed = True
 
     @property
     def active(self) -> bool:
@@ -190,8 +215,6 @@ class Stream:
         self.queues.setdefault(key, asyncio.Queue()).put_nowait(event)
 
     def disconnect(self) -> None:
-        if self.reconnecting:
-            return
         self.connected = False
         self.event_stream_stop_event.set()
 
@@ -208,6 +231,9 @@ class Stream:
             )
         except Exception as e:
             self.logger.debug(f'Error scheduling stream task cancellation: {e}')
+
+    async def _close_transport(self) -> None:
+        return
 
     async def start(self) -> None:
         raise NotImplementedError()

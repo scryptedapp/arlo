@@ -200,4 +200,17 @@ class MQTTEventStream(Stream):
                 self.event_stream.loop_stop()
             except Exception as e:
                 self.logger.warning(f'Error during MQTT Event Stream disconnect: {e}')
-            self.event_stream = None
+
+    async def _close_transport(self) -> None:
+        client = self.event_stream
+        if not client:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+        try:
+            client.loop_stop()
+        except Exception:
+            pass
+        self.event_stream = None

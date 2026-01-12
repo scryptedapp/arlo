@@ -84,3 +84,17 @@ class SSEEventStream(Stream):
 
     def subscribe(self, topics: list[str]) -> None:
         self.logger.debug('SSE Event Stream does not support topic subscriptions.')
+
+    async def _close_transport(self) -> None:
+        try:
+            if self.event_stream is not None:
+                self.shutting_down_stream = self.event_stream
+        except Exception:
+            pass
+        thread = self.event_stream_thread
+        if thread and thread.is_alive():
+            try:
+                await asyncio.to_thread(thread.join, 2)
+            except Exception:
+                pass
+        self.event_stream = None

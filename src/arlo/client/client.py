@@ -523,10 +523,11 @@ class ArloClient(object):
             logger.warning(f'Error during unsubscribe: {e}')
         if self.event_stream:
             try:
-                if getattr(self.event_stream, 'connected', False):
-                    self.event_stream.disconnect()
+                await self.event_stream.close()
             except Exception as e:
-                logger.warning(f'Error disconnecting event stream: {e}')
+                logger.warning(f'Error closing event stream: {e}')
+            finally:
+                self.event_stream = None
         if self.request:
             try:
                 await self.request.put(f'https://{self.arlo_api_url}/hmsweb/logout', suppress_restart_on_401=True)

@@ -96,6 +96,26 @@ class ArloCamera(
 
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
+        self._active_rtc_sessions: set[ArloCameraWebRTCSignalingSession] = set()
+
+    async def close(self) -> None:
+        for session in list(self._active_rtc_sessions):
+            try:
+                await session.close()
+            except Exception:
+                pass
+        try:
+            self._active_rtc_sessions.clear()
+        except Exception:
+            pass
+        if self.intercom is not None:
+            try:
+                await self.intercom.close()
+            except Exception:
+                pass
+        self.intercom_active = False
+        self.speaker = None
+        await super().close()
 
     async def _delayed_init(self) -> None:
         await super()._delayed_init()
@@ -995,6 +1015,7 @@ class ArloCamera(
             await self._wait_for_state_change('WebRTC')
             self.logger.debug('Starting RTC signaling session.')
             plugin_session = ArloCameraWebRTCSignalingSession(self)
+            self._active_rtc_sessions.add(plugin_session)
             await plugin_session.delayed_init()
             plugin_session.scrypted_session = scrypted_session
             scrypted_setup = {
@@ -1013,7 +1034,9 @@ class ArloCamera(
                 )
             except asyncio.TimeoutError:
                 self.logger.warning('Timeout waiting for ICE candidates, falling back to ignore trickle.')
+
                 async def ignore_trickle(c): pass
+
                 scrypted_offer = await scrypted_session.createLocalDescription('offer', scrypted_setup, ignore_trickle)
             self.logger.debug('Setting remote description on plugin session.')
             await plugin_session.setRemoteDescription(scrypted_offer)
@@ -1022,9 +1045,18 @@ class ArloCamera(
             self.logger.debug('Setting remote description (answer) on Scrypted session.')
             await scrypted_session.setRemoteDescription(plugin_answer, scrypted_setup)
             self.logger.debug('RTC signaling session established successfully.')
-            return ArloCameraWebRTCSessionControl(plugin_session)
+            return ArloCameraWebRTCSessionControl(
+                plugin_session,
+                on_end=lambda: self._active_rtc_sessions.discard(plugin_session)
+            )
         except Exception as e:
-            self.logger.error(f'Error in startRTCSignalingSession: {e}', exc_info=True)
+            if plugin_session is not None:
+                self._active_rtc_sessions.discard(plugin_session)
+                try:
+                    await plugin_session.close()
+                except Exception:
+                    pass
+            self.logger.error(f'Failed to start RTC signaling session: {e}', exc_info=True)
             raise
 
     async def turnOn(self):
