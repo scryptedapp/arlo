@@ -223,12 +223,18 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
     def __del__(self) -> None:
         try:
             self.stop_subscriptions = True
-            asyncio.run_coroutine_threadsafe(self.close(), self.provider.loop)
         except Exception:
-            try:
-                self.task_manager.cancel_by_owner(self)
-            except Exception:
-                pass
+            pass
+        try:
+            if self.provider and self.provider.loop is not None and not self.provider.loop.is_closed() and self.provider.loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.close(), self.provider.loop)
+                return
+        except Exception:
+            pass
+        try:
+            self.task_manager.cancel_by_owner(self)
+        except Exception:
+            pass
 
     async def delayed_init(self) -> None:
         try:

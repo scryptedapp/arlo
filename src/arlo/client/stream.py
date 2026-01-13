@@ -50,18 +50,70 @@ class Stream:
         self.event_loop = self.arlo.provider.loop
         self._close_lock = asyncio.Lock()
         self._closed: bool = False
+        self._connect_future: asyncio.Future[None] | None = None
         self._refresh_task = self.task_manager.create_task(self._refresh_interval(), tag='stream_refresh', owner=self)
         self._clean_task = self.task_manager.create_task(self._clean_queues(), tag='stream_clean', owner=self)
         self._event_buffer: list[dict[str, Any]] = []
 
-    def __del__(self) -> None:
+    def _call_soon_threadsafe(self, fn, *args) -> None:
         try:
-            asyncio.run_coroutine_threadsafe(self.close(), self.event_loop)
+            self.event_loop.call_soon_threadsafe(fn, *args)
         except Exception:
+            pass
+
+    def _stream_name(self) -> str:
+        name = self.__class__.__name__
+        if name.endswith('EventStream'):
+            return name.replace('EventStream', ' Event Stream')
+        return name
+
+    def _begin_connect_wait(self) -> asyncio.Future[None]:
+        if self._connect_future is not None and not self._connect_future.done():
             try:
-                self.disconnect()
+                self._connect_future.cancel()
             except Exception:
                 pass
+        self._connect_future = self.event_loop.create_future()
+        return self._connect_future
+
+    def _complete_connect_wait(self) -> None:
+        if self._connect_future is not None and not self._connect_future.done():
+            self._connect_future.set_result(None)
+
+    def _fail_connect_wait(self, exc: Exception) -> None:
+        if self._connect_future is not None and not self._connect_future.done():
+            self._connect_future.set_exception(exc)
+
+    async def _await_connected(self, timeout: float) -> None:
+        if self._connect_future is None:
+            return
+        await asyncio.wait_for(self._connect_future, timeout=timeout)
+
+    async def wait_connected(self, timeout: float = 10) -> None:
+        if self.connected:
+            return
+        if self._connect_future is None:
+            self._begin_connect_wait()
+        await self._await_connected(timeout)
+
+    def _mark_connected(self, log_message: str | None = None) -> None:
+        stream_name = self._stream_name()
+        self.initializing = False
+        self.connected = True
+        self.logger.debug(log_message or f'{stream_name} connected.')
+        self._complete_connect_wait()
+
+    def __del__(self) -> None:
+        try:
+            if self.event_loop is not None and not self.event_loop.is_closed() and self.event_loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.close(), self.event_loop)
+                return
+        except Exception:
+            pass
+        try:
+            self.disconnect()
+        except Exception:
+            pass
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -89,6 +141,7 @@ class Stream:
         self.refresh_loop_signal.put_nowait(object())
 
     async def _refresh_interval(self) -> None:
+        stream_name = self._stream_name()
         while not self.event_stream_stop_event.is_set():
             try:
                 if self.refresh == 0:
@@ -107,7 +160,7 @@ class Stream:
                 done_task = done.pop()
                 if done_task is signal_task and done_task.result() is None:
                     return
-                self.logger.info('Refreshing event stream')
+                self.logger.info(f'Refreshing {stream_name}')
                 async with self.provider.device_lock:
                     await self.restart()
             except Exception as e:
@@ -166,7 +219,7 @@ class Stream:
         return f'{resource}/{action}' + (f'/{property}' if property else '')
 
     def _queue_response(self, response: dict[str, Any]) -> None:
-        if getattr(self.arlo, 'arlo_discovery_in_progress', False):
+        if self.arlo.arlo_discovery_in_progress == False:
             if not self._is_discovery_event(response):
                 self.logger.debug(f'Buffering event during discovery: {response}')
                 self._buffer_event(response)
@@ -215,7 +268,13 @@ class Stream:
         self.queues.setdefault(key, asyncio.Queue()).put_nowait(event)
 
     def disconnect(self) -> None:
+        stream_name = self._stream_name()
+        self.logger.debug(f'Disconnecting {stream_name}...')
         self.connected = False
+        try:
+            self._disconnect_transport_only()
+        except Exception as e:
+            self.logger.debug(f'Error stopping stream transport during disconnect: {e}')
         self.event_stream_stop_event.set()
 
         def signal_all_queues() -> None:
@@ -223,7 +282,7 @@ class Stream:
                 q.put_nowait(None)
             self.refresh_loop_signal.put_nowait(None)
 
-        self.event_loop.call_soon_threadsafe(signal_all_queues)
+        self._call_soon_threadsafe(signal_all_queues)
         try:
             asyncio.run_coroutine_threadsafe(
                 self.task_manager.cancel_and_await_by_owner(self),
@@ -232,6 +291,16 @@ class Stream:
         except Exception as e:
             self.logger.debug(f'Error scheduling stream task cancellation: {e}')
 
+    def _stop_transport_only(self) -> None:
+        self.connected = False
+        try:
+            self._disconnect_transport_only()
+        except Exception as e:
+            self.logger.debug(f'Error stopping stream transport: {e}')
+
+    def _disconnect_transport_only(self) -> None:
+        return
+
     async def _close_transport(self) -> None:
         return
 
@@ -239,18 +308,20 @@ class Stream:
         raise NotImplementedError()
 
     async def restart(self) -> None:
+        stream_name = self._stream_name()
         if self.reconnecting:
             return
         self.reconnecting = True
         try:
-            self.disconnect()
+            self.logger.debug(f'Restarting {stream_name} transport...')
+            self._stop_transport_only()
             await asyncio.sleep(0.1)
-            self.event_stream_stop_event = threading.Event()
             self.event_stream = None
             self.event_stream_thread = None
             self.initializing = True
             self.connected = False
             await self.start()
+            self.logger.debug(f'{stream_name} transport restart complete.')
         finally:
             self.reconnecting = False
 

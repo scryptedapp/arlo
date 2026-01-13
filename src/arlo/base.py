@@ -43,7 +43,20 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin):
     def __del__(self) -> None:
         try:
             self.stop_subscriptions = True
-            asyncio.run_coroutine_threadsafe(self.close(), self.provider.loop)
+        except Exception:
+            pass
+        try:
+            if self.provider and self.provider.loop is not None and not self.provider.loop.is_closed() and self.provider.loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.close(), self.provider.loop)
+                return
+        except Exception:
+            pass
+        try:
+            self.task_manager.cancel_by_owner(self)
+        except Exception:
+            pass
+        try:
+            self._cleanup()
         except Exception:
             pass
 
@@ -114,7 +127,7 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin):
             device_id = self.arlo_device.get('deviceId')
             if parent_id and parent_id != device_id:
                 provider_native_id = parent_id
-            if provider_native_id in getattr(self.provider, 'hidden_device_ids', []):
+            if provider_native_id in self.provider.hidden_device_ids:
                 provider_native_id = None
         hw_version: str = str(self.arlo_properties.get('hwVersion', '')).replace(self.arlo_device.get('modelId', ''), '') if self.arlo_properties else ''
         hw_version_cleaned = hw_version.replace('er', '').replace('r', '')

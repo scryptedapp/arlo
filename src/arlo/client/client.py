@@ -160,8 +160,8 @@ class ArloClient(object):
 
     @property
     def arlo_discovery_in_progress(self):
-        val = self.provider.storage.getItem('arlo_discovery_in_progress')
-        return str(val).lower() == 'true'
+        arlo_discovery_in_progress = self.provider.storage.getItem('arlo_discovery_in_progress')
+        return str(arlo_discovery_in_progress).lower() == 'true'
 
     async def login(self) -> None:
         try:
@@ -533,13 +533,6 @@ class ArloClient(object):
             await self.unsubscribe()
         except Exception as e:
             logger.warning(f'Error during unsubscribe: {e}')
-        if self.event_stream:
-            try:
-                await self.event_stream.close()
-            except Exception as e:
-                logger.warning(f'Error closing event stream: {e}')
-            finally:
-                self.event_stream = None
         if self.request:
             try:
                 await self.request.put(f'https://{self.arlo_api_url}/hmsweb/logout', suppress_restart_on_401=True)
@@ -729,12 +722,7 @@ class ArloClient(object):
                 else:
                     raise RuntimeError(f'Unknown event_stream_transport: {self.event_stream_transport}')
                 await self.event_stream.start()
-            wait_timeout = 10
-            waited = 0
-            poll_interval = 0.05
-            while not self.event_stream.connected and waited < wait_timeout:
-                await asyncio.sleep(poll_interval)
-                waited += poll_interval
+            await self.event_stream.wait_connected(timeout=10)
             if not self.event_stream or not self.event_stream.connected:
                 raise RuntimeError('Event stream failed to initialize or connect.')
             if basestation_camera_tuples:
@@ -824,10 +812,15 @@ class ArloClient(object):
 
     async def unsubscribe(self) -> None:
         try:
-            if self.event_stream and self.event_stream.connected:
-                self.event_stream.disconnect()
-                await self.request.get(f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe', suppress_restart_on_401=True)
+            stream = self.event_stream
             self.event_stream = None
+            if stream and stream.connected:
+                await self.request.get(
+                    f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe',
+                    suppress_restart_on_401=True,
+                )
+            if stream:
+                await stream.close()
         except UnauthorizedRestartException:
             logger.warning('Session expired (401) in unsubscribe; clearing event_stream.')
             self.event_stream = None

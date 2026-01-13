@@ -18,9 +18,9 @@ class MQTTEventStream(Stream):
     def _gen_client_id(self) -> str:
         return f'user_{self.arlo.user_id}_{random.randint(1_000_000_000, 9_999_999_999)}'
 
-    def _add_and_subscribe(self, client: mqtt.Client, topics: list[str]) -> None:
+    def _cache_topics(self, topics: list[str]) -> list[tuple[str, int]]:
         if not topics:
-            return
+            return []
         seen: set[str] = set()
         deduped_topics: list[str] = []
         for topic in topics:
@@ -31,24 +31,40 @@ class MQTTEventStream(Stream):
         unique_new_subs: list[tuple[str, int]] = [t for t in new_subs if t not in self.cached_topics]
         if unique_new_subs:
             self.cached_topics.extend(unique_new_subs)
+        return unique_new_subs
+
+    def _add_and_subscribe(self, client: mqtt.Client, topics: list[str]) -> None:
+        stream_name = self._stream_name()
+        unique_new_subs = self._cache_topics(topics)
+        if unique_new_subs:
             try:
                 client.subscribe(unique_new_subs)
                 self.logger.debug(
-                    f'Subscribed to MQTT Event Stream topics: {json.dumps([t[0] for t in unique_new_subs], indent=2)}'
+                    f'Subscribed to {stream_name} topics: {json.dumps([t[0] for t in unique_new_subs], indent=2)}'
                 )
             except Exception as e:
-                self.logger.error(f'MQTT Event Stream subscription error: {e}')
+                self.logger.error(f'{stream_name} subscription error: {e}')
 
     async def start(self, retry_limit: int = 4) -> None:
+        stream_name = self._stream_name()
         if self.event_stream is not None:
-            self.logger.debug('MQTT Event Stream already initialized. Skipping start.')
+            self.logger.debug(f'{stream_name} already initialized. Skipping start.')
             return
+        self.logger.debug(
+            f'Starting {stream_name} (host={self.arlo.mqtt_url}, transport={self.arlo.mqtt_transport})'
+        )
 
         def on_connect(client: mqtt.Client, userdata: Any, flags: dict[str, Any], rc: int) -> None:
-            if rc == 0:
-                self.connected = True
-                self.initializing = False
-                self.logger.debug(f'MQTT Event Stream {id(client)} connected.')
+            if rc != 0:
+                self.logger.error(f'{stream_name} {id(client)} failed to connect with return code {rc}.')
+                self._call_soon_threadsafe(
+                    self._fail_connect_wait,
+                    RuntimeError(f'{stream_name} {id(client)} failed to connect with return code {rc}.')
+                )
+                return
+
+            def handle_connected() -> None:
+                self._mark_connected(f'{stream_name} {id(client)} connected.')
                 session_topics = [
                     f'u/{self.arlo.user_id}/in/userSession/connect',
                     f'u/{self.arlo.user_id}/in/userSession/disconnect',
@@ -56,20 +72,17 @@ class MQTTEventStream(Stream):
                 if self.arlo.mvss_enabled:
                     session_topics.append(f'u/{self.arlo.user_id}/in/automation/activeMode/#')
                 self._add_and_subscribe(client, session_topics)
-                if not self.reconnecting:
-                    self.cached_topics.clear()
-            else:
-                self.logger.error(f'MQTT Event Stream {id(client)} failed to connect with return code {rc}.')
+
+            self._call_soon_threadsafe(handle_connected)
 
         def on_disconnect(client: mqtt.Client, userdata: Any, rc: int) -> None:
-            self.logger.warning(f'MQTT Event Stream {id(client)} disconnected with return code {rc}.')
+            self.logger.warning(f'{stream_name} {id(client)} disconnected with return code {rc}.')
             if rc != 0:
                 self.logger.error(
-                    f'MQTT Event Stream {id(client)} unexpected disconnection. Triggering login restart.'
+                    f'{stream_name} {id(client)} unexpected disconnection. Triggering login restart.'
                 )
                 try:
-                    if self.arlo and getattr(self.arlo, 'provider', None) is not None:
-                        self.arlo.provider.request_restart(scope='relogin')
+                    self.arlo.provider.request_restart(scope='relogin')
                 except Exception as e:
                     self.logger.error(f'Error requesting provider restart after MQTT disconnect: {e}')
 
@@ -86,26 +99,29 @@ class MQTTEventStream(Stream):
                 self.logger.error(f'Unexpected MQTT message handling error: {e}')
 
         async def connect_with_timeout(client: mqtt.Client, host: str, port: int, timeout: int = 10) -> bool:
-            done: asyncio.Event = asyncio.Event()
-
-            def on_connect_timeout(client: mqtt.Client, userdata: Any, flags: dict[str, Any], rc: int) -> None:
-                if rc == 0:
-                    on_connect(client, userdata, flags, rc)
-                    done.set()
-                else:
-                    self.logger.error(f'MQTT Event Stream connect failed with return code {rc}.')
-                    done.set()
-
-            client.on_connect = on_connect_timeout
+            self._begin_connect_wait()
+            client.on_connect = on_connect
             client.connect_async(host, port)
             client.loop_start()
             try:
-                await asyncio.wait_for(done.wait(), timeout=timeout)
+                await self._await_connected(timeout=timeout)
                 return client.is_connected()
             except asyncio.TimeoutError:
-                self.logger.error(f'MQTT Event Stream connect to {host}:{port} timed out after {timeout} seconds')
-                client.loop_stop()
+                self.logger.error(f'{stream_name} connect to {host}:{port} timed out after {timeout} seconds')
                 return False
+            except Exception as e:
+                self.logger.error(f'{stream_name} connect error: {e}')
+                return False
+            finally:
+                if not self.connected:
+                    try:
+                        client.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        client.loop_stop(force=True)
+                    except Exception:
+                        pass
 
         async def try_connect() -> bool:
             retries: int = 0
@@ -113,6 +129,7 @@ class MQTTEventStream(Stream):
 
             while retries < retry_limit and not self.event_stream_stop_event.is_set():
                 try:
+                    self.logger.debug(f'Attempting {stream_name} connect to {self.arlo.mqtt_url}:{self.arlo.mqtt_port}...')
                     self.event_stream = mqtt.Client(
                         client_id=self._gen_client_id(),
                         transport=self.arlo.mqtt_transport,
@@ -154,52 +171,50 @@ class MQTTEventStream(Stream):
 
         if not await try_connect():
             self.logger.error(
-                f'MQTTStream start failed: could not establish connection after {retry_limit - 1} retries. '
+                f'{stream_name} start failed: could not establish connection after {retry_limit - 1} retries. '
                 f'Triggering login restart.'
             )
             self.event_stream = None
             try:
-                if self.arlo and getattr(self.arlo, 'provider', None) is not None:
+                if self.arlo and self.arlo.provider is not None:
                     self.arlo.provider.request_restart(scope='relogin')
             except Exception as e:
                 self.logger.error(f'Error requesting provider restart after MQTT start failure: {e}')
             return
-        wait_timeout = 10
-        waited = 0
-        poll_interval = 0.05
-        while not self.connected and not self.event_stream_stop_event.is_set() and waited < wait_timeout:
-            await asyncio.sleep(poll_interval)
-            waited += poll_interval
-        if not self.connected:
-            self.logger.error('MQTT Event Stream failed to connect within timeout.')
-            self.event_stream = None
-            return
         if not self.event_stream_stop_event.is_set():
+            self.logger.debug(f'{stream_name} start complete; resubscribing cached topics if any.')
             self.resubscribe()
 
     def subscribe(self, topics: list[str]) -> None:
+        stream_name = self._stream_name()
         if self.event_stream and self.connected:
             self._add_and_subscribe(self.event_stream, topics)
+            return
+        cached = self._cache_topics(topics)
+        if cached:
+            self.logger.debug(f'{stream_name} not connected. Cached new topics for later.')
         else:
-            self.logger.debug('MQTT Event Stream not connected. Topics will be cached for later.')
+            self.logger.debug(f'{stream_name} not connected. No new topics to cache.')
 
     def resubscribe(self) -> None:
+        stream_name = self._stream_name()
         if self.connected and self.event_stream and self.cached_topics:
-            self.logger.debug('Resubscribing to cached MQTT topics.')
+            self.logger.debug(f'Resubscribing to cached {stream_name} topics.')
             try:
                 self.event_stream.subscribe(self.cached_topics)
             except Exception as e:
-                self.logger.error(f'Resubscribe to cached MQTT topics failed: {e}')
+                self.logger.error(f'Resubscribe to cached {stream_name} topics failed: {e}')
 
-    def disconnect(self) -> None:
-        self.logger.debug('Disconnecting MQTT Event Stream...')
-        super().disconnect()
+    def _disconnect_transport_only(self) -> None:
         if self.event_stream:
             try:
                 self.event_stream.disconnect()
-                self.event_stream.loop_stop()
-            except Exception as e:
-                self.logger.warning(f'Error during MQTT Event Stream disconnect: {e}')
+            except Exception:
+                pass
+            try:
+                self.event_stream.loop_stop(force=True)
+            except Exception:
+                pass
 
     async def _close_transport(self) -> None:
         client = self.event_stream
@@ -210,7 +225,7 @@ class MQTTEventStream(Stream):
         except Exception:
             pass
         try:
-            client.loop_stop()
+            client.loop_stop(force=True)
         except Exception:
             pass
         self.event_stream = None

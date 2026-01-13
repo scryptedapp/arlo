@@ -36,15 +36,15 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
             if self.stop_subscriptions:
                 return
             try:
-                if getattr(self, 'storage', None) is not None:
+                if self.storage is not None:
                     break
                 else:
                     await asyncio.sleep(0.1)
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem  storage, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem  storage, giving up.')
             return
         for _ in range(100):
             if self.stop_subscriptions:
@@ -60,10 +60,10 @@ class ArloBaseVirtualSecuritySystem(ArloDeviceBase, SecuritySystem, Settings, Re
                 }
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloBaseVirtualSecuritySystem security system state, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem security system state, giving up.')
             return
 
     @property
@@ -248,10 +248,10 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
                 scrypted_sdk.deviceManager.getDeviceState(self.nativeId)
                 break
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem device state, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem device state, giving up.')
             return
         for _ in range(100):
             if self.stop_subscriptions:
@@ -267,10 +267,10 @@ class ArloModeVirtualSecuritySystem(ArloBaseVirtualSecuritySystem):
                 self._init_completed = True
                 return
             except Exception as e:
-                self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem {self.nativeId}, will try again: {e}')
+                self.logger.debug(f'Delayed init failed for ArloModeVirtualSecuritySystem security system state, will try again: {e}')
                 await asyncio.sleep(0.1)
         else:
-            self.logger.error(f'Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem {self.nativeId}, giving up.')
+            self.logger.error(f'Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem security system state, giving up.')
             return
 
     async def _get_initial_mode_and_revision(self):

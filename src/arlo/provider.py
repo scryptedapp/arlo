@@ -76,7 +76,10 @@ class ArloProvider(
         self._login_lock = asyncio.Lock()
         self._login_future: asyncio.Future = None
         self._imap_ready_event: asyncio.Event = asyncio.Event()
-        self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+        try:
+            self.loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
         self._http_session: aiohttp.ClientSession | None = None
         self._http_session_lock = asyncio.Lock()
         self._set_login_futures()
@@ -195,7 +198,7 @@ class ArloProvider(
             except Exception as e:
                 self.logger.error(f'Error during plugin initialization: {e}', exc_info=True)
 
-    async def _force_devices_load(self):
+    async def _force_devices_load(self) -> None:
         self.logger.debug('Forcing plugin to load saved devices...')
         manifest = {
             'info': {
@@ -886,11 +889,11 @@ class ArloProvider(
                     async with self.device_lock:
                         if relogin:
                             self.logger.info('Forcing account relogin.')
-                            await self._shutdown(clear_cookies=False)
+                            await self._shutdown_locked(clear_cookies=False)
                             await self._initialize_plugin()
                         if restart:
                             self.logger.info('Forcing full restart.')
-                            await self._shutdown(clear_cookies=True)
+                            await self._shutdown_locked(clear_cookies=True)
                             await self._initialize_plugin()
                 elif event_stream:
                     async with self.device_lock:
@@ -906,37 +909,40 @@ class ArloProvider(
 
     async def _shutdown(self, clear_cookies: bool) -> None:
         async with self.device_lock:
+            await self._shutdown_locked(clear_cookies=clear_cookies)
+
+    async def _shutdown_locked(self, clear_cookies: bool) -> None:
+        try:
+            self.storage.setItem('arlo_discovery_in_progress', 'false')
+        except Exception:
+            pass
+        try:
+            await self.close_http_session()
+        except Exception:
+            pass
+        if clear_cookies:
+            self.storage.setItem('arlo_cookies', None)
+        for device in list(self.scrypted_devices.values()):
             try:
-                self.storage.setItem('arlo_discovery_in_progress', 'false')
+                await device.close()
             except Exception:
                 pass
-            try:
-                await self.close_http_session()
-            except Exception:
-                pass
-            if clear_cookies:
-                self.storage.setItem('arlo_cookies', None)
-            for device in list(self.scrypted_devices.values()):
-                try:
-                    await device.close()
-                except Exception:
-                    pass
-            try:
-                await self.task_manager.cancel_and_await_by_tag('initialize_plugin', owner=self)
-                await self.task_manager.cancel_and_await_by_tag('periodic_discovery', owner=self)
-                await self.task_manager.cancel_and_await_by_tag('periodic_refresh', owner=self)
-                await self.task_manager.cancel_and_await_by_tag('refresh', owner=self)
-            except Exception:
-                pass
-            try:
-                await self._cleaning_up_login_tasks()
-            except Exception:
-                pass
-            try:
-                await self._reset_arlo_client()
-            except Exception:
-                pass
-            self.logger.info(f'Provider shutdown finished')
+        try:
+            await self.task_manager.cancel_and_await_by_tag('initialize_plugin', owner=self)
+            await self.task_manager.cancel_and_await_by_tag('periodic_discovery', owner=self)
+            await self.task_manager.cancel_and_await_by_tag('periodic_refresh', owner=self)
+            await self.task_manager.cancel_and_await_by_tag('refresh', owner=self)
+        except Exception:
+            pass
+        try:
+            await self._cleaning_up_login_tasks()
+        except Exception:
+            pass
+        try:
+            await self._reset_arlo_client()
+        except Exception:
+            pass
+        self.logger.info('Provider shutdown finished')
 
     async def _device_handler(self, periodic_discovery: bool | None = None) -> None:
         async with self.device_lock:
@@ -1124,7 +1130,7 @@ class ArloProvider(
             if username and password and (username != prev_user or password != prev_pass):
                 self.request_restart('restart')
         if key == 'arlo_mfa_code':
-            if self._login_future and not self._login_future.done() and getattr(self, 'manual_mfa_signal', None):
+            if self._login_future and not self._login_future.done() and self.manual_mfa_signal:
                 self.logger.debug(f'Entered MFA code: {value}')
                 await self.manual_mfa_signal.put(value)
         elif key == 'force_mfa_reauthentication':
