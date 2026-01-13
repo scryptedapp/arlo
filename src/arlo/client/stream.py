@@ -219,7 +219,7 @@ class Stream:
         return f'{resource}/{action}' + (f'/{property}' if property else '')
 
     def _queue_response(self, response: dict[str, Any]) -> None:
-        if self.arlo.arlo_discovery_in_progress == False:
+        if self.arlo.arlo_discovery_in_progress is True:
             if not self._is_discovery_event(response):
                 self.logger.debug(f'Buffering event during discovery: {response}')
                 self._buffer_event(response)

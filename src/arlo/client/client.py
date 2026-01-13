@@ -1058,6 +1058,30 @@ class ArloClient(object):
         )
         return task
 
+    def subscribe_to_snapshot_events(self, camera: dict, callback: Callable) -> asyncio.Task:
+        resource = f'cameras/{camera.get("deviceId")}'
+
+        def callbackwrapper(event: dict):
+            if 'to' in event:
+                return None
+            if 'error' in event:
+                return None
+            properties: dict = event.get('properties') or {}
+            url = properties.get('presignedLastImageUrl')
+            if url:
+                return callback(url)
+            return None
+
+        actions = [
+            ('lastImageSnapshotAvailable', 'presignedLastImageUrl'),
+        ]
+
+        task = self.task_manager.create_task(
+            self._handle_events(resource, actions, callbackwrapper),
+            tag=f'event_listener:{resource}', owner=self
+        )
+        return task
+
     async def trigger_full_frame_snapshot(self, camera: dict) -> str:
         resource = f'cameras/{camera.get("deviceId")}'
         actions = [

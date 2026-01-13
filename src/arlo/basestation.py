@@ -36,7 +36,7 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                 return
             try:
                 if not self.arlo_properties:
-                    await self.refresh_device()
+                    self.arlo_properties = await self.provider._get_device_properties(self.arlo_device)
                 if self.has_local_live_streaming:
                     await self._check_certificates()
                 if self.has_local_live_streaming:

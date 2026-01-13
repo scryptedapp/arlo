@@ -121,6 +121,7 @@ class ArloCamera(
         self._start_error_subscription()
         self._start_device_state_subscription()
         self._start_activity_state_subscription()
+        self._start_snapshot_subscription()
         self._start_motion_subscription()
         self._start_audio_subscription()
         self._start_battery_subscription()
@@ -132,7 +133,7 @@ class ArloCamera(
                 return
             try:
                 if not self.arlo_properties:
-                    await self.refresh_device()
+                    self.arlo_properties = await self.provider._get_device_properties(self.arlo_device)
                 if self.has_battery:
                     self.batteryLevel = self.arlo_properties.get('batteryLevel', 0)
                     self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
@@ -181,6 +182,32 @@ class ArloCamera(
             self.arlo_device, callback,
             event_key='activity_state_subscription'
         )
+
+    def _start_snapshot_subscription(self) -> None:
+        def callback(presigned_url: str):
+            if presigned_url:
+                self.task_manager.create_task(
+                    self._get_snapshot_from_event_url(presigned_url),
+                    tag=f'snapshot_event_update:{self.nativeId}',
+                    owner=self,
+                )
+            return self.stop_subscriptions
+
+        self._create_or_register_event_subscription(
+            self.provider.arlo.subscribe_to_snapshot_events,
+            self.arlo_device, callback,
+            event_key='snapshot_subscription'
+        )
+
+    async def _get_snapshot_from_event_url(self, snapshot_url: str) -> None:
+        try:
+            async with self.snapshot_lock:
+                buf: bytes = await self._get_buffer_from_url(snapshot_url)
+                await self._create_snapshot_from_buffer(buf)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.debug(f'Failed to update snapshot from subscription event url: {e}')
 
     def _start_motion_subscription(self) -> None:
         def callback(motion_detected: bool):
@@ -693,6 +720,8 @@ class ArloCamera(
             snapshot_url: str = await asyncio.wait_for(
                 self.provider.arlo.trigger_full_frame_snapshot(self.arlo_device), timeout=self.timeout
             )
+        except asyncio.TimeoutError:
+            raise ValueError('Timed out waiting for snapshot URL from Arlo Cloud')
         except Exception as e:
             raise ValueError(f'Failed to get snapshot URL: {e}')
         if not snapshot_url:
