@@ -1542,9 +1542,12 @@ class ArloProvider(
     async def _get_device_properties(self, basestation: dict, camera: dict = None) -> dict:
         properties = {}
         try:
-            properties = await asyncio.wait_for(self.arlo.trigger_properties(basestation, camera), timeout=10)
+            properties = await asyncio.wait_for(self.arlo.trigger_properties(basestation, camera), timeout=5)
         except asyncio.TimeoutError:
-            self.logger.error(f'Timeout while fetching properties for {camera["deviceId"] if camera else basestation["deviceId"]}')
+            try:
+                properties = await asyncio.wait_for(self.arlo.trigger_properties(basestation, camera), timeout=5)
+            except asyncio.TimeoutError:
+                self.logger.error(f'Timeout while fetching properties for {camera["deviceId"] if camera else basestation["deviceId"]}')
         except Exception as e:
             self.logger.error(f'Error while fetching properties for {camera["deviceId"] if camera else basestation["deviceId"]}: {e}')
         return properties
