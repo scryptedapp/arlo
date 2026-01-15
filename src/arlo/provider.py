@@ -85,6 +85,7 @@ class ArloProvider(
         self._set_login_futures()
         self.full_reset_needed: bool = False
         self.device_lock = asyncio.Lock()
+        self._periodic_lock = asyncio.Lock()
         self.cleanup_devices: bool = False
         self._check_and_migrate_storage()
         self._propagate_log_level()
@@ -224,9 +225,10 @@ class ArloProvider(
             await asyncio.sleep(self.device_discovery_interval * 60)
             while True:
                 try:
-                    self.storage.setItem('arlo_discovery_in_progress', 'true')
-                    self.logger.info('Running periodic device discovery...')
-                    await self._device_handler(True)
+                    async with self._periodic_lock:
+                        self.storage.setItem('arlo_discovery_in_progress', 'true')
+                        self.logger.info('Running periodic device discovery...')
+                        await self._device_handler(True)
                 except Exception as e:
                     self.logger.error(f'Error during periodic device discovery: {e}', exc_info=True)
                 finally:
@@ -245,15 +247,16 @@ class ArloProvider(
             await asyncio.sleep(self.device_refresh_interval * 60)
             while True:
                 try:
-                    self.logger.info('Running periodic device refresh...')
-                    async with self.device_lock:
-                        for device in self.scrypted_devices.values():
-                            if isinstance(device, ArloModeVirtualSecuritySystem):
-                                continue
-                            try:
-                                await device.refresh_device()
-                            except Exception as e:
-                                self.logger.error(f'Error refreshing {device.arlo_device["deviceName"]}: {e}', exc_info=True)
+                    async with self._periodic_lock:
+                        self.logger.info('Running periodic device refresh...')
+                        async with self.device_lock:
+                            for device in self.scrypted_devices.values():
+                                if isinstance(device, ArloModeVirtualSecuritySystem):
+                                    continue
+                                try:
+                                    await device.refresh_device()
+                                except Exception as e:
+                                    self.logger.error(f'Error refreshing {device.arlo_device["deviceName"]}: {e}', exc_info=True)
                 except Exception as e:
                     self.logger.error(f'Error during periodic device refresh: {e}', exc_info=True)
                 await asyncio.sleep(self.device_refresh_interval * 60)
@@ -661,19 +664,22 @@ class ArloProvider(
                 elapsed += sleep_time
                 if elapsed >= hard_interval:
                     self.logger.debug('Hard MFA refresh interval reached, forcing full login.')
-                    async with self.device_lock:
-                        await self.arlo.cancel_heartbeat()
-                        await self._initialize_plugin()
+                    async with self._periodic_lock:
+                        async with self.device_lock:
+                            await self.arlo.cancel_heartbeat()
+                            await self._initialize_plugin()
                     break
                 else:
                     self.logger.debug('Session refresh interval reached, re-logging in.')
-                    async with self.device_lock:
-                        self.arlo.finialized_login = False
-                        self.arlo.token = None
-                        self.arlo.logged_in = False
-                        await self.arlo.cancel_heartbeat()
-                        await self._login()
-                        await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
+                    async with self._periodic_lock:
+                        async with self.device_lock:
+                            self.arlo.finialized_login = False
+                            self.arlo.token = None
+                            self.arlo.logged_in = False
+                            await self.arlo.cancel_heartbeat()
+                            await self._login()
+                            await self._subscribe_to_event_stream()
+                            await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
         except asyncio.CancelledError:
             pass
 
@@ -817,20 +823,21 @@ class ArloProvider(
 
     async def _do_arlo_setup(self) -> None:
         try:
-            self.storage.setItem('arlo_discovery_in_progress', 'true')
-            self.arlo_cameras = {}
-            self.arlo_basestations = {}
-            self.arlo_mvss = {}
-            self.all_device_ids = []
-            self.scrypted_devices = {}
-            await self.arlo.subscribe()
-            async with self.device_lock:
-                if self.cleanup_devices:
-                    await self._cleanup_devices()
-                    self.cleanup_devices = False
-                    self.storage.setItem('plugin_version', PLUGIN_VERSION)
-                await self.mdns()
-            await self._device_handler()
+            async with self._periodic_lock:
+                self.storage.setItem('arlo_discovery_in_progress', 'true')
+                self.arlo_cameras = {}
+                self.arlo_basestations = {}
+                self.arlo_mvss = {}
+                self.all_device_ids = []
+                self.scrypted_devices = {}
+                await self.arlo.subscribe()
+                async with self.device_lock:
+                    if self.cleanup_devices:
+                        await self._cleanup_devices()
+                        self.cleanup_devices = False
+                        self.storage.setItem('plugin_version', PLUGIN_VERSION)
+                    await self.mdns()
+                await self._device_handler()
         except requests.exceptions.HTTPError:
             self.logger.exception('HTTP error during Arlo login')
             self.logger.error('Will retry with fresh login')
@@ -881,29 +888,30 @@ class ArloProvider(
     ) -> None:
         try:
             async with self._restart_lock:
-                if refresh_login_loop:
-                    await self.task_manager.cancel_and_await_by_tag('refresh', owner=self)
-                    if self.arlo and self.arlo.logged_in:
-                        self.task_manager.create_task(self._refresh_login_loop(), tag='refresh', owner=self)
-                elif restart or relogin:
-                    async with self.device_lock:
-                        if relogin:
-                            self.logger.info('Forcing account relogin.')
-                            await self._shutdown_locked(clear_cookies=False)
-                            await self._initialize_plugin()
-                        if restart:
-                            self.logger.info('Forcing full restart.')
-                            await self._shutdown_locked(clear_cookies=True)
-                            await self._initialize_plugin()
-                elif event_stream:
-                    async with self.device_lock:
+                async with self._periodic_lock:
+                    if refresh_login_loop:
+                        await self.task_manager.cancel_and_await_by_tag('refresh', owner=self)
                         if self.arlo and self.arlo.logged_in:
-                            self.arlo.event_stream_transport = self.arlo_event_stream_transport
-                            await self.arlo.unsubscribe()
-                        await self._subscribe_to_event_stream()
-                else:
-                    self.logger.error('No valid restart scope provided.')
-                return
+                            self.task_manager.create_task(self._refresh_login_loop(), tag='refresh', owner=self)
+                    elif restart or relogin:
+                        async with self.device_lock:
+                            if relogin:
+                                self.logger.info('Forcing account relogin.')
+                                await self._shutdown_locked(clear_cookies=False)
+                                await self._initialize_plugin()
+                            if restart:
+                                self.logger.info('Forcing full restart.')
+                                await self._shutdown_locked(clear_cookies=True)
+                                await self._initialize_plugin()
+                    elif event_stream:
+                        async with self.device_lock:
+                            if self.arlo and self.arlo.logged_in:
+                                self.arlo.event_stream_transport = self.arlo_event_stream_transport
+                                await self.arlo.unsubscribe()
+                            await self._subscribe_to_event_stream()
+                    else:
+                        self.logger.error('No valid restart scope provided.')
+                    return
         except Exception as e:
             self.logger.error(f'Error during handle restart: {e}', exc_info=True)
 
@@ -1157,8 +1165,8 @@ class ArloProvider(
                 self.storage.setItem(key, 'true' if value else 'false')
             else:
                 self.storage.setItem(key, value)
-            self._imap_settings_ready()
-            self.request_restart('refresh_login_loop')
+            if self._imap_settings_ready():
+                self.request_restart('refresh_login_loop')
         elif key in ('hidden_devices', 'mvss_enabled'):
             self.storage.setItem(key, 'true' if (key == 'mvss_enabled' and value) else value)
             if self.arlo and self.arlo.logged_in:

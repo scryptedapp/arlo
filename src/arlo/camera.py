@@ -96,6 +96,7 @@ class ArloCamera(
     def __init__(self, nativeId: str, arlo_device: dict, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self._active_rtc_sessions: set[ArloCameraWebRTCSignalingSession] = set()
+        self._last_snapshot_url: str = ''
 
     async def close(self) -> None:
         for session in list(self._active_rtc_sessions):
@@ -202,8 +203,10 @@ class ArloCamera(
     async def _get_snapshot_from_event_url(self, snapshot_url: str) -> None:
         try:
             async with self.snapshot_lock:
-                buf: bytes = await self._get_buffer_from_url(snapshot_url)
-                await self._create_snapshot_from_buffer(buf)
+                await asyncio.sleep(1)
+                if snapshot_url != self._last_snapshot_url:
+                    buf: bytes = await self._get_buffer_from_url(snapshot_url)
+                    await self._create_snapshot_from_buffer(buf)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -717,9 +720,10 @@ class ArloCamera(
         self.logger.debug('Getting snapshot URL')
         try:
             await self._wait_for_state_change()
-            snapshot_url: str = await asyncio.wait_for(
+            self._last_snapshot_url: str = await asyncio.wait_for(
                 self.provider.arlo.trigger_full_frame_snapshot(self.arlo_device), timeout=self.timeout
             )
+            snapshot_url = self._last_snapshot_url
         except asyncio.TimeoutError:
             raise ValueError('Timed out waiting for snapshot URL from Arlo Cloud')
         except Exception as e:

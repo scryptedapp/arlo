@@ -1067,12 +1067,13 @@ class ArloClient(object):
             if 'error' in event:
                 return None
             properties: dict = event.get('properties') or {}
-            url = properties.get('presignedLastImageUrl')
+            url = properties.get('presignedFullFrameSnapshotUrl') or properties.get('presignedLastImageUrl')
             if url:
                 return callback(url)
             return None
 
         actions = [
+            ('fullFrameSnapshotAvailable', 'presignedFullFrameSnapshotUrl'),
             ('lastImageSnapshotAvailable', 'presignedLastImageUrl'),
         ]
 
