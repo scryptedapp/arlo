@@ -137,7 +137,7 @@ class ArloProvider(ScryptedDeviceBase, Settings, DeviceProvider, ScryptedDeviceL
         new_only_keys = [
             'arlo_device_id', 'extra_debug_logging', 'device_discovery_interval',
             'device_refresh_interval', 'disable_plugin', 'arlo_public_key',
-            'arlo_private_key', 'mdns_services'
+            'arlo_private_key', 'mdns_services', 'arlo_discovery_in_progress'
         ]
         for key in new_only_keys:
             if self.storage.getItem(key) is not None:
