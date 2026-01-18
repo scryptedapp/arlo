@@ -162,6 +162,7 @@ class ArloProvider(
             'arlo_public_key': None,
             'arlo_private_key': None,
             'mdns_services': {},
+            'auto_snapshot_generation': 'false',
         }
         for key, default in defaults.items():
             if self.storage.getItem(key) is None:
@@ -430,6 +431,14 @@ class ArloProvider(
             mvss = 'false'
             self.storage.setItem('mvss_enabled', mvss)
         return str(mvss).lower() == 'true'
+
+    @property
+    def auto_snapshot_generation(self) -> bool:
+        auto_snapshot_generation = self.storage.getItem('auto_snapshot_generation')
+        if auto_snapshot_generation is None:
+            auto_snapshot_generation = 'false'
+            self.storage.setItem('auto_snapshot_generation', auto_snapshot_generation)
+        return str(auto_snapshot_generation).lower() == 'true'
 
     @property
     def plugin_log_level(self) -> str:
@@ -1111,10 +1120,18 @@ class ArloProvider(
             {
                 'group': 'General',
                 'key': 'mvss_enabled',
-                'title': 'Allow Scrypted to Control Arlo Security Modes',
-                'description': 'Enable allowing Scrypted to handle changing Security Modes in the Arlo App.',
+                'title': 'Control Arlo Security Modes',
+                'description': 'Allow Scrypted to handle changing Security Modes in the Arlo App.',
                 'type': 'boolean',
                 'value': self.mvss_enabled,
+            },
+            {
+                'group': 'General',
+                'key': 'auto_snapshot_generation',
+                'title': 'Automatic Snapshot Generation',
+                'description': 'Allow Scrypted to automatically refresh snapshots for faster downstream plugins.',
+                'type': 'boolean',
+                'value': self.auto_snapshot_generation,
             },
             {
                 'group': 'General',
@@ -1171,6 +1188,14 @@ class ArloProvider(
             self.storage.setItem(key, 'true' if (key == 'mvss_enabled' and value) else value)
             if self.arlo and self.arlo.logged_in:
                 self.request_restart('relogin')
+        elif key == 'auto_snapshot_generation':
+            self.storage.setItem(key, 'true' if value else 'false')
+            for device in list(self.scrypted_devices.values()):
+                if isinstance(device, ArloCamera) or isinstance(device, ArloDoorbell):
+                    try:
+                        await device._update_auto_snapshot()
+                    except Exception as e:
+                        self.logger.debug(f'Failed to update auto snapshot refresh for {device.nativeId}: {e}')
         elif key in ('device_refresh_interval', 'device_discovery_interval'):
             self.storage.setItem(key, str(value))
             periodic_map = {
@@ -1207,7 +1232,7 @@ class ArloProvider(
             elif key == 'mfa_strategy':
                 if val not in ArloProvider.mfa_strategy_choices:
                     raise ValueError(f'must be one of {ArloProvider.mfa_strategy_choices}')
-            elif key in ('disable_plugin', 'imap_mfa_use_local_index'):
+            elif key in ('disable_plugin', 'imap_mfa_use_local_index', 'auto_snapshot_generation', 'mvss_enabled'):
                 if isinstance(val, str) and val.lower() not in ('true', 'false'):
                     raise ValueError('must be boolean true/false')
         except ValueError as e:

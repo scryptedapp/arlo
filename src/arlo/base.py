@@ -33,6 +33,8 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin):
         self.arlo_properties = arlo_properties
         self.provider = provider
         self.logger.setLevel(self.provider.get_current_log_level())
+        self.stop_subscriptions = None
+        self.active_event_subscriptions = {}
         self._ready_event = asyncio.Event()
         self.task_manager = self.provider.task_manager
         self._close_lock = asyncio.Lock()

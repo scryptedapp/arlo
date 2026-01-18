@@ -712,8 +712,9 @@ class ArloClient(object):
             logger.warning('Session expired (401) in set_mode.')
             return
 
-    async def subscribe(self, basestation_camera_tuples: list[tuple[dict[str, Any], dict[str, Any]]] = []) -> None:
+    async def subscribe(self, basestation_camera_tuples: list[tuple[dict[str, Any], dict[str, Any]]] = None) -> None:
         try:
+            basestation_camera_tuples = basestation_camera_tuples or []
             if not self.event_stream or (not self.event_stream.initializing and not self.event_stream.connected):
                 if self.event_stream_transport == 'MQTT':
                     self.event_stream = MQTTEventStream(self)

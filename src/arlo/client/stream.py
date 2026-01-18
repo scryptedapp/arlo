@@ -220,7 +220,7 @@ class Stream:
 
     def _queue_response(self, response: dict[str, Any]) -> None:
         if self.arlo.arlo_discovery_in_progress is True:
-            if not self._is_discovery_event(response):
+            if self._should_buffer_during_discovery(response):
                 self.logger.debug(f'Buffering event during discovery: {response}')
                 self._buffer_event(response)
                 return
@@ -249,6 +249,29 @@ class Stream:
                 or 'localCert' in properties
             )
         )
+
+    def _is_realtime_event(self, response: dict[str, Any]) -> bool:
+        resource = response.get('resource', '')
+        action = response.get('action')
+        properties: dict[str, Any] = response.get('properties', {})
+        if not isinstance(properties, dict):
+            properties = {}
+        if isinstance(resource, str) and resource.startswith('cameras/'):
+            if action == 'fullFrameSnapshotAvailable':
+                return True
+            if action == 'is' and (
+                'activityState' in properties
+                or 'presignedFullFrameSnapshotUrl' in properties
+            ):
+                return True
+        return False
+
+    def _should_buffer_during_discovery(self, response: dict[str, Any]) -> bool:
+        if self._is_discovery_event(response):
+            return False
+        if self._is_realtime_event(response):
+            return False
+        return True
 
     def _buffer_event(self, response: dict) -> None:
         self._event_buffer.append(response)

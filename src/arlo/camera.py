@@ -81,14 +81,13 @@ class ArloCamera(
         v: k for k, v in SCRYPTED_TO_ARLO_BRIGHTNESS_MAP.items()
     }
 
-    timeout: int = 15
+    timeout: int = 10
     intercom: ArloIntercom = None
     light: ArloBaseLight = None
     speaker: Intercom = None
     svss: ArloSirenVirtualSecuritySystem = None
     device_state: str = None
     activity_state: str = None
-    snapshot_lock: asyncio.Lock = asyncio.Lock()
     last_snapshot: MediaObject = None
     last_snapshot_time: datetime = datetime(1970, 1, 1)
     intercom_active: bool = False
@@ -97,6 +96,17 @@ class ArloCamera(
         super().__init__(nativeId=nativeId, arlo_device=arlo_device, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
         self._active_rtc_sessions: set[ArloCameraWebRTCSignalingSession] = set()
         self._last_snapshot_url: str = ''
+        self._skip_prebuffer_on_first_auto_snapshot: bool = True
+        self.snapshot_lock = asyncio.Lock()
+        self.intercom = None
+        self.light = None
+        self.speaker = None
+        self.svss = None
+        self.device_state = None
+        self.activity_state = None
+        self.last_snapshot = None
+        self.last_snapshot_time = datetime(1970, 1, 1)
+        self.intercom_active = False
 
     async def close(self) -> None:
         for session in list(self._active_rtc_sessions):
@@ -135,11 +145,6 @@ class ArloCamera(
             try:
                 if not self.arlo_properties:
                     self.arlo_properties = await self.provider._get_device_properties(self.arlo_device)
-                if not self.last_snapshot:
-                    presigned_url: str = self.arlo_device.get('presignedFullFrameSnapshotUrl', '')
-                    if presigned_url:
-                        buf: bytes = await self._get_buffer_from_url(presigned_url)
-                        await self._create_snapshot_from_buffer(buf)
                 if self.has_battery:
                     self.batteryLevel = self.arlo_properties.get('batteryLevel', 0)
                     self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
@@ -148,6 +153,7 @@ class ArloCamera(
                 self.device_state = self.arlo_properties.get('connectionState', 'unavailable')
                 self.activity_state = self.arlo_properties.get('activityState', 'unavailable')
                 self.brightness = ArloCamera.ARLO_TO_SCRYPTED_BRIGHTNESS_MAP[self.arlo_properties.get('brightness', 0)]
+                self._start_auto_snapshot()
                 return
             except Exception as e:
                 self.logger.debug(f'Delayed init failed for ArloCamera, will try again: {e}')
@@ -307,6 +313,53 @@ class ArloCamera(
             self.arlo_device, callback,
             event_key='smart_motion_subscription'
         )
+
+    def _start_auto_snapshot(self) -> None:
+        if not self._should_run_auto_snapshot():
+            if self._skip_prebuffer_on_first_auto_snapshot:
+                self._skip_prebuffer_on_first_auto_snapshot = False
+            return
+        self._create_or_register_event_subscription(
+            lambda: self._auto_snapshot_loop(),
+            event_key='auto_snapshot'
+        )
+
+    def _should_run_auto_snapshot(self) -> bool:
+        return self.provider.auto_snapshot_generation and self.snapshot_throttle_interval > 0
+
+    async def _auto_snapshot_loop(self) -> None:
+        while not self.stop_subscriptions:
+            try:
+                if not self._is_time_for_new_snapshot():
+                    await asyncio.sleep(self.snapshot_throttle_interval * 60)
+                    continue
+                async with self.snapshot_lock:
+                    sources = [
+                        ('arlo_cloud', 'Arlo Cloud'),
+                    ]
+                    if not self._skip_prebuffer_on_first_auto_snapshot:
+                        sources.insert(0, ('prebuffer', 'Prebuffer'))
+                    for source_key, source_label in sources:
+                        try:
+                            await self._create_snapshot_from_source(source_key)
+                            self.logger.debug(f'Snapshot created successfully from {source_label}')
+                            break
+                        except Exception as e:
+                            self.logger.error(f'{source_label} snapshot failed: {e}')
+                    if self._skip_prebuffer_on_first_auto_snapshot:
+                        self._skip_prebuffer_on_first_auto_snapshot = False
+                await asyncio.sleep(self.snapshot_throttle_interval * 60)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self.logger.debug(f'Auto snapshot loop error: {e}')
+                await asyncio.sleep(self.snapshot_throttle_interval * 60)
+
+    async def _update_auto_snapshot(self) -> None:
+        await self.task_manager.cancel_and_await_by_tag('auto_snapshot', owner=self)
+        if self.active_event_subscriptions:
+            self.active_event_subscriptions.pop('auto_snapshot', None)
+        self._start_auto_snapshot()
 
     def get_applicable_interfaces(self) -> list[str]:
         results = set([
@@ -613,6 +666,9 @@ class ArloCamera(
             await self.refresh_device()
         elif key in ['eco_mode', 'disable_eager_streams']:
             self.storage.setItem(key, value == 'true' or value is True)
+        elif key == 'snapshot_throttle_interval':
+            self.storage.setItem(key, value)
+            await self._update_auto_snapshot_refresh()
         elif key == 'print_debug':
             self.logger.debug(f'Device Capabilities: {json.dumps(self.arlo_capabilities)}')
             self.logger.debug(f'Device Smart Features: {json.dumps(self.arlo_smart_features)}')
@@ -642,10 +698,12 @@ class ArloCamera(
         start_time = self.provider.loop.time()
         self.logger.debug('Checking activity state...')
         while True:
-            scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
-            if scrypted_device:
-                msos: list[ResponseMediaStreamOptions] = await scrypted_device.getVideoStreamOptions()
-                prebuffer_name: str | None = next((m['name'] for m in msos if 'prebuffer' in m), None) if msos else None
+            prebuffer_name: str | None = None
+            if not self._skip_prebuffer_on_first_auto_snapshot:
+                scrypted_device: VideoCamera = scrypted_sdk.systemManager.getDeviceById(self.getScryptedProperty('id'))
+                if scrypted_device:
+                    msos: list[ResponseMediaStreamOptions] = await scrypted_device.getVideoStreamOptions()
+                    prebuffer_name = next((m['name'] for m in msos if 'prebuffer' in m), None) if msos else None
             if self.activity_state == 'idle' or (prebuffer_name and name == prebuffer_name):
                 self.logger.debug('Activity State is idle or selected stream is currently active, continuing...')
                 break
@@ -833,8 +891,9 @@ class ArloCamera(
             return options
         return next(iter([o for o in options if o['id'] == id]))
 
-    async def getVideoStream(self, options: RequestMediaStreamOptions = {}) -> MediaObject:
+    async def getVideoStream(self, options: RequestMediaStreamOptions = None) -> MediaObject:
         self.logger.debug('Entered getVideoStream')
+        options = options or {}
         mso = await self.getVideoStreamOptions(id=options.get('id', 'default'))
         mso['refreshAt'] = round(time.time() * 1000) + 30 * 60 * 1000
         container = mso['container']

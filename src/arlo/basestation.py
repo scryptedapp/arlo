@@ -27,6 +27,9 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
 
     def __init__(self, nativeId: str, arlo_basestation: dict, arlo_properties: dict, provider: ArloProvider) -> None:
         super().__init__(nativeId=nativeId, arlo_device=arlo_basestation, arlo_basestation=arlo_basestation, arlo_properties=arlo_properties, provider=provider)
+        self.device_state = None
+        self.reboot_time = datetime.now()
+        self.svss = None
         self._start_device_state_subscription()
 
     async def _delayed_init(self) -> None:

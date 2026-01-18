@@ -219,6 +219,7 @@ class ArloIntercomWebRTCSignalingSession(BaseArloSignalingSession):
         self.session_id: str = None
         self.answer: dict = None
         self.stop_subscriptions: bool | None = None
+        self.active_event_subscriptions = {}
 
     def __del__(self) -> None:
         try:
