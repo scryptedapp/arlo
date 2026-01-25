@@ -76,6 +76,8 @@ class ArloProvider(
         self._login_lock = asyncio.Lock()
         self._login_future: asyncio.Future = None
         self._imap_ready_event: asyncio.Event = asyncio.Event()
+        self._last_login_attempt: float = 0
+        self._login_cooldown: float = 60
         try:
             self.loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         except RuntimeError:
@@ -538,6 +540,15 @@ class ArloProvider(
         return public_pem.decode(), private_pem.decode()
 
     async def _login(self) -> None:
+        now = time.time()
+        if self._login_lock.locked():
+            self.logger.warning('Login attempt discarded: another login is already in progress.')
+            return
+        cooldown_remaining = self._login_cooldown - (now - self._last_login_attempt)
+        if cooldown_remaining > 0:
+            self.logger.info(f'Login attempt delayed: waiting {int(cooldown_remaining)} seconds due to cooldown.')
+            await asyncio.sleep(cooldown_remaining)
+        self._last_login_attempt = time.time()
         run_login = False
         login_future: asyncio.Future | None = None
         async with self._login_lock:
@@ -547,59 +558,59 @@ class ArloProvider(
                 login_future = self.loop.create_future()
                 self._login_future = login_future
                 run_login = True
-        if not run_login:
-            self.logger.debug('Login already in progress, waiting for it to complete.')
-            await login_future
-            return
-        try:
-            if self.full_reset_needed:
-                await self._reset_arlo_client()
-                arlo = ArloClient(self)
-            else:
-                arlo = self.arlo if self.arlo is not None else ArloClient(self)
-            self._set_login_futures()
-            arlo.browser_authenticated = self._browser_authenticated
-            arlo.mfa_state_future = self._mfa_state_future
-            arlo.mfa_loop_future = self._mfa_loop_future
-            arlo.mfa_code_future = self._mfa_code_future
-            self.logger.debug('Setup ArloClient and MFA futures.')
-            login_task = self.task_manager.create_task(arlo.login(), tag='login-arlo', owner=self)
-            self.logger.debug('Waiting for MFA state from Arlo Cloud...')
-            mfa_state: str = await self._mfa_state_future
-            browser_authenticated: bool = await self._browser_authenticated
-            if not browser_authenticated:
-                mfa_start_time = time.time()
-                await self._mfa_loop_future
-                if mfa_state == 'ENABLED':
-                    if self.mfa_strategy == 'IMAP':
-                        self.logger.debug('Using IMAP strategy for MFA code retrieval.')
-                        self.task_manager.create_task(self._imap_mfa_loop(arlo, mfa_start_time), tag='mfa', owner=self)
-                    elif self.mfa_strategy == 'Manual':
-                        self.logger.debug('Using Manual strategy for MFA code retrieval.')
-                        self.task_manager.create_task(self._manual_mfa_loop(), tag='mfa', owner=self)
-            await login_task
-            if arlo.logged_in:
-                await self._on_login_success(arlo)
-                if login_future is not None and not login_future.done():
-                    login_future.set_result(True)
+            if not run_login:
+                self.logger.debug('Login already in progress, waiting for it to complete.')
+                await login_future
                 return
-            else:
-                self.logger.error('Arlo Cloud login failed, retrying in 10 seconds.')
-                await asyncio.sleep(10)
+            try:
+                if self.full_reset_needed:
+                    await self._reset_arlo_client()
+                    arlo = ArloClient(self)
+                else:
+                    arlo = self.arlo if self.arlo is not None else ArloClient(self)
+                self._set_login_futures()
+                arlo.browser_authenticated = self._browser_authenticated
+                arlo.mfa_state_future = self._mfa_state_future
+                arlo.mfa_loop_future = self._mfa_loop_future
+                arlo.mfa_code_future = self._mfa_code_future
+                self.logger.debug('Setup ArloClient and MFA futures.')
+                login_task = self.task_manager.create_task(arlo.login(), tag='login-arlo', owner=self)
+                self.logger.debug('Waiting for MFA state from Arlo Cloud...')
+                mfa_state: str = await self._mfa_state_future
+                browser_authenticated: bool = await self._browser_authenticated
+                if not browser_authenticated:
+                    mfa_start_time = time.time()
+                    await self._mfa_loop_future
+                    if mfa_state == 'ENABLED':
+                        if self.mfa_strategy == 'IMAP':
+                            self.logger.debug('Using IMAP strategy for MFA code retrieval.')
+                            self.task_manager.create_task(self._imap_mfa_loop(arlo, mfa_start_time), tag='mfa', owner=self)
+                        elif self.mfa_strategy == 'Manual':
+                            self.logger.debug('Using Manual strategy for MFA code retrieval.')
+                            self.task_manager.create_task(self._manual_mfa_loop(), tag='mfa', owner=self)
+                await login_task
+                if arlo.logged_in:
+                    await self._on_login_success(arlo)
+                    if login_future is not None and not login_future.done():
+                        login_future.set_result(True)
+                    return
+                else:
+                    self.logger.error('Arlo Cloud login failed, retrying in 10 seconds.')
+                    await asyncio.sleep(10)
+                    if login_future is not None and not login_future.done():
+                        login_future.set_result(False)
+            except asyncio.CancelledError:
                 if login_future is not None and not login_future.done():
                     login_future.set_result(False)
-        except asyncio.CancelledError:
-            if login_future is not None and not login_future.done():
-                login_future.set_result(False)
-            await asyncio.sleep(10)
-        except Exception as e:
-            self.logger.exception(f'Exception during login: {e}')
-            if login_future is not None and not login_future.done():
-                login_future.set_exception(e)
-            await asyncio.sleep(10)
-        finally:
-            if login_future is not None and not login_future.done():
-                login_future.set_result(False)
+                await asyncio.sleep(10)
+            except Exception as e:
+                self.logger.exception(f'Exception during login: {e}')
+                if login_future is not None and not login_future.done():
+                    login_future.set_exception(e)
+                await asyncio.sleep(10)
+            finally:
+                if login_future is not None and not login_future.done():
+                    login_future.set_result(False)
 
     async def _reset_arlo_client(self) -> None:
         if self.arlo is not None:
