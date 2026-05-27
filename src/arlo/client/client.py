@@ -6,14 +6,10 @@ import binascii
 import math
 import pickle
 import random
-import requests
-import socket
-import ssl
 import time
 
 from datetime import datetime, timedelta
 from logging import Logger
-from requests_toolbelt.adapters import host_header_ssl
 from urllib.parse import parse_qs, ParseResult, urlparse
 from typing import Any, Callable, TYPE_CHECKING
 
@@ -64,23 +60,13 @@ class ArloClient(object):
     arlo_url: str = 'my.arlo.com'
     arlo_api_url: str = 'myapi.arlo.com'
     auth_url: str = 'ocapi-app.arlo.com'
-    backup_auth_hosts: list[str] = [
-        'NTAuMjEyLjEzOS42OQ==',
-        'NTAuNTAuMjQuNDQ=',
-        'NTAuMjEwLjE4OS4xMDY=',
-        'NTAuMjA4LjE1NC40MQ==',
-        'MTA4LjEyOC40LjE5OQ==',
-        'MzQuMjQxLjE1Ni4xMzQ=',
-        'NTAuMjA5LjI1NC4yNTM=',
-        'MTA0LjE4LjMzLjcz',
-        'MTcyLjY0LjE1NC4xODM='
-    ]
-    random.shuffle(backup_auth_hosts)
 
     def __init__(self, provider: ArloProvider):
-        self.provider: ArloProvider = provider
+        self.provider = provider
         self.heartbeat_task: asyncio.Task | None = None
+        self.heartbeat_devices: list[dict[str, Any]] = []
         self.task_manager = self.provider.task_manager
+        self.error_manager = self.provider.error_manager
         self._devices_cache = None
         self._devices_cache_time = 0
         self._devices_cache_lock = asyncio.Lock()
@@ -244,51 +230,9 @@ class ArloClient(object):
             return headers
 
     async def _get_auth_host(self) -> str:
-        try:
-            logger.debug('Attempting to use primary authentication host...')
-            self.request = Request(provider=self.provider)
-            await self.request.options(f'https://{self.auth_url}/api/auth', headers=self.headers)
-            logger.debug(f'Using primary authentication host: {self.auth_url}')
-            return self.auth_url
-        except Exception as e:
-            logger.warning(f'Primary authentication host failed: {e}. Trying backup hosts...')
-            backup_auth_hosts: list[str] = [base64.b64decode(host.encode('utf-8')).decode('utf-8') for host in self.backup_auth_hosts]
-            auth_host = await self.pick_host_async(backup_auth_hosts)
-            logger.debug(f'Using backup authentication host: {auth_host}')
-            self.request = Request(mode='ip', provider=self.provider)
-            return auth_host
-
-    async def pick_host_async(self, hosts: list[str]) -> str:
-        return await asyncio.to_thread(self._pick_host, hosts)
-
-    def _pick_host(self, hosts: list[str]) -> str:
-        socket.setdefaulttimeout(5)
-        session: requests.Session | None = None
-        try:
-            session = requests.Session()
-            session.mount('https://', host_header_ssl.HostHeaderSSLAdapter())
-            for host in hosts:
-                try:
-                    self._verify_hostname(host)
-                    r = session.post(f'https://{host}/api/auth', headers={'Host': self.auth_url})
-                    r.raise_for_status()
-                    return host
-                except (requests.RequestException, socket.error, ssl.SSLError) as e:
-                    logger.warning(f'Backup Authentication Host {host} is invalid: {e}')
-            raise Exception('No valid backup authentication hosts found!')
-        finally:
-            if session is not None:
-                try:
-                    session.close()
-                except Exception:
-                    pass
-            socket.setdefaulttimeout(15)
-
-    def _verify_hostname(self, host: str) -> None:
-        context = ssl.create_default_context()
-        with socket.create_connection((host, 443), timeout=5) as sock:
-            with context.wrap_socket(sock, server_hostname=self.auth_url):
-                pass
+        logger.debug(f'Using authentication host: {self.auth_url}')
+        self.request = Request(provider=self.provider)
+        return self.auth_url
 
     async def _handle_mfa_flow(self, issued: int) -> None:
         get_factor_id_response: dict[str, Any] = await self._get_factor_id()
@@ -712,8 +656,14 @@ class ArloClient(object):
             logger.warning('Session expired (401) in set_mode.')
             return
 
-    async def subscribe(self, basestation_camera_tuples: list[tuple[dict[str, Any], dict[str, Any]]] = None) -> None:
+    async def subscribe(
+        self,
+        basestation_camera_tuples: list[tuple[dict[str, Any], dict[str, Any]]] = None,
+        *,
+        start_heartbeat: bool = True,
+    ) -> None:
         try:
+            await self.error_manager.wait_for_auth_ready('event stream subscribe')
             basestation_camera_tuples = basestation_camera_tuples or []
             if not self.event_stream or (not self.event_stream.initializing and not self.event_stream.connected):
                 if self.event_stream_transport == 'MQTT':
@@ -745,26 +695,53 @@ class ArloClient(object):
                     for d in all_devices.values()
                     if str(d.get('modelId', '')).lower().startswith(hardwired_models)
                 }
-                logger.debug(f'Will send heartbeat to the following devices: {list(devices_to_ping.keys())}')
-                await self.cancel_heartbeat()
-                self.heartbeat_task = self.task_manager.create_task(self._heartbeat(list(devices_to_ping.values())), tag='heartbeat', owner=self)
+                self.heartbeat_devices = list(devices_to_ping.values())
                 topics = self._collect_topics(basestations) + self._collect_topics(cameras)
                 self.event_stream.subscribe(topics)
+                if start_heartbeat:
+                    await self.start_heartbeat()
+                elif self.provider.setup_in_progress:
+                    await self._activate_event_stream()
         except UnauthorizedRestartException:
             logger.warning('Session expired (401) in subscribe.')
             return
 
+    async def start_heartbeat(self, devices: list[dict[str, Any]] | None = None) -> None:
+        if devices is not None:
+            self.heartbeat_devices = devices
+        if not self.heartbeat_devices:
+            return
+        while self.provider.setup_in_progress:
+            await asyncio.sleep(1)
+        if not self.event_stream or not self.event_stream.active:
+            return
+        logger.debug(f'Will send heartbeat to the following devices: {[d["deviceId"] for d in self.heartbeat_devices]}')
+        await self.cancel_heartbeat()
+        self.heartbeat_task = self.task_manager.create_task(self._heartbeat(list(self.heartbeat_devices)), tag='heartbeat', owner=self)
+
     async def _heartbeat(self, devices: list[dict[str, Any]], interval: int = 30) -> None:
         try:
             while self.event_stream and self.event_stream.active:
-                for device in devices:
-                    try:
-                        await self._ping(device)
-                    except Exception:
-                        pass
+                if self.provider.setup_in_progress:
+                    await asyncio.sleep(1)
+                    continue
+                await self._ping_devices(devices)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
+
+    async def _activate_event_stream(self) -> None:
+        if not self.heartbeat_devices:
+            return
+        logger.debug(f'Activating event stream for devices: {[d["deviceId"] for d in self.heartbeat_devices]}')
+        await self._ping_devices(self.heartbeat_devices)
+
+    async def _ping_devices(self, devices: list[dict[str, Any]]) -> None:
+        for device in devices:
+            try:
+                await self._ping(device)
+            except Exception:
+                pass
 
     def _collect_topics(self, devices: dict[Any, dict[str, Any]]) -> list:
         return [topic for d in devices.values() for topic in d.get('allowedMqttTopics', [])]
@@ -812,19 +789,30 @@ class ArloClient(object):
         return result
 
     async def unsubscribe(self) -> None:
+        stream = self.event_stream
+        self.event_stream = None
         try:
-            stream = self.event_stream
-            self.event_stream = None
             if stream and stream.connected:
                 await self.request.get(
                     f'https://{self.arlo_api_url}/hmsweb/client/unsubscribe',
                     suppress_restart_on_401=True,
                 )
-            if stream:
-                await stream.close()
         except UnauthorizedRestartException:
             logger.warning('Session expired (401) in unsubscribe; clearing event_stream.')
             self.event_stream = None
+        finally:
+            if stream:
+                close_task = asyncio.create_task(stream.close())
+                try:
+                    await asyncio.shield(close_task)
+                except asyncio.CancelledError:
+                    try:
+                        await asyncio.shield(close_task)
+                    except Exception as e:
+                        logger.debug(f'Error closing event stream during unsubscribe cancellation: {e}')
+                    raise
+                except Exception as e:
+                    logger.debug(f'Error closing event stream during unsubscribe: {e}')
 
     async def cancel_heartbeat(self) -> None:
         if hasattr(self, 'heartbeat_task') and self.heartbeat_task:
@@ -836,7 +824,7 @@ class ArloClient(object):
             self.heartbeat_task = None
 
     def subscribe_to_error_events(self, camera: dict, callback: Callable[[Any, Any], Any]) -> asyncio.Task:
-        resource = f'cameras/{camera.get('deviceId')}'
+        resource = f'cameras/{camera.get("deviceId")}'
 
         def callbackwrapper(event: dict):
             error: dict = None
@@ -1244,10 +1232,17 @@ class ArloClient(object):
 
         if self.event_stream and self.event_stream.active:
             listeners = [self.task_manager.create_task(loop_action_listener(action), tag=f'event_listener:{resource}', owner=self) for action in actions]
-            done, pending = await asyncio.wait(listeners, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            return next(iter(done)).result()
+            try:
+                done, pending = await asyncio.wait(listeners, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                return next(iter(done)).result()
+            finally:
+                for task in listeners:
+                    if not task.done():
+                        task.cancel()
 
     async def _trigger_and_handle_events(
         self,

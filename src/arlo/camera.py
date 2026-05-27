@@ -328,8 +328,15 @@ class ArloCamera(
         return self.provider.auto_snapshot_generation and self.snapshot_throttle_interval > 0
 
     async def _auto_snapshot_loop(self) -> None:
+        startup_delay_done = False
         while not self.stop_subscriptions:
             try:
+                if self.provider.setup_in_progress:
+                    await asyncio.sleep(5)
+                    continue
+                if not startup_delay_done:
+                    startup_delay_done = True
+                    await asyncio.sleep(30 + (sum(ord(ch) for ch in self.nativeId) % 90))
                 if not self._is_time_for_new_snapshot():
                     await asyncio.sleep(self.snapshot_throttle_interval * 60)
                     continue

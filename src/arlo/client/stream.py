@@ -36,6 +36,7 @@ class Stream:
     def __init__(self, arlo: ArloClient, expire: int = 5) -> None:
         self.arlo: ArloClient = arlo
         self.provider = self.arlo.provider
+        self.error_manager = self.provider.error_manager
         self.expire: int = expire
         self.task_manager = self.arlo.provider.task_manager
         self.connected: bool = False
@@ -48,6 +49,7 @@ class Stream:
         self.event_stream_stop_event: threading.Event = threading.Event()
         self.refresh_loop_signal: asyncio.Queue[object | None] = asyncio.Queue()
         self.event_loop = self.arlo.provider.loop
+        self.stream_name: str = ""
         self._close_lock = asyncio.Lock()
         self._closed: bool = False
         self._connect_future: asyncio.Future[None] | None = None
@@ -97,23 +99,10 @@ class Stream:
         await self._await_connected(timeout)
 
     def _mark_connected(self, log_message: str | None = None) -> None:
-        stream_name = self._stream_name()
         self.initializing = False
         self.connected = True
-        self.logger.debug(log_message or f'{stream_name} connected.')
+        self.logger.debug(log_message or f'{self.stream_name} connected.')
         self._complete_connect_wait()
-
-    def __del__(self) -> None:
-        try:
-            if self.event_loop is not None and not self.event_loop.is_closed() and self.event_loop.is_running():
-                asyncio.run_coroutine_threadsafe(self.close(), self.event_loop)
-                return
-        except Exception:
-            pass
-        try:
-            self.disconnect()
-        except Exception:
-            pass
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -141,7 +130,6 @@ class Stream:
         self.refresh_loop_signal.put_nowait(object())
 
     async def _refresh_interval(self) -> None:
-        stream_name = self._stream_name()
         while not self.event_stream_stop_event.is_set():
             try:
                 if self.refresh == 0:
@@ -160,9 +148,9 @@ class Stream:
                 done_task = done.pop()
                 if done_task is signal_task and done_task.result() is None:
                     return
-                self.logger.info(f'Refreshing {stream_name}')
-                async with self.provider.device_lock:
-                    await self.restart()
+                self.logger.info(f'Refreshing {self.stream_name}')
+                await self.error_manager.wait_for_auth_ready(f'{self.stream_name} refresh')
+                self.provider.request_restart(scope='event_stream')
             except Exception as e:
                 self.logger.error(f'Error during stream refresh: {e}')
 
@@ -204,7 +192,7 @@ class Stream:
                 return None, action
             if first_requeued is not None and first_requeued == event:
                 queue.put_nowait(event)
-                await asyncio.sleep(random.uniform(0, 0.01))
+                await asyncio.sleep(random.uniform(0.05, 0.1))
                 continue
             if event.expired:
                 continue
@@ -226,6 +214,9 @@ class Stream:
                 return
         self._queue_response_normal(response)
 
+    def should_buffer_during_discovery(self, response: dict[str, Any]) -> bool:
+        return self.arlo.arlo_discovery_in_progress is True and self._should_buffer_during_discovery(response)
+
     def _queue_response_normal(self, response: dict[str, Any]) -> None:
         resource: str = response.get('resource')
         action: str = response.get('action')
@@ -238,7 +229,7 @@ class Stream:
         for prop in props.keys():
             self._queue_event(self._make_key(resource, action, prop), event)
 
-    def _is_discovery_event(self, response: dict) -> bool:
+    def _is_property_response_event(self, response: dict) -> bool:
         properties: dict[str, Any] = response.get('properties', {})
         return (
             response.get('action') == 'is'
@@ -250,26 +241,8 @@ class Stream:
             )
         )
 
-    def _is_realtime_event(self, response: dict[str, Any]) -> bool:
-        resource = response.get('resource', '')
-        action = response.get('action')
-        properties: dict[str, Any] = response.get('properties', {})
-        if not isinstance(properties, dict):
-            properties = {}
-        if isinstance(resource, str) and resource.startswith('cameras/'):
-            if action == 'fullFrameSnapshotAvailable':
-                return True
-            if action == 'is' and (
-                'activityState' in properties
-                or 'presignedFullFrameSnapshotUrl' in properties
-            ):
-                return True
-        return False
-
     def _should_buffer_during_discovery(self, response: dict[str, Any]) -> bool:
-        if self._is_discovery_event(response):
-            return False
-        if self._is_realtime_event(response):
+        if self._is_property_response_event(response):
             return False
         return True
 
@@ -291,8 +264,7 @@ class Stream:
         self.queues.setdefault(key, asyncio.Queue()).put_nowait(event)
 
     def disconnect(self) -> None:
-        stream_name = self._stream_name()
-        self.logger.debug(f'Disconnecting {stream_name}...')
+        self.logger.debug(f'Disconnecting {self.stream_name}...')
         self.connected = False
         try:
             self._disconnect_transport_only()
@@ -331,12 +303,11 @@ class Stream:
         raise NotImplementedError()
 
     async def restart(self) -> None:
-        stream_name = self._stream_name()
         if self.reconnecting:
             return
         self.reconnecting = True
         try:
-            self.logger.debug(f'Restarting {stream_name} transport...')
+            self.logger.debug(f'Restarting {self.stream_name} transport...')
             self._stop_transport_only()
             await asyncio.sleep(0.1)
             self.event_stream = None
@@ -344,7 +315,7 @@ class Stream:
             self.initializing = True
             self.connected = False
             await self.start()
-            self.logger.debug(f'{stream_name} transport restart complete.')
+            self.logger.debug(f'{self.stream_name} transport restart complete.')
         finally:
             self.reconnecting = False
 

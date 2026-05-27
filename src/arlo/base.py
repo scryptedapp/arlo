@@ -162,6 +162,28 @@ class ArloDeviceBase(ScryptedDeviceBase, ScryptedDeviceLoggerMixin):
         if existing and (isinstance(existing, list) or not getattr(existing, 'done', lambda: False)()):
             self.logger.debug(f'Event subscription "{key}" already running for device {self.arlo_device["deviceId"]}.')
             return
+        if self.provider.setup_in_progress:
+            async def start_after_setup():
+                while self.provider.setup_in_progress and not self.stop_subscriptions:
+                    await asyncio.sleep(1)
+                if self.stop_subscriptions:
+                    return
+                current = asyncio.current_task()
+                if self.active_event_subscriptions.get(key) is current:
+                    self.active_event_subscriptions.pop(key, None)
+                self._create_or_register_event_subscription(
+                    subscribe_fn,
+                    *args,
+                    event_key=event_key,
+                    **kwargs,
+                )
+
+            self.active_event_subscriptions[key] = self.task_manager.create_task(
+                start_after_setup(),
+                tag=key,
+                owner=self,
+            )
+            return
         result = subscribe_fn(*args, **kwargs)
         if isinstance(result, (list, tuple, set)):
             tasks = []

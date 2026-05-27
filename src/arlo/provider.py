@@ -6,7 +6,6 @@ import imaplib
 import logging
 import random
 import re
-import requests
 import time
 import uuid
 
@@ -36,7 +35,7 @@ from .client import ArloClient, ArloAsyncBrowser
 from .doorbell import ArloDoorbell
 from .logging import ScryptedDeviceLoggerMixin, StdoutLoggerFactory
 from .vss import ArloModeVirtualSecuritySystem
-from .util import TaskManager
+from .util import ErrorManager, RateLimitedError, TaskManager, TransientRequestError, UnauthorizedRestartException
 
 
 DEVICE_TYPE_BASESTATION = 'basestation'
@@ -89,9 +88,15 @@ class ArloProvider(
         self.device_lock = asyncio.Lock()
         self._periodic_lock = asyncio.Lock()
         self.cleanup_devices: bool = False
+        self.setup_in_progress: bool = False
         self._check_and_migrate_storage()
         self._propagate_log_level()
         self.task_manager = TaskManager(self.loop)
+        self.error_manager = ErrorManager(
+            self,
+            recover_auth=self._recover_auth,
+            restart_plugin=lambda: self.request_restart('plugin'),
+        )
         self.task_manager.create_task(self._initialize_plugin(), tag='initialize_plugin', owner=self)
 
     def print(self, *args, **kwargs) -> None:
@@ -161,6 +166,8 @@ class ArloProvider(
             'device_refresh_interval': 240,
             'arlo_discovery_in_progress': 'false',
             'disable_plugin': 'false',
+            'arlo_rate_limit_until': 0,
+            'arlo_rate_limit_disable_active': 'false',
             'arlo_public_key': None,
             'arlo_private_key': None,
             'mdns_services': {},
@@ -171,11 +178,13 @@ class ArloProvider(
                 self.logger.info(f'[Migration] Setting default for key: {key}="{default}"')
                 self.storage.setItem(key, default)
 
-    async def _initialize_plugin(self) -> None:
+    async def _initialize_plugin(self, *, await_login: bool = False) -> None:
         if self.initialize_lock.locked():
             self.logger.debug('Plugin initialization already in progress, waiting for it to complete.')
             return
         async with self.initialize_lock:
+            if self.error_manager.handle_rate_limit_startup():
+                return
             if self.disable_plugin:
                 self.logger.info('Plugin has been disabled. Will not initialize Arlo client.')
                 self.logger.info('To re-enable the plugin, uncheck the "Disable Arlo Plugin" setting.')
@@ -195,7 +204,10 @@ class ArloProvider(
                     return
                 self.task_manager.cancel_all_except(tag='initialize_plugin', owner=self)
                 self.logger.info('Initializing Arlo plugin...')
-                self.task_manager.create_task(self._login(), tag='login', owner=self)
+                if await_login:
+                    await self._login()
+                else:
+                    self.task_manager.create_task(self._login(), tag='login', owner=self)
                 self.task_manager.create_task(self._periodic_discovery(), tag='periodic_discovery', owner=self)
                 self.task_manager.create_task(self._periodic_refresh(), tag='periodic_refresh', owner=self)
                 await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
@@ -229,15 +241,19 @@ class ArloProvider(
             while True:
                 try:
                     async with self._periodic_lock:
+                        self.setup_in_progress = True
                         self.storage.setItem('arlo_discovery_in_progress', 'true')
                         self.logger.info('Running periodic device discovery...')
                         await self._device_handler(True)
                 except Exception as e:
                     self.logger.error(f'Error during periodic device discovery: {e}', exc_info=True)
                 finally:
+                    self.setup_in_progress = False
                     self.storage.setItem('arlo_discovery_in_progress', 'false')
                     if self.arlo and self.arlo.event_stream:
                         self.arlo.event_stream.process_buffered_events()
+                    if self.arlo and self.arlo.logged_in:
+                        await self.arlo.start_heartbeat()
                 await asyncio.sleep(self.device_discovery_interval * 60)
         except asyncio.CancelledError:
             pass
@@ -253,13 +269,14 @@ class ArloProvider(
                     async with self._periodic_lock:
                         self.logger.info('Running periodic device refresh...')
                         async with self.device_lock:
-                            for device in self.scrypted_devices.values():
-                                if isinstance(device, ArloModeVirtualSecuritySystem):
-                                    continue
-                                try:
-                                    await device.refresh_device()
-                                except Exception as e:
-                                    self.logger.error(f'Error refreshing {device.arlo_device["deviceName"]}: {e}', exc_info=True)
+                            devices = list(self.scrypted_devices.values())
+                    for device in devices:
+                        if isinstance(device, ArloModeVirtualSecuritySystem):
+                            continue
+                        try:
+                            await device.refresh_device()
+                        except Exception as e:
+                            self.logger.error(f'Error refreshing {device.arlo_device["deviceName"]}: {e}', exc_info=True)
                 except Exception as e:
                     self.logger.error(f'Error during periodic device refresh: {e}', exc_info=True)
                 await asyncio.sleep(self.device_refresh_interval * 60)
@@ -298,6 +315,54 @@ class ArloProvider(
             cookies = None
             self.storage.setItem('arlo_cookies', cookies)
         return cookies
+
+    async def _recover_auth(self, reason: str) -> None:
+        try:
+            if self.error_manager.rate_limit_remaining() > 0:
+                return
+            if not self.arlo:
+                self.full_reset_needed = True
+                await self._login()
+                return
+            self.logger.info(f'Attempting Arlo soft relogin after auth error: {reason}')
+            arlo = self.arlo
+            with self.error_manager.auth_transition(f'auth recovery cleanup: {reason}'):
+                try:
+                    if arlo and arlo.event_stream:
+                        await arlo.unsubscribe()
+                except Exception as e:
+                    self.logger.debug(f'Error stopping event stream during auth recovery: {e}')
+                try:
+                    if arlo:
+                        await arlo.cancel_heartbeat()
+                except Exception as e:
+                    self.logger.debug(f'Error stopping heartbeat during auth recovery: {e}')
+                async with self._restart_lock:
+                    async with self._periodic_lock:
+                        async with self.device_lock:
+                            if self.error_manager.rate_limit_remaining() > 0:
+                                return
+                            if self.arlo:
+                                self.arlo.finialized_login = False
+                                self.arlo.token = None
+                                self.arlo.logged_in = False
+                            self.full_reset_needed = False
+            await self._login()
+            if self.arlo and self.arlo.logged_in:
+                async with self._periodic_lock:
+                    async with self.device_lock:
+                        if self.arlo and self.arlo.logged_in:
+                            await self._subscribe_to_event_stream()
+                            await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
+        except RateLimitedError as e:
+            self.logger.warning(
+                f'Auth recovery paused by Arlo rate limit for '
+                f'{int(e.retry_after or self.error_manager.rate_limit_remaining())} seconds.'
+            )
+        except TransientRequestError as e:
+            self.logger.warning(f'Auth recovery hit a temporary Arlo error and will retry later: {e}')
+        except Exception as e:
+            self.logger.error(f'Auth recovery failed: {e}', exc_info=True)
 
     @property
     def arlo_device_id(self) -> str:
@@ -378,13 +443,14 @@ class ArloProvider(
     @property
     def imap_mfa_interval(self) -> int:
         interval = self.storage.getItem('imap_mfa_interval')
-        if interval is None:
-            interval = 10
+        try:
+            interval = int(interval)
+        except (TypeError, ValueError):
+            interval = 14
+        if interval != 14:
+            interval = 14
             self.storage.setItem('imap_mfa_interval', interval)
-        if int(interval) > 13:
-            interval = 13
-            self.storage.setItem('imap_mfa_interval', interval)
-        return int(interval)
+        return interval
 
     @property
     def imap_mfa_use_local_index(self) -> bool:
@@ -540,77 +606,116 @@ class ArloProvider(
         return public_pem.decode(), private_pem.decode()
 
     async def _login(self) -> None:
-        now = time.time()
-        if self._login_lock.locked():
-            self.logger.warning('Login attempt discarded: another login is already in progress.')
+        active_login = self._login_future
+        if active_login and not active_login.done():
+            self.logger.debug('Login already in progress, waiting for it to complete.')
+            await active_login
             return
-        cooldown_remaining = self._login_cooldown - (now - self._last_login_attempt)
-        if cooldown_remaining > 0:
-            self.logger.info(f'Login attempt delayed: waiting {int(cooldown_remaining)} seconds due to cooldown.')
-            await asyncio.sleep(cooldown_remaining)
-        self._last_login_attempt = time.time()
-        run_login = False
+        wait_login: asyncio.Future | None = None
         login_future: asyncio.Future | None = None
         async with self._login_lock:
-            if self._login_future and not self._login_future.done():
-                login_future = self._login_future
+            active_login = self._login_future
+            if active_login and not active_login.done():
+                wait_login = active_login
             else:
                 login_future = self.loop.create_future()
                 self._login_future = login_future
-                run_login = True
-            if not run_login:
-                self.logger.debug('Login already in progress, waiting for it to complete.')
-                await login_future
+        if wait_login:
+            self.logger.debug('Login already in progress, waiting for it to complete.')
+            await wait_login
+            return
+        if login_future is None:
+            return
+        login_transition_open = False
+        self.error_manager.begin_auth_transition('Arlo Cloud login')
+        login_transition_open = True
+        login_task: asyncio.Task | None = None
+        try:
+            now = time.time()
+            cooldown_remaining = self._login_cooldown - (now - self._last_login_attempt)
+            if cooldown_remaining > 0:
+                self.logger.info(f'Login attempt delayed: waiting {int(cooldown_remaining)} seconds due to cooldown.')
+                await asyncio.sleep(cooldown_remaining)
+            self._last_login_attempt = time.time()
+            if self.full_reset_needed:
+                await self._reset_arlo_client()
+                arlo = ArloClient(self)
+            else:
+                arlo = self.arlo if self.arlo is not None else ArloClient(self)
+            self._set_login_futures()
+            arlo.browser_authenticated = self._browser_authenticated
+            arlo.mfa_state_future = self._mfa_state_future
+            arlo.mfa_loop_future = self._mfa_loop_future
+            arlo.mfa_code_future = self._mfa_code_future
+            self.logger.debug('Setup ArloClient and MFA futures.')
+            login_task = self.task_manager.create_task(arlo.login(), tag='login-arlo', owner=self)
+
+            async def wait_for_login_signal(future: asyncio.Future, description: str):
+                done, _ = await asyncio.wait((future, login_task), return_when=asyncio.FIRST_COMPLETED)
+                if login_task in done and not future.done():
+                    await login_task
+                    raise RuntimeError(f'Arlo Cloud login ended before {description} was available.')
+                return await future
+
+            self.logger.debug('Waiting for MFA state from Arlo Cloud...')
+            mfa_state: str = await wait_for_login_signal(self._mfa_state_future, 'MFA state')
+            if mfa_state == 'ENABLED':
+                browser_authenticated: bool = await wait_for_login_signal(
+                    self._browser_authenticated,
+                    'browser authentication state',
+                )
+            else:
+                browser_authenticated = True
+            if mfa_state == 'ENABLED' and not browser_authenticated:
+                mfa_start_time = time.time()
+                await wait_for_login_signal(self._mfa_loop_future, 'MFA challenge')
+                if mfa_state == 'ENABLED':
+                    if self.mfa_strategy == 'IMAP':
+                        self.logger.debug('Using IMAP strategy for MFA code retrieval.')
+                        self.task_manager.create_task(self._imap_mfa_loop(arlo, mfa_start_time), tag='mfa', owner=self)
+                    elif self.mfa_strategy == 'Manual':
+                        self.logger.debug('Using Manual strategy for MFA code retrieval.')
+                        self.task_manager.create_task(self._manual_mfa_loop(), tag='mfa', owner=self)
+            await login_task
+            if arlo.logged_in:
+                self.error_manager.end_auth_transition(success=True)
+                login_transition_open = False
+                await self._on_login_success(arlo)
+                if login_future is not None and not login_future.done():
+                    login_future.set_result(True)
                 return
-            try:
-                if self.full_reset_needed:
-                    await self._reset_arlo_client()
-                    arlo = ArloClient(self)
-                else:
-                    arlo = self.arlo if self.arlo is not None else ArloClient(self)
-                self._set_login_futures()
-                arlo.browser_authenticated = self._browser_authenticated
-                arlo.mfa_state_future = self._mfa_state_future
-                arlo.mfa_loop_future = self._mfa_loop_future
-                arlo.mfa_code_future = self._mfa_code_future
-                self.logger.debug('Setup ArloClient and MFA futures.')
-                login_task = self.task_manager.create_task(arlo.login(), tag='login-arlo', owner=self)
-                self.logger.debug('Waiting for MFA state from Arlo Cloud...')
-                mfa_state: str = await self._mfa_state_future
-                browser_authenticated: bool = await self._browser_authenticated
-                if not browser_authenticated:
-                    mfa_start_time = time.time()
-                    await self._mfa_loop_future
-                    if mfa_state == 'ENABLED':
-                        if self.mfa_strategy == 'IMAP':
-                            self.logger.debug('Using IMAP strategy for MFA code retrieval.')
-                            self.task_manager.create_task(self._imap_mfa_loop(arlo, mfa_start_time), tag='mfa', owner=self)
-                        elif self.mfa_strategy == 'Manual':
-                            self.logger.debug('Using Manual strategy for MFA code retrieval.')
-                            self.task_manager.create_task(self._manual_mfa_loop(), tag='mfa', owner=self)
-                await login_task
-                if arlo.logged_in:
-                    await self._on_login_success(arlo)
-                    if login_future is not None and not login_future.done():
-                        login_future.set_result(True)
-                    return
-                else:
-                    self.logger.error('Arlo Cloud login failed, retrying in 10 seconds.')
-                    await asyncio.sleep(10)
-                    if login_future is not None and not login_future.done():
-                        login_future.set_result(False)
-            except asyncio.CancelledError:
-                if login_future is not None and not login_future.done():
-                    login_future.set_result(False)
-                await asyncio.sleep(10)
-            except Exception as e:
-                self.logger.exception(f'Exception during login: {e}')
-                if login_future is not None and not login_future.done():
-                    login_future.set_exception(e)
-                await asyncio.sleep(10)
-            finally:
-                if login_future is not None and not login_future.done():
-                    login_future.set_result(False)
+            self.logger.error('Arlo Cloud login failed, retrying in 10 seconds.')
+            await asyncio.sleep(10)
+            if login_future is not None and not login_future.done():
+                login_future.set_result(False)
+        except asyncio.CancelledError:
+            if login_task is not None and not login_task.done():
+                login_task.cancel()
+                await asyncio.gather(login_task, return_exceptions=True)
+            if login_future is not None and not login_future.done():
+                login_future.set_result(False)
+            raise
+        except RateLimitedError as e:
+            remaining = int(e.retry_after or self.error_manager.rate_limit_remaining())
+            self.logger.warning(f'Arlo Cloud login paused by rate limit for {remaining} seconds.')
+            if login_future is not None and not login_future.done():
+                login_future.set_result(False)
+            return
+        except TransientRequestError as e:
+            self.logger.warning(f'Temporary Arlo Cloud login error: {e}. Retrying after cooldown.')
+            if login_future is not None and not login_future.done():
+                login_future.set_result(False)
+            return
+        except Exception as e:
+            self.logger.exception(f'Exception during login: {e}')
+            await asyncio.sleep(10)
+            if login_future is not None and not login_future.done():
+                login_future.set_result(False)
+        finally:
+            if login_future is not None and not login_future.done():
+                login_future.set_result(False)
+            if login_transition_open:
+                self.error_manager.end_auth_transition(success=False)
 
     async def _reset_arlo_client(self) -> None:
         if self.arlo is not None:
@@ -678,28 +783,58 @@ class ArloProvider(
         elapsed = 0
         try:
             while True:
-                interval = 6600 + random.randint(-300, 300)
+                interval_minutes = self.event_stream_refresh_interval if self.event_stream_refresh_interval > 0 else 90
+                interval = max(60, interval_minutes * 60 + random.randint(-300, 300))
                 sleep_time = min(interval, hard_interval - elapsed)
                 await asyncio.sleep(sleep_time)
                 elapsed += sleep_time
                 if elapsed >= hard_interval:
-                    self.logger.debug('Hard MFA refresh interval reached, forcing full login.')
-                    async with self._periodic_lock:
-                        async with self.device_lock:
-                            await self.arlo.cancel_heartbeat()
-                            await self._initialize_plugin()
-                    break
+                    try:
+                        self.logger.debug('Hard MFA refresh interval reached, refreshing Arlo login.')
+                        with self.error_manager.auth_transition('hard MFA refresh cleanup'):
+                            arlo = self.arlo
+                            if arlo:
+                                await arlo.unsubscribe()
+                                await arlo.cancel_heartbeat()
+                            async with self._periodic_lock:
+                                async with self.device_lock:
+                                    self.full_reset_needed = True
+                        await self._login()
+                        break
+                    except RateLimitedError as e:
+                        remaining = int(e.retry_after or self.error_manager.rate_limit_remaining())
+                        self.logger.warning(f'Hard login refresh paused by rate limit for {remaining} seconds.')
+                        await asyncio.sleep(max(60, remaining))
+                    except TransientRequestError as e:
+                        self.logger.warning(f'Hard login refresh hit a temporary Arlo error: {e}')
+                        elapsed = max(0, elapsed - interval)
                 else:
-                    self.logger.debug('Session refresh interval reached, re-logging in.')
-                    async with self._periodic_lock:
-                        async with self.device_lock:
-                            self.arlo.finialized_login = False
-                            self.arlo.token = None
-                            self.arlo.logged_in = False
-                            await self.arlo.cancel_heartbeat()
-                            await self._login()
-                            await self._subscribe_to_event_stream()
-                            await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
+                    try:
+                        self.logger.debug('Session refresh interval reached, re-logging in.')
+                        with self.error_manager.auth_transition('scheduled session refresh cleanup'):
+                            arlo = self.arlo
+                            if arlo:
+                                await arlo.unsubscribe()
+                                await arlo.cancel_heartbeat()
+                            async with self._periodic_lock:
+                                async with self.device_lock:
+                                    if self.arlo:
+                                        self.arlo.finialized_login = False
+                                        self.arlo.token = None
+                                        self.arlo.logged_in = False
+                        await self._login()
+                        if self.arlo and self.arlo.logged_in:
+                            async with self._periodic_lock:
+                                async with self.device_lock:
+                                    if self.arlo and self.arlo.logged_in:
+                                        await self._subscribe_to_event_stream()
+                                        await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
+                    except RateLimitedError as e:
+                        remaining = int(e.retry_after or self.error_manager.rate_limit_remaining())
+                        self.logger.warning(f'Session refresh paused by rate limit for {remaining} seconds.')
+                        await asyncio.sleep(max(60, remaining))
+                    except TransientRequestError as e:
+                        self.logger.warning(f'Session refresh hit a temporary Arlo error: {e}')
         except asyncio.CancelledError:
             pass
 
@@ -842,7 +977,9 @@ class ArloProvider(
         return match.group(1) if match else None
 
     async def _do_arlo_setup(self) -> None:
+        self.setup_in_progress = True
         try:
+            await self.error_manager.wait_for_auth_ready('Arlo setup')
             async with self._periodic_lock:
                 self.storage.setItem('arlo_discovery_in_progress', 'true')
                 self.arlo_cameras = {}
@@ -858,17 +995,25 @@ class ArloProvider(
                         self.storage.setItem('plugin_version', PLUGIN_VERSION)
                     await self.mdns()
                 await self._device_handler()
-        except requests.exceptions.HTTPError:
-            self.logger.exception('HTTP error during Arlo login')
-            self.logger.error('Will retry with fresh login')
-            await self.arlo.cancel_heartbeat()
-            await self._initialize_plugin()
+        except UnauthorizedRestartException as e:
+            self.logger.warning(f'Arlo setup saw an expired session and queued auth recovery: {e}')
+            self.error_manager.request_auth_recovery(str(e))
+        except RateLimitedError as e:
+            self.logger.warning(
+                f'Arlo setup paused by rate limit for '
+                f'{int(e.retry_after or self.error_manager.rate_limit_remaining())} seconds.'
+            )
+        except TransientRequestError as e:
+            self.logger.warning(f'Temporary HTTP error during Arlo setup; will retry later: {e}')
         except Exception:
             self.logger.exception('Unexpected error during Arlo setup')
         finally:
+            self.setup_in_progress = False
             self.storage.setItem('arlo_discovery_in_progress', 'false')
             if self.arlo and self.arlo.event_stream:
                 self.arlo.event_stream.process_buffered_events()
+            if self.arlo and self.arlo.logged_in:
+                await self.arlo.start_heartbeat()
             self.logger.info('Arlo plugin initialized.')
 
     def request_restart(self, scope: str = 'plugin') -> None:
@@ -889,14 +1034,15 @@ class ArloProvider(
             self.logger.error(f'Failed to request restart for scope {scope}: {e}', exc_info=True)
 
     async def _request_plugin_restart(self, clear_cookies: bool) -> None:
-        try:
-            await self._shutdown(clear_cookies=clear_cookies)
-        except Exception as e:
-            self.logger.warning(f'Error during internal shutdown before requestRestart: {e}', exc_info=True)
-        try:
-            await scrypted_sdk.deviceManager.requestRestart()
-        except Exception as e:
-            self.logger.warning(f'Error requesting plugin restart: {e}', exc_info=True)
+        async with self._restart_lock:
+            try:
+                await self._shutdown(clear_cookies=clear_cookies)
+            except Exception as e:
+                self.logger.warning(f'Error during internal shutdown before requestRestart: {e}', exc_info=True)
+            try:
+                await scrypted_sdk.deviceManager.requestRestart()
+            except Exception as e:
+                self.logger.warning(f'Error requesting plugin restart: {e}', exc_info=True)
 
     async def _handle_restart(
         self,
@@ -908,30 +1054,31 @@ class ArloProvider(
     ) -> None:
         try:
             async with self._restart_lock:
-                async with self._periodic_lock:
-                    if refresh_login_loop:
+                if refresh_login_loop:
+                    async with self._periodic_lock:
                         await self.task_manager.cancel_and_await_by_tag('refresh', owner=self)
                         if self.arlo and self.arlo.logged_in:
                             self.task_manager.create_task(self._refresh_login_loop(), tag='refresh', owner=self)
-                    elif restart or relogin:
+                elif restart or relogin:
+                    if relogin:
+                        self.logger.info('Forcing account relogin.')
+                    else:
+                        self.logger.info('Forcing full restart.')
+                    async with self._periodic_lock:
                         async with self.device_lock:
-                            if relogin:
-                                self.logger.info('Forcing account relogin.')
-                                await self._shutdown_locked(clear_cookies=False)
-                                await self._initialize_plugin()
-                            if restart:
-                                self.logger.info('Forcing full restart.')
-                                await self._shutdown_locked(clear_cookies=True)
-                                await self._initialize_plugin()
-                    elif event_stream:
+                            await self._shutdown_locked(clear_cookies=restart)
+                    await self._initialize_plugin(await_login=True)
+                elif event_stream:
+                    await self.error_manager.wait_for_auth_ready('event stream restart')
+                    async with self._periodic_lock:
                         async with self.device_lock:
                             if self.arlo and self.arlo.logged_in:
                                 self.arlo.event_stream_transport = self.arlo_event_stream_transport
                                 await self.arlo.unsubscribe()
                             await self._subscribe_to_event_stream()
-                    else:
-                        self.logger.error('No valid restart scope provided.')
-                    return
+                else:
+                    self.logger.error('No valid restart scope provided.')
+                return
         except Exception as e:
             self.logger.error(f'Error during handle restart: {e}', exc_info=True)
 
@@ -973,6 +1120,7 @@ class ArloProvider(
         self.logger.info('Provider shutdown finished')
 
     async def _device_handler(self, periodic_discovery: bool | None = None) -> None:
+        await self.error_manager.wait_for_auth_ready('device discovery')
         async with self.device_lock:
             await self.discover_devices()
             await self._subscribe_to_event_stream(periodic_discovery)
@@ -1057,8 +1205,8 @@ class ArloProvider(
                     'group': 'IMAP MFA',
                     'key': 'imap_mfa_interval',
                     'title': 'Refresh MFA Interval',
-                    'description': 'Interval, in days, to refresh the MFA login session to Arlo Cloud. '
-                                   'Must be a value greater than 0 and less than 14.',
+                    'description': 'Interval, in days, to refresh browser authentication with Arlo Cloud. '
+                                   'Arlo browser authentication is kept at 14 days to avoid MFA churn.',
                     'type': 'number',
                     'value': self.imap_mfa_interval,
                 },
@@ -1216,10 +1364,9 @@ class ArloProvider(
             tag, func = periodic_map[key]
             await self._restart_periodic_task(tag, func)
         elif key == 'disable_plugin':
-            self.storage.setItem(key, str(value))
-            verb = 'disabled' if value else 'enabled'
-            self.logger.debug(f'Arlo plugin will be {verb}. Restarting...')
-            self.request_restart('plugin')
+            requested_disable = value if isinstance(value, bool) else str(value).lower() == 'true'
+            if self.error_manager.handle_disable_plugin_setting(requested_disable):
+                self.request_restart('plugin')
         else:
             self.storage.setItem(key, value)
         await self.onDeviceEvent(ScryptedInterface.Settings.value, None)
@@ -1232,8 +1379,8 @@ class ArloProvider(
                     raise ValueError('must be nonnegative')
             elif key == 'imap_mfa_interval':
                 v = int(val)
-                if v < 1 or v > 13:
-                    raise ValueError('must be between 1 and 13')
+                if v != 14:
+                    raise ValueError('must be 14 days')
             elif key == 'plugin_log_level':
                 if val not in ArloProvider.plugin_log_level_choices:
                     raise ValueError(f'must be one of {list(ArloProvider.plugin_log_level_choices.keys())}')
@@ -1257,7 +1404,7 @@ class ArloProvider(
             self.storage.setItem('imap_mfa_username', None)
             self.storage.setItem('imap_mfa_password', None)
             self.storage.setItem('imap_mfa_sender', 'do_not_reply@arlo.com')
-            self.storage.setItem('imap_mfa_interval', 10)
+            self.storage.setItem('imap_mfa_interval', 14)
             self.storage.setItem('imap_mfa_port', 993)
             self.storage.setItem('imap_mfa_use_local_index', 'false')
         except Exception as e:
@@ -1426,9 +1573,9 @@ class ArloProvider(
             ]
             for attempt in range(2):
                 try:
-                    await self.arlo.subscribe(subscribe_args)
+                    await self.arlo.subscribe(subscribe_args, start_heartbeat=not self.setup_in_progress)
                     break
-                except RuntimeError as e:
+                except (RuntimeError, TransientRequestError) as e:
                     if attempt == 0:
                         self.logger.warning(f'Event stream failed to connect: {e}')
                         self.logger.debug('Retrying stream setup after short delay...')
@@ -1513,10 +1660,13 @@ class ArloProvider(
                     else:
                         properties = await self._get_device_properties(device_dict)
             device = await self._get_device(native_id, properties)
-            await device.wait_for_ready()
             if not device:
                 self.logger.warning(f'Failed to create device for {device_dict["deviceName"]}, skipping registration.')
                 return False
+            try:
+                await asyncio.wait_for(device.wait_for_ready(), timeout=15)
+            except asyncio.TimeoutError:
+                self.logger.warning(f'Timed out waiting for {device_dict["deviceName"]} to finish startup initialization; continuing device registration.')
         if isinstance(device, ArloModeVirtualSecuritySystem):
             device.complete_init()
         if native_id.endswith('mvss') and location_name:

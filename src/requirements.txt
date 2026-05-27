@@ -1,11 +1,10 @@
-aiohttp==3.13.3
+aiohttp==3.13.5
 beautifulsoup4==4.14.3
-curl-cffi==0.13.0
-cryptography==46.0.3
+curl-cffi==0.15.0
+cryptography==48.0.0
 paho-mqtt==2.1.0
-requests==2.32.5
-requests-toolbelt==1.0.0
+requests==2.34.2
 sseclient==0.0.27
-urllib3==2.6.3
+urllib3==2.7.0
 websockets==16.0
-zeroconf==0.148.0
+zeroconf==0.149.16

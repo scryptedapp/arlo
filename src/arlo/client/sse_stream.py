@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import threading
@@ -7,6 +9,7 @@ import sseclient as sse
 from typing import Any
 
 from .stream import Stream
+from ..util import TransientRequestError
 
 
 class SSEEventStream(Stream):
@@ -15,6 +18,21 @@ class SSEEventStream(Stream):
         self.event_stream: sse.SSEClient | None = None
         self.event_stream_thread: threading.Thread | None = None
         self.shutting_down_stream: sse.SSEClient | None = None
+        self._transport_lock = threading.RLock()
+        self.stream_name = self._stream_name()
+
+    def _get_event_stream(self) -> sse.SSEClient | None:
+        with self._transport_lock:
+            return self.event_stream
+
+    def _set_event_stream(self, event_stream: sse.SSEClient | None) -> None:
+        with self._transport_lock:
+            self.event_stream = event_stream
+            self.shutting_down_stream = None
+
+    def _get_transport_state(self) -> tuple[sse.SSEClient | None, sse.SSEClient | None]:
+        with self._transport_lock:
+            return self.event_stream, self.shutting_down_stream
 
     def _close_event_stream_transport(self, event_stream: sse.SSEClient | None) -> None:
         if event_stream is None:
@@ -25,27 +43,24 @@ class SSEEventStream(Stream):
             pass
 
     async def start(self) -> None:
-        stream_name = self._stream_name()
-        if self.event_stream is not None:
-            self.logger.debug(f'{stream_name} already initialized. Skipping start.')
+        if self._get_event_stream() is not None:
+            self.logger.debug(f'{self.stream_name} already initialized. Skipping start.')
             return
-        self.logger.debug(f'Starting {stream_name} (host=myapi.arlo.com, transport=SSE)')
+        self.logger.debug(f'Starting {self.stream_name} (host=myapi.arlo.com, transport=SSE)')
         self._begin_connect_wait()
 
-        def thread_main(self: 'SSEEventStream') -> None:
-            event_stream: sse.SSEClient | None = self.event_stream
+        def thread_main(self: SSEEventStream, event_stream: sse.SSEClient) -> None:
             try:
                 for event in event_stream:
-                    if event_stream is None:
+                    current_stream, shutting_down_stream = self._get_transport_state()
+                    if current_stream is not event_stream and shutting_down_stream is not event_stream:
+                        self.logger.debug(f'{self.stream_name} {id(event_stream)} is stale. Exiting thread.')
                         return
-                    if self.event_stream is not event_stream and self.shutting_down_stream is not event_stream:
-                        self.logger.debug(f'{stream_name} {id(event_stream)} is stale. Exiting thread.')
-                        return
-                    if self.shutting_down_stream is event_stream:
-                        self.logger.debug(f'{stream_name} {id(event_stream)} shutting down. Exiting thread.')
+                    if shutting_down_stream is event_stream:
+                        self.logger.debug(f'{self.stream_name} {id(event_stream)} shutting down. Exiting thread.')
                         return
                     if event is None:
-                        self.logger.warning(f'{stream_name} {id(event_stream)} broke.')
+                        self.logger.warning(f'{self.stream_name} {id(event_stream)} broke.')
                         return
                     self.logger.debug(f'Received SSE event: {event}')
                     payload: str = event.data.strip()
@@ -57,63 +72,64 @@ class SSEEventStream(Stream):
                         self.logger.warning('Failed to decode SSE event.')
                         continue
                     if response.get('action') == 'logout':
-                        if self.event_stream_stop_event.is_set() or self.shutting_down_stream is event_stream:
-                            self.logger.debug(f'{stream_name} {id(event_stream)} disconnected.')
+                        _, shutting_down_stream = self._get_transport_state()
+                        if self.event_stream_stop_event.is_set() or shutting_down_stream is event_stream:
+                            self.logger.debug(f'{self.stream_name} {id(event_stream)} disconnected.')
                             return
                     elif response.get('status') == 'connected':
                         if not self.connected:
                             self._call_soon_threadsafe(
                                 self._mark_connected,
-                                f'{stream_name} {id(event_stream)} connected.'
+                                f'{self.stream_name} {id(event_stream)} connected.'
                             )
                     else:
                         self.event_loop.call_soon_threadsafe(self._queue_response, response)
-            except Exception:
-                self.logger.exception('Unhandled exception in SSE Event Stream thread. Triggering login restart.')
+            except Exception as e:
+                _, shutting_down_stream = self._get_transport_state()
+                if self.event_stream_stop_event.is_set() or shutting_down_stream is event_stream:
+                    self.logger.debug(f'{self.stream_name} {id(event_stream)} stopped during shutdown.')
+                    return
+                self.logger.error(f'{self.stream_name} thread failed: {e}')
                 try:
-                    if self.arlo and self.arlo.provider is not None:
-                        self.arlo.provider.request_restart(scope='relogin')
+                    self.provider.request_restart(scope='event_stream')
                 except Exception as e:
-                    self.logger.error(f'Error requesting provider restart after SSE failure: {e}')
+                    self.logger.error(f'{self.stream_name} failed to request restart: {e}')
             finally:
                 pass
 
         try:
-            self.logger.debug(f'Attempting {stream_name} connect...')
-            self.event_stream = sse.SSEClient(
+            self.logger.debug(f'Attempting {self.stream_name} connect...')
+            event_stream = sse.SSEClient(
                 'https://myapi.arlo.com/hmsweb/client/subscribe?token=' +
                 self.arlo.request.session.headers.get('Authorization'),
                 session=self.arlo.request.session
             )
+            self._set_event_stream(event_stream)
             self.event_stream_thread = threading.Thread(
                 name='SSEEventStream',
                 target=thread_main,
-                args=(self,)
+                args=(self, event_stream)
             )
             self.event_stream_thread.daemon = True
             self.event_stream_thread.start()
             try:
                 await self._await_connected(timeout=30)
             except asyncio.TimeoutError:
-                self.logger.error(f'{stream_name} connect timed out after 30 seconds')
+                self.logger.error(f'{self.stream_name} connect timed out after 30 seconds')
                 raise
-            self.logger.debug(f'{stream_name} start complete.')
+            self.logger.debug(f'{self.stream_name} start complete.')
         except Exception as e:
-            self.logger.error(
-                f'Failed to start {stream_name}: {e}. Triggering login restart.'
-            )
+            self.logger.error(f'{self.stream_name} start failed: {e}')
             try:
                 self._disconnect_transport_only()
             except Exception:
                 pass
-            try:
-
-                self.arlo.provider.request_restart(scope='relogin')
-            except Exception as e2:
-                self.logger.error(f'Error requesting provider restart after SSE init failure: {e2}')
+            self._set_event_stream(None)
+            self.event_stream_thread = None
+            raise TransientRequestError(f'{self.stream_name} start failed: {e}') from e
 
     def subscribe(self, topics: list[str]) -> None:
-        self.logger.debug('SSE Event Stream does not support topic subscriptions.')
+        self.logger.debug(f'{self.stream_name} does not support topic subscriptions.')
 
     async def _close_transport(self) -> None:
         self._disconnect_transport_only()
@@ -124,14 +140,12 @@ class SSEEventStream(Stream):
             except Exception:
                 pass
         self.event_stream_thread = None
-        self.event_stream = None
+        self._set_event_stream(None)
 
     def _disconnect_transport_only(self) -> None:
-        event_stream = self.event_stream
+        event_stream = self._get_event_stream()
         if event_stream is None:
             return
-        try:
+        with self._transport_lock:
             self.shutting_down_stream = event_stream
-        except Exception:
-            pass
         self._close_event_stream_transport(event_stream)
