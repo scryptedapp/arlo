@@ -13,7 +13,7 @@ from typing import List, TYPE_CHECKING
 import scrypted_arlo_go
 
 import scrypted_sdk
-from scrypted_sdk.types import Brightness, Setting, Settings, SettingValue, Device, Camera, VideoCamera, ObjectDetector, ObjectDetectionTypes, RequestMediaStreamOptions, VideoClips, VideoClip, VideoClipOptions, MotionSensor, AudioSensor, Battery, Charger, ChargeState, DeviceProvider, MediaObject, ResponsePictureOptions, ResponseMediaStreamOptions, ScryptedMimeTypes, ScryptedInterface, ScryptedDeviceType
+from scrypted_sdk.types import Brightness, Setting, Settings, SettingValue, Device, Camera, VideoCamera, ObjectDetector, ObjectDetectionTypes, RequestMediaStreamOptions, VideoClips, VideoClip, VideoClipOptions, MotionSensor, AudioSensor, Battery, Charger, ChargeState, DeviceProvider, MediaObject, ResponsePictureOptions, ResponseMediaStreamOptions, ScryptedMimeTypes, ScryptedInterface, ScryptedDeviceType, PanTiltZoom, PanTiltZoomCommand
 
 from .experimental import EXPERIMENTAL
 from .arlo.arlo_async import USER_AGENTS
@@ -100,7 +100,7 @@ class ArloCameraIntercomSession(BackgroundTaskMixin):
         raise NotImplementedError("not implemented")
 
 
-class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger):
+class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, ObjectDetector, DeviceProvider, VideoClips, MotionSensor, AudioSensor, Battery, Charger, PanTiltZoom):
     SCRYPTED_TO_ARLO_BRIGHTNESS_MAP = {
         0: -2,
         25: -1,
@@ -230,7 +230,7 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         self.create_task(self.delayed_init())
 
     async def delayed_init(self) -> None:
-        if not self.has_battery:
+        if not self.has_battery and not self.has_ptz:
             return
 
         iterations = 1
@@ -240,7 +240,15 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
                 return
 
             try:
-                self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
+                if self.has_battery:
+                    self.chargeState = ChargeState.Charging.value if self.wired_to_power else ChargeState.NotCharging.value
+                if self.has_ptz:
+                    self.ptzCapabilities = {
+                        "pan": True,
+                        "tilt": True,
+                        "zoom": False,
+                        "presets": {tok: meta[0] for tok, meta in self.arlo_presets.items()},
+                    }
                 return
             except Exception as e:
                 self.logger.debug(f"Delayed init failed, will try again: {e}")
@@ -354,10 +362,29 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
         if self.has_cloud_recording:
             results.add(ScryptedInterface.VideoClips.value)
 
+        if self.has_ptz:
+            results.add(ScryptedInterface.PanTiltZoom.value)
+
         return list(results)
 
     def get_device_type(self) -> str:
         return ScryptedDeviceType.Camera.value
+
+    @async_print_exception_guard
+    async def ptzCommand(self, command: PanTiltZoomCommand) -> None:
+        if not self.has_ptz:
+            return
+        # Arlo PTZ is velocity-based continuous motion (move-until-stop), the same as its
+        # own app: action 'continuousMove' with a velocity, then 'stop'. UniFi/ONVIF drives
+        # this via ContinuousMove (velocity in pan/tilt) and Stop (zero velocity).
+        pan = float(command.get("pan", 0.0))
+        tilt = float(command.get("tilt", 0.0))
+        if pan == 0.0 and tilt == 0.0:
+            self.logger.info("PTZ -> stop")
+            self.provider.arlo.PTZStop(self.arlo_basestation, self.arlo_device)
+        else:
+            self.logger.info(f"PTZ -> continuousMove vx={pan:.3f} vy={tilt:.3f}")
+            self.provider.arlo.PTZContinuous(self.arlo_basestation, self.arlo_device, pan, tilt)
 
     def get_builtin_child_device_manifests(self) -> List[Device]:
         results = []
@@ -469,6 +496,21 @@ class ArloCamera(ArloDeviceBase, Settings, Camera, VideoCamera, Brightness, Obje
             return True
         else:
             return "SIPStreaming" in self.arlo_capabilities.get("Capabilities", {}).get("Streaming", {})
+
+    @property
+    def has_ptz(self) -> bool:
+        return bool(self.arlo_capabilities.get("Capabilities", {}).get("PanTiltZoom", {}).get("pan"))
+
+    @property
+    def arlo_presets(self) -> dict:
+        """ Maps Arlo presetToken -> (name, x, y). """
+        out = {}
+        for p in (self.arlo_device.get("properties") or {}).get("presets") or []:
+            tok = p.get("presetToken")
+            pos = (p.get("panTiltSpaces") or {}).get("positionGenericSpace") or {}
+            if tok:
+                out[tok] = (p.get("name", tok), pos.get("x", 0.0), pos.get("y", 0.0))
+        return out
 
     async def getSettings(self) -> List[Setting]:
         result = []

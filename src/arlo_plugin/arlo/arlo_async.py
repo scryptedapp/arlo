@@ -1226,6 +1226,27 @@ class Arlo(object):
             }
         })
 
+    def PTZContinuous(self, basestation, camera, x, y):
+        """ Continuously pan/tilt at velocity (x, y), each in [-1.0, 1.0] (x=pan, y=tilt).
+        The camera keeps moving until PTZStop() is called. This is exactly how Arlo's own
+        app/web client drives PTZ (action 'continuousMove' over the device notify channel). """
+        x = max(-1.0, min(1.0, float(x)))
+        y = max(-1.0, min(1.0, float(y)))
+        return self.Notify(basestation, {
+            "action": "continuousMove",
+            "resource": f"cameras/{camera.get('deviceId')}/ptz",
+            "publishResponse": True,
+            "properties": {"panTiltSpaces": {"velocityGenericSpace": {"x": x, "y": y}}},
+        })
+
+    def PTZStop(self, basestation, camera):
+        """ Stop an in-progress pan/tilt move. """
+        return self.Notify(basestation, {
+            "action": "stop",
+            "resource": f"cameras/{camera.get('deviceId')}/ptz",
+            "publishResponse": True,
+        })
+
     def SpotlightOn(self, basestation, camera):
         resource = f"cameras/{camera.get('deviceId')}"
         return self.Notify(basestation, {
