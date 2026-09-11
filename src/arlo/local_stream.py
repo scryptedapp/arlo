@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import ssl
 import tempfile
 import traceback
@@ -104,6 +105,12 @@ class ArloLocalStreamProxy:
         self.ssl_context.verify_mode = ssl.CERT_NONE
         self.ssl_context.load_cert_chain(self.certfile, self.keyfile)
         self.nonce = 0
+
+    @property
+    def basestation_rtsp_endpoint(self) -> str:
+        # The hostname is useful when mDNS is available, but the IP address is
+        # sufficient for a manually configured basestation.
+        return self.basestation.host_name or self.basestation.ip
 
     async def start(self) -> int:
         self.listener = await asyncio.start_server(self._handle_connection, '127.0.0.1', 0)
@@ -209,10 +216,10 @@ class ArloLocalStreamProxy:
             self.nonce += 1
             msg.set_header('Nonce', str(self.nonce))
         if 'rtsp://' in msg.first_line:
-            msg.first_line = msg.first_line.replace(f'localhost:{self.listener_port}', self.basestation.host_name)
+            msg.first_line = msg.first_line.replace(f'localhost:{self.listener_port}', self.basestation_rtsp_endpoint)
         for k, v in msg.headers:
             if 'rtsp://' in v:
-                msg.set_header(k, str(v).replace(f'localhost:{self.listener_port}', self.basestation.host_name))
+                msg.set_header(k, str(v).replace(f'localhost:{self.listener_port}', self.basestation_rtsp_endpoint))
 
     def _handle_incoming_nonce_and_urls(self, msg: RTSPMessage) -> None:
         new_nonce = msg.get_header('Nonce')
@@ -222,10 +229,10 @@ class ArloLocalStreamProxy:
             except Exception as e:
                 self.logger.error(f'Error parsing nonce "{new_nonce}": {e}')
         if 'rtsp://' in msg.first_line:
-            msg.first_line = msg.first_line.replace(self.basestation.host_name, f'localhost:{self.listener_port}')
+            msg.first_line = re.sub(r'rtsp://[^/\s]+', f'rtsp://localhost:{self.listener_port}', msg.first_line)
         for k, v in msg.headers:
             if 'rtsp://' in v:
-                msg.set_header(k, str(v).replace(self.basestation.host_name, f'localhost:{self.listener_port}'))
+                msg.set_header(k, re.sub(r'rtsp://[^/\s]+', f'rtsp://localhost:{self.listener_port}', str(v)))
 
     def _is_rtsp(self, data: bytes) -> bool:
         rtsp_methods = (
