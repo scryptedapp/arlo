@@ -938,8 +938,6 @@ class ArloCamera(
                     raise Exception('This camera is not connected to a basestation, unable to use local stream.')
                 if basestation.ip is None or not basestation.ip:
                     raise Exception("Must specify the basestation's IP address to use local stream.")
-                if basestation.host_name is None or not basestation.host_name:
-                    raise Exception("Must specify the basestation's Hostname to use local stream.")
                 if basestation.peer_cert is None or not basestation.peer_cert:
                     raise Exception('This basestation does not have a certificate, unable to use local stream.')
                 proxy = ArloLocalStreamProxy(

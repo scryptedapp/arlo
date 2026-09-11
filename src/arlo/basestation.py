@@ -139,9 +139,11 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
         self.logger.debug('Certificates have been stored with Scrypted')
 
     async def _mdns(self) -> None:
+        # Keep any manually configured endpoint when mDNS is unavailable. This is
+        # common when Scrypted runs in a container, where multicast discovery is
+        # not necessarily available. Previously these values were cleared before
+        # discovery, so a manual configuration was lost on every plugin restart.
         self.storage.setItem('mdns_boolean', False)
-        self.storage.setItem('ip', '')
-        self.storage.setItem('host_name', '')
         self.logger.debug('Checking if Basestation is found in mDNS.')
         self.storage.setItem('mdns_boolean', bool(self.provider.mdns_services.get(self.arlo_device['deviceId'])))
         if self.mdns_boolean == True:
@@ -256,7 +258,7 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
             result.append(
                 {
                     'group': 'General',
-                    'key': 'ip_addr',
+                    'key': 'ip',
                     'title': 'IP Address',
                     'description': 'This is the IP Address of the basestation pulled from mDNS. ' + \
                                    'This will be used for cameras that support local streaming. ' + \
@@ -272,11 +274,11 @@ class ArloBasestation(ArloDeviceBase, DeviceProvider, Settings):
                     'group': 'General',
                     'key': 'host_name',
                     'title': 'Hostname',
-                    'description': 'This is the Hostname of the basestation pulled from mDNS. ' + \
-                                   'This will be used for cameras that support local streaming. ' + \
-                                   'Note that the basestation must be in the same network as Scrypted for this to work.'
+                    'description': 'Optional hostname of the basestation, pulled from mDNS when available. ' + \
+                                   'Local streaming can use the configured IP address when this is empty. ' + \
+                                   'Note that the basestation must be in the same network as Scrypted for this to work. ' + \
                                    'If this is empty, it means mDNS failed to find your basestation, ' + \
-                                   'You will have to input the Hostname into this field manually, ' + \
+                                   'you can enter the hostname manually if needed, ' + \
                                    'Usually the model including the domain, i.e. "VMB5000.local" or "VMB5000-2.local" ' + \
                                    'if you have mutliple of the same model basestation.',
                     'value': self.host_name,
