@@ -1,0 +1,13 @@
+.DS_Store
+out/
+node_modules/
+*.map
+fs
+src
+scripts
+.vscode
+.github
+dist/*.js
+dist/*.txt
+tsconfig.json
+webpack.nodejs.config.js
