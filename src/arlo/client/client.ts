@@ -896,11 +896,8 @@ export class ArloClient {
         }, { timeout, signal: waitSignal }), trigger, signal);
     }
 
-    // SIP and push to talk.
-
-    async getSipInfo(): Promise<any> {
-        return this.ignoreUnauthorized('get_sip_info', undefined, () => this.api.get(`https://${API_URL}/hmsweb/users/devices/sipInfo`));
-    }
+    // SIP streaming and push to talk. The SIP-only intercom takes its SIP
+    // session from the cloud stream instead of a sipInfo request.
 
     async getSipInfoV2(camera: ArloDevice): Promise<any> {
         const url = `https://${API_URL}/hmsweb/users/devices/sipInfo/v2?cameraId=${camera.deviceId}`
