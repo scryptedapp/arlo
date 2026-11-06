@@ -4,7 +4,7 @@ import path from 'node:path';
 type Impers = typeof import('impers');
 
 interface Log {
-    info(message: string): void;
+    debug(message: string): void;
     warn(message: string): void;
 }
 
@@ -69,7 +69,7 @@ function trim(dir: string): number {
 export async function initImpers(log: Log): Promise<void> {
     const { Curl, resolveLibrary } = await loadImpers();
     const library = await resolveLibrary();
-    log.info(`Using ${Curl.version()} from ${library.path}`);
+    log.debug(`Using ${Curl.version()} from ${library.path}`);
     if (!library.isImpersonate) {
         log.warn('libcurl-impersonate is not loaded; Arlo requests will not look like a browser.');
         return;
@@ -86,10 +86,10 @@ export async function initImpers(log: Log): Promise<void> {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (entry.isDirectory() && entry.name !== release) {
             fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true });
-            log.info(`Removed unused libcurl-impersonate ${entry.name}.`);
+            log.debug(`Removed unused libcurl-impersonate ${entry.name}.`);
         }
     }
     const freed = trim(path.join(dir, release, platform));
     if (freed)
-        log.info(`Removed ${(freed / 1e6).toFixed(1)} MB of libcurl-impersonate ${release} files not needed at runtime.`);
+        log.debug(`Removed ${(freed / 1e6).toFixed(1)} MB of libcurl-impersonate ${release} files not needed at runtime.`);
 }
