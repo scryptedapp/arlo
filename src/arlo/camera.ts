@@ -167,8 +167,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                     this.batteryLevel = this.arloProperties.batteryLevel ?? 0;
                     this.chargeState = this.wiredToPower ? ChargeState.Charging : ChargeState.NotCharging;
                 }
-                if (this.hasChargeNotificationLed)
-                    this.on = !!this.arloProperties.chargeNotificationLedEnable;
+                if (this.ledProperty)
+                    this.on = !!this.arloProperties[this.ledProperty];
                 this.deviceState = this.arloProperties.connectionState ?? 'unavailable';
                 this.activityState = this.arloProperties.activityState ?? 'unavailable';
                 this.brightness = ARLO_TO_SCRYPTED_BRIGHTNESS[this.arloProperties.brightness ?? 0];
@@ -207,9 +207,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         if (this.hasBattery)
             this.createOrRegisterEventSubscription('battery_subscription', () => arlo().subscribeToPropertyEvents(this.arloDevice, 'batteryLevel',
                 level => this.batteryLevel = level));
-        if (this.hasChargeNotificationLed)
-            this.createOrRegisterEventSubscription('charge_notification_led_subscription', () => arlo().subscribeToPropertyEvents(this.arloDevice,
-                'chargeNotificationLedEnable', enabled => this.on = enabled));
+        const ledProperty = this.ledProperty;
+        if (ledProperty)
+            this.createOrRegisterEventSubscription('led_subscription', () => arlo().subscribeToPropertyEvents(this.arloDevice,
+                ledProperty, enabled => this.on = enabled));
         this.createOrRegisterEventSubscription('brightness_subscription', () => arlo().subscribeToPropertyEvents(this.arloDevice, 'brightness',
             brightness => this.brightness = ARLO_TO_SCRYPTED_BRIGHTNESS[brightness]));
         let lastSeen = 0;
@@ -316,7 +317,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             ScryptedInterface.ObjectDetector,
             ScryptedInterface.Brightness,
         ]);
-        if (this.hasChargeNotificationLed)
+        if (this.ledProperty)
             interfaces.add(ScryptedInterface.OnOff);
         if (this.hasSipWebrtcStreaming && !this.disableWebrtc)
             interfaces.add(ScryptedInterface.RTCSignalingChannel);
@@ -395,8 +396,21 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.arloDevice.deviceId === this.arloDevice.parentId && this.provider.arlo?.userId === this.arloDevice.owner?.ownerId;
     }
 
+    // Wired indoor cameras have a status light instead, and still report a
+    // charge notification LED setting that does nothing.
+    get hasStatusLight(): boolean {
+        return this.hasCapability('StatusLight') && this.hasProperty('idleLedEnable');
+    }
+
     get hasChargeNotificationLed(): boolean {
-        return this.hasProperty('chargeNotificationLedEnable');
+        return !this.hasStatusLight && this.hasProperty('chargeNotificationLedEnable');
+    }
+
+    // The Arlo property behind the camera's OnOff.
+    get ledProperty(): 'idleLedEnable' | 'chargeNotificationLedEnable' | undefined {
+        if (this.hasStatusLight)
+            return 'idleLedEnable';
+        return this.hasChargeNotificationLed ? 'chargeNotificationLedEnable' : undefined;
     }
 
     get wiredToPower(): boolean {
@@ -919,15 +933,27 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
     }
 
-    // The charge notification LED.
+    // The status light, or the charge notification LED.
 
     async turnOn(): Promise<void> {
-        await this.provider.arlo!.setChargeNotificationLed(this.arloBasestation, this.arloDevice, true)
-            .catch(e => this.logger.error('Error turning charge notification LED on:', e));
+        await this.setLed(true);
     }
 
     async turnOff(): Promise<void> {
-        await this.provider.arlo!.setChargeNotificationLed(this.arloBasestation, this.arloDevice, false)
-            .catch(e => this.logger.error('Error turning charge notification LED off:', e));
+        await this.setLed(false);
+    }
+
+    private async setLed(on: boolean): Promise<void> {
+        const arlo = this.provider.arlo!;
+        const statusLight = this.hasStatusLight;
+        try {
+            if (statusLight)
+                await arlo.setStatusLight(this.arloBasestation, this.arloDevice, on);
+            else
+                await arlo.setChargeNotificationLed(this.arloBasestation, this.arloDevice, on);
+        }
+        catch (e) {
+            this.logger.error(`Error turning ${statusLight ? 'status light' : 'charge notification LED'} ${on ? 'on' : 'off'}:`, e);
+        }
     }
 }

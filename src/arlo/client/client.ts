@@ -962,6 +962,10 @@ export class ArloClient {
         await this.setCameraProperties('set_charge_notification_led', basestation, camera.deviceId, { chargeNotificationLedEnable: on });
     }
 
+    async setStatusLight(basestation: ArloDevice, camera: ArloDevice, on: boolean): Promise<void> {
+        await this.setCameraProperties('set_status_light', basestation, camera.deviceId, { idleLedEnable: on });
+    }
+
     // Arlo brightness runs from -2 to 2.
     async setBrightness(basestation: ArloDevice, camera: ArloDevice, brightness: number): Promise<void> {
         await this.setCameraProperties('set_brightness', basestation, camera.deviceId, { brightness });
