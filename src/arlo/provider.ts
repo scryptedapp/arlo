@@ -1,11 +1,16 @@
 import { DeviceProvider, ScryptedDeviceBase, Setting, Settings, SettingValue } from '@scrypted/sdk';
 
 import { initImpers } from './client/request';
+import { Logger } from './logging';
+import { TaskManager } from './util';
 
 export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, Settings {
+    readonly logger = new Logger('Arlo Provider', this.console);
+    readonly taskManager = new TaskManager(this.logger);
+
     constructor(nativeId?: string) {
         super(nativeId);
-        initImpers(this.console).catch(e => this.console.error('Failed to load impers:', e));
+        this.taskManager.createTask(() => initImpers(this.logger), { tag: 'initialize_plugin', owner: this });
     }
 
     async getSettings(): Promise<Setting[]> {
