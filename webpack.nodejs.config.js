@@ -1,6 +1,13 @@
 const path = require('path');
 const defaultConfig = require(process.env.SCRYPTED_DEFAULT_WEBPACK_CONFIG);
 
+// Keep the Scrypted SDK's CommonJS build CommonJS; see the loader for why.
+defaultConfig.module.rules.push({
+    test: /[\\/]@scrypted[\\/]sdk[\\/]dist[\\/]src[\\/]index\.js$/,
+    loader: path.resolve(__dirname, 'scripts/sdk-import-meta-loader.cjs'),
+    enforce: 'pre',
+});
+
 // koffi is impers' dependency, not ours, so resolve it from impers.
 const koffi = require.resolve('koffi', {
     paths: [path.dirname(require.resolve('impers'))],
