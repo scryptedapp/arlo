@@ -52,9 +52,6 @@ const ARLO_TO_SCRYPTED_BRIGHTNESS: Record<number, number> = Object.fromEntries(
     Object.entries(SCRYPTED_TO_ARLO_BRIGHTNESS).map(([scrypted, arlo]) => [arlo, Number(scrypted)]));
 
 const TIMEOUT = 10_000;
-// Arlo wakes the camera, which captures and uploads a full-frame snapshot;
-// some cameras take over 20 seconds.
-const SNAPSHOT_TIMEOUT = 30_000;
 const DAY = 86_400_000;
 
 export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, Brightness, Camera, Charger, DeviceProvider,
@@ -631,7 +628,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.logger.debug('Getting snapshot URL');
         try {
             await this.waitForStateChange();
-            this.lastSnapshotUrl = await this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: SNAPSHOT_TIMEOUT });
+            this.lastSnapshotUrl = await this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT });
         }
         catch (e) {
             if (e instanceof TimeoutError)
