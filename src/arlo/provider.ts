@@ -1,11 +1,15 @@
 import crypto from 'node:crypto';
 
-import sdk, { DeviceProvider, ScryptedDeviceBase, ScryptedInterface, Setting, Settings, SettingValue } from '@scrypted/sdk';
+import sdk, { Device, DeviceProvider, ScryptedDeviceBase, ScryptedInterface, Setting, Settings, SettingValue } from '@scrypted/sdk';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { ImapFlow, MessageStructureObject } from 'imapflow';
 
+import { ArloDeviceBase } from './base';
+import { ArloBasestation } from './basestation';
+import { ArloCamera } from './camera';
 import { ArloClient, ArloClientHost, ArloDevice, browseArloServices } from './client';
 import { initImpers } from './client/request';
+import { ArloDoorbell } from './doorbell';
 import { LOG_LEVELS, Logger, LogLevel, setLogLevel } from './logging';
 import {
     AsyncEvent,
@@ -22,6 +26,7 @@ import {
     UnauthorizedError,
     withTimeout,
 } from './util';
+import { ArloModeVirtualSecuritySystem } from './vss';
 
 const DEVICE_TYPE_BASESTATION = 'basestation';
 const DEVICE_TYPE_SIREN = 'siren';
@@ -197,8 +202,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     arloCameras = new Map<string, ArloDevice>();
     arloMvss = new Map<string, ModeVirtualSecuritySystemInfo>();
     allDeviceIds: string[] = [];
-    // Replaced by the device classes in phase 4.
-    readonly scryptedDevices = new Map<string, { close(): Promise<void>, refreshDevice?(): Promise<void> }>();
+    readonly scryptedDevices = new Map<string, ArloDeviceBase>();
     setupInProgress = false;
     fullResetNeeded = false;
 
@@ -416,11 +420,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                     return this.deviceLock.run(async () => [...this.scryptedDevices.values()], signal);
                 }, signal);
                 for (const device of devices) {
+                    if (device instanceof ArloModeVirtualSecuritySystem)
+                        continue;
                     try {
-                        await device.refreshDevice?.();
+                        await device.refreshDevice();
                     }
                     catch (e) {
-                        this.logger.error('Error refreshing device:', e);
+                        this.logger.error(`Error refreshing ${device.arloDevice.deviceName}:`, e);
                     }
                 }
             }
@@ -975,10 +981,195 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.logger.info('Subscribed to Arlo event stream successfully.');
     }
 
-    // Phase 4 registers the discovered devices with Scrypted here.
+    // Registers the discovered devices and their children with Scrypted.
     private async createDevices(): Promise<void> {
-        this.logger.info(`Discovered ${this.arloBasestations.size} basestation(s), ${this.arloCameras.size} camera(s) `
-            + `and ${this.arloMvss.size} mode security system(s); device creation is not built yet.`);
+        if (!this.arlo?.loggedIn)
+            throw new Error('Arlo client not connected, cannot create devices');
+        this.logger.info('Creating devices...');
+        const manifests = new Map<string | undefined, Device[]>();
+        let basestations = 0;
+        for (const [nativeId, basestation] of this.arloBasestations) {
+            if (this.arloCameras.has(nativeId))
+                continue;
+            try {
+                if (await this.registerDevice(nativeId, basestation, manifests))
+                    basestations++;
+            }
+            catch (e) {
+                this.logger.error(`Exception registering basestation ${basestation.deviceName}:`, e);
+            }
+        }
+        this.logCreationMismatch('basestations', [...this.arloBasestations.keys()].filter(id => !this.arloCameras.has(id)).length, basestations);
+        let cameras = 0;
+        for (const [nativeId, camera] of this.arloCameras) {
+            try {
+                if (await this.registerDevice(nativeId, camera, manifests, camera.parentId))
+                    cameras++;
+            }
+            catch (e) {
+                this.logger.error(`Exception registering camera ${camera.deviceName}:`, e);
+            }
+        }
+        this.logCreationMismatch('cameras', this.arloCameras.size, cameras);
+        if (this.mvssEnabled) {
+            let mvss = 0;
+            for (const [nativeId, info] of this.arloMvss) {
+                try {
+                    if (await this.registerDevice(nativeId, info as unknown as ArloDevice, manifests, undefined, info.location_name))
+                        mvss++;
+                }
+                catch (e) {
+                    this.logger.error(`Exception registering mvss ${info.deviceName}:`, e);
+                }
+            }
+            this.logCreationMismatch('mode virtual security systems', this.arloMvss.size, mvss);
+        }
+        await this.sendDevicesToScrypted(manifests);
+        this.logger.info('Done creating devices.');
+        this.settingsChanged();
+    }
+
+    // Creates the device if it is new and adds its manifest, and its
+    // children's, to manifests by provider. Returns false for hidden devices.
+    private async registerDevice(nativeId: string, deviceDict: ArloDevice, manifests: Map<string | undefined, Device[]>,
+        parentId?: string, locationName?: string): Promise<boolean> {
+        if (this.hiddenDeviceIds.includes(nativeId)) {
+            this.logger.debug(`Skipping ${deviceDict.deviceName} as it is hidden.`);
+            return false;
+        }
+        let device = this.scryptedDevices.get(nativeId);
+        if (device) {
+            this.logger.debug(`Device ${deviceDict.deviceName} already exists, skipping re-registration.`);
+        }
+        else {
+            let properties: Record<string, any> = {};
+            if (!nativeId.endsWith('mvss')) {
+                properties = deviceDict.properties ?? {};
+                if (!Object.keys(properties).length)
+                    properties = parentId
+                        ? await this.getDeviceProperties(this.arloBasestations.get(parentId)!, deviceDict)
+                        : await this.getDeviceProperties(deviceDict);
+            }
+            device = this.getOrCreateDevice(nativeId, properties);
+            if (!device) {
+                this.logger.warn(`Failed to create device for ${deviceDict.deviceName}, skipping registration.`);
+                return false;
+            }
+            try {
+                await withTimeout(device.waitForReady(), 15_000);
+            }
+            catch {
+                this.logger.warn(`Timed out waiting for ${deviceDict.deviceName} to finish startup initialization; continuing device registration.`);
+            }
+        }
+        if (device instanceof ArloModeVirtualSecuritySystem)
+            device.completeInit();
+        const manifest = nativeId.endsWith('mvss') && locationName
+            ? device.getDeviceManifest({
+                name: `Arlo Mode Virtual Security System ${locationName}`,
+                infoOverrides: { model: 'Arlo Mode Virtual Security System', manufacturer: 'Arlo', firmware: '1.0', serialNumber: '000' },
+                nativeId,
+            })
+            : device.getDeviceManifest();
+        this.logger.debug(`Interfaces for ${deviceDict.deviceName}: ${JSON.stringify(device.getApplicableInterfaces())}`);
+        const provider = !parentId || this.hiddenDeviceIds.includes(parentId) || nativeId === parentId ? undefined : parentId;
+        this.appendManifest(manifests, provider, manifest);
+        await sdk.deviceManager.onDeviceDiscovered(manifest);
+        for (const child of device.getBuiltinChildDeviceManifests()) {
+            await sdk.deviceManager.onDeviceDiscovered(child);
+            this.appendManifest(manifests, child.providerNativeId, child);
+        }
+        return true;
+    }
+
+    private appendManifest(manifests: Map<string | undefined, Device[]>, provider: string | undefined, manifest: Device): void {
+        const list = manifests.get(provider) ?? [];
+        if (!list.some(entry => entry.nativeId === manifest.nativeId))
+            list.push(manifest);
+        manifests.set(provider, list);
+    }
+
+    private logCreationMismatch(kind: string, total: number, shown: number): void {
+        const singular = kind.slice(0, -1);
+        if (total === shown) {
+            this.logger.info(`Created ${shown} ${shown === 1 ? singular : kind}.`);
+            return;
+        }
+        const wifi = singular === 'camera' ? ' or is a Wi-Fi Camera' : '';
+        this.logger.info(`Created ${total} ${total === 1 ? singular : kind}, but${shown === 0 ? ' ' : ' only '}${shown} ${shown === 1 ? 'is' : 'are'} shown.`);
+        this.logger.info(`This could be because a ${singular} is hidden${wifi}.`);
+        this.logger.info(`If a ${singular} is not hidden${wifi} but is still missing, ensure all ${kind} are added correctly in the Arlo App.`);
+    }
+
+    // Each provider's list is complete, so Scrypted removes the devices left
+    // out of it, such as newly hidden ones.
+    private async sendDevicesToScrypted(manifests: Map<string | undefined, Device[]>): Promise<void> {
+        for (const [provider, devices] of manifests) {
+            if (provider === undefined)
+                continue;
+            const name = this.arloBasestations.get(provider)?.deviceName ?? this.arloCameras.get(provider)?.deviceName ?? provider;
+            this.logger.debug(`Sending ${name} and children to scrypted server`);
+            await sdk.deviceManager.onDevicesChanged({ devices, providerNativeId: provider });
+        }
+        const root = manifests.get(undefined);
+        if (root?.length)
+            await sdk.deviceManager.onDevicesChanged({ devices: root });
+    }
+
+    // Asks for a device's properties, trying a second time after 5 seconds.
+    async getDeviceProperties(basestation: ArloDevice, camera?: ArloDevice): Promise<Record<string, any>> {
+        const id = camera?.deviceId ?? basestation.deviceId;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return await this.arlo!.triggerProperties(basestation, camera, { timeout: 5_000 });
+            }
+            catch (e) {
+                if (!(e instanceof TimeoutError)) {
+                    this.logger.error(`Error while fetching properties for ${id}: ${e}`);
+                    return {};
+                }
+            }
+        }
+        this.logger.error(`Timeout while fetching properties for ${id}`);
+        return {};
+    }
+
+    private getOrCreateDevice(nativeId: string, properties: Record<string, any>): ArloDeviceBase | undefined {
+        let device = this.scryptedDevices.get(nativeId);
+        if (device)
+            return device;
+        this.logger.debug(`Device ${nativeId} not found, creating new device.`);
+        device = this.createDevice(nativeId, properties);
+        if (device)
+            this.scryptedDevices.set(nativeId, device);
+        return device;
+    }
+
+    private createDevice(nativeId: string, properties: Record<string, any>): ArloDeviceBase | undefined {
+        if (nativeId.endsWith('mvss')) {
+            const info = this.arloMvss.get(nativeId);
+            if (!info)
+                return undefined;
+            const device = info as unknown as ArloDevice;
+            return new ArloModeVirtualSecuritySystem(nativeId, device, device, properties, this);
+        }
+        const camera = this.arloCameras.get(nativeId);
+        if (!camera) {
+            const basestation = this.arloBasestations.get(nativeId);
+            if (!basestation) {
+                this.logger.warn(`Device ${nativeId} not created, it has not been discovered yet.`);
+                return undefined;
+            }
+            return new ArloBasestation(nativeId, basestation, properties, this);
+        }
+        const basestation = this.arloBasestations.get(camera.parentId);
+        if (!basestation) {
+            this.logger.warn(`Cannot create camera with nativeId ${nativeId} when ${camera.parentId} is not a valid basestation`);
+            return undefined;
+        }
+        return camera.deviceType === DEVICE_TYPE_DOORBELL
+            ? new ArloDoorbell(nativeId, camera, basestation, properties, this)
+            : new ArloCamera(nativeId, camera, basestation, properties, this);
     }
 
     // Restarts.
@@ -1121,6 +1312,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.taskManager.createTask(loop, { tag, owner: this });
                 break;
             }
+            case 'auto_snapshot_generation':
+                await this.storageSettings.putSetting(key, value);
+                for (const device of this.scryptedDevices.values()) {
+                    if (device instanceof ArloCamera)
+                        await device.updateAutoSnapshot().catch(e => this.logger.debug(`Failed to update auto snapshot refresh for ${device.nativeId}: ${e}`));
+                }
+                break;
             case 'disable_plugin': {
                 const requestedDisable = value === true || value === 'true';
                 if (this.errorManager.handleDisablePluginSetting(requestedDisable))
@@ -1157,12 +1355,20 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.storage.removeItem(key);
     }
 
-    // Devices; built in phase 4.
-
+    // Scrypted asks for devices it already knows, including at startup before
+    // discovery has created them; those are returned once discovery runs.
     async getDevice(nativeId: string): Promise<any> {
+        if (!this.disablePlugin) {
+            const name = this.arloBasestations.get(nativeId)?.deviceName ?? this.arloCameras.get(nativeId)?.deviceName ?? this.arloMvss.get(nativeId)?.deviceName ?? nativeId;
+            this.logger.debug(`Scrypted requested to load device ${name}`);
+        }
         return this.scryptedDevices.get(nativeId);
     }
 
+    // A device removed in Scrypted stops its work here.
     async releaseDevice(id: string, nativeId: string): Promise<void> {
+        const device = this.scryptedDevices.get(nativeId);
+        this.scryptedDevices.delete(nativeId);
+        await device?.close();
     }
 }

@@ -51,6 +51,18 @@ export interface ArloDevice {
 
 export type Unsubscribe = () => void;
 
+// The SIP session Arlo hands out with a cloud stream, shaped as the sipInfo
+// request returns it.
+export interface StreamSipInfo {
+    sipCallInfo: any;
+    iceServers: { data: any[] };
+}
+
+export interface CloudStream {
+    url: string;
+    sipInfo?: StreamSipInfo;
+}
+
 // What the client needs from the provider.
 export interface ArloClientHost extends DispatcherHost {
     readonly console: Console;
@@ -847,10 +859,12 @@ export class ArloClient {
         }), signal);
     }
 
-    // Starts a cloud stream and returns its URL. With eager off, waits for the
-    // camera to report the stream active first.
-    async startStream(camera: ArloDevice, mode: 'rtsp' | 'dash' = 'rtsp', eager = true, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<string> {
-        let url = '';
+    // Starts a cloud RTSP stream and returns its URL. With eager off, waits for
+    // the camera to report the stream active first. For cameras whose intercom
+    // talks over SIP, Arlo answers with the SIP session for talking during this
+    // stream as well.
+    async startStream(camera: ArloDevice, eager = true, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<CloudStream> {
+        const stream: CloudStream = { url: '' };
         const trigger = async () => {
             const response = await this.api.post(`https://${API_URL}/hmsweb/users/devices/startStream`, {
                 params: {
@@ -863,36 +877,23 @@ export class ArloClient {
                     transId: this.genTransId(),
                     properties: { activityState: 'startUserStream', cameraId: camera.deviceId },
                 },
-                headers: { xcloudId: camera.xCloudId ?? '', 'User-Agent': mode === 'rtsp' ? USER_AGENTS.android : USER_AGENTS.firefox },
+                headers: { xcloudId: camera.xCloudId ?? '', 'User-Agent': USER_AGENTS.android },
                 signal,
             });
-            url = String(response.url);
-            url = mode === 'rtsp' ? url.replace('rtsp://', 'rtsps://') : url.replace(':80', '');
+            stream.url = String(response.url).replace('rtsp://', 'rtsps://');
+            if (response.sipCallInfo && response.iceServers)
+                stream.sipInfo = { sipCallInfo: response.sipCallInfo, iceServers: response.iceServers };
         };
         if (eager) {
             await trigger();
-            return url;
+            return stream;
         }
         await this.subscribe();
         return this.triggerAndWait(waitSignal => this.events.waitFor(`cameras/${camera.deviceId}`, [['is', 'activityState']], event => {
             if ('error' in event)
                 return undefined;
-            return event.properties?.activityState === 'userStreamActive' && url ? url : undefined;
+            return event.properties?.activityState === 'userStreamActive' && stream.url ? stream : undefined;
         }, { timeout, signal: waitSignal }), trigger, signal);
-    }
-
-    getMpdHeaders(url: string): Record<string, string> {
-        return {
-            'Accept': '*/*',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Connection': 'keep-alive',
-            'DNT': '1',
-            'Egress-Token': new URL(url).searchParams.get('egressToken') ?? '',
-            'Origin': `https://${ARLO_URL}`,
-            'Referer': `https://${ARLO_URL}/`,
-            'User-Agent': USER_AGENTS.firefox,
-        };
     }
 
     // SIP and push to talk.
