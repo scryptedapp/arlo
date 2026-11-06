@@ -52,6 +52,9 @@ const ARLO_TO_SCRYPTED_BRIGHTNESS: Record<number, number> = Object.fromEntries(
     Object.entries(SCRYPTED_TO_ARLO_BRIGHTNESS).map(([scrypted, arlo]) => [arlo, Number(scrypted)]));
 
 const TIMEOUT = 10_000;
+// Arlo wakes the camera, which captures and uploads a full-frame snapshot;
+// some cameras take over 20 seconds.
+const SNAPSHOT_TIMEOUT = 30_000;
 const DAY = 86_400_000;
 
 export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, Brightness, Camera, Charger, DeviceProvider,
@@ -473,6 +476,18 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return (this.registered && this.storageSettings.values.local_live_streaming_codec) || 'h.264';
     }
 
+    // The codec the cloud stream carries, from the camera's Video block: H.264
+    // where it is listed, otherwise H.265. The CloudStreaming block's own codec
+    // can be wrong (it says avc on cameras that stream HEVC).
+    get cloudStreamingVideoCodec(): string {
+        const codecs = this.localLiveStreamingCodecList.map(codec => String(codec).toLowerCase().replace('.', ''));
+        if (codecs.includes('h264') || codecs.includes('avc'))
+            return 'h264';
+        if (codecs.includes('h265') || codecs.includes('hevc'))
+            return 'h265';
+        return 'h264';
+    }
+
     get localLiveStreamingCodecList(): string[] {
         const video = this.arloCapabilities?.Capabilities?.Video ?? {};
         return Array.isArray(video) ? video.flatMap(entry => entry.Codecs ?? []) : video.Codecs ?? [];
@@ -616,7 +631,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.logger.debug('Getting snapshot URL');
         try {
             await this.waitForStateChange();
-            this.lastSnapshotUrl = await this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT });
+            this.lastSnapshotUrl = await this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: SNAPSHOT_TIMEOUT });
         }
         catch (e) {
             if (e instanceof TimeoutError)
@@ -651,7 +666,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             id: 'default',
             name: 'Cloud RTSP',
             container: 'rtsp',
-            video: { codec: 'h264' },
+            video: { codec: this.cloudStreamingVideoCodec },
             audio: audio as any,
             source: 'cloud',
             tool: 'scrypted',
