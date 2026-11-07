@@ -3,6 +3,7 @@ import { OnOff, ScryptedDeviceType, ScryptedInterface } from '@scrypted/sdk';
 import { ArloDeviceBase } from './base';
 import type { ArloDevice } from './client';
 import type { ArloProvider } from './provider';
+import { sleep } from './util';
 
 export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
@@ -10,12 +11,21 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
-    // Starts from the state the camera reported when it was discovered.
+    // Starts from the state the camera reported when it was discovered. A new
+    // light is created before Scrypted registers it, so this waits for that.
     protected override async delayedInit(signal: AbortSignal): Promise<void> {
         await super.delayedInit(signal);
         const on = this.reportedState(this.camera?.arloProperties ?? this.arloProperties ?? {});
-        if (typeof on === 'boolean')
+        if (typeof on !== 'boolean')
+            return;
+        for (let attempt = 0; attempt < 100 && !this.registered; attempt++)
+            await sleep(100, signal);
+        try {
             this.on = on;
+        }
+        catch (e) {
+            this.logger.debug(`Could not set the ${this.lightName} state: ${e}`);
+        }
     }
 
     override getApplicableInterfaces(): string[] {
