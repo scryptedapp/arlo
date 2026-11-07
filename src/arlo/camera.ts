@@ -453,9 +453,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.hasCapability('Siren', 'ResourceTypes');
     }
 
+    // The older Automation block names the trigger AudioDetectionTrigger;
+    // Automation3.0 names it audioStart.
     get hasAudioSensor(): boolean {
         return this.hasCapability('AudioDetectionTrigger', 'Automation', 'AutomationTriggers')
-            || this.hasCapability('AudioDetectionTrigger', 'Automation3.0', 'AutomationTriggers');
+            || this.hasCapability('AudioDetectionTrigger', 'Automation3.0', 'AutomationTriggers')
+            || this.hasCapability('audioStart', 'Automation3.0', 'AutomationTriggers');
     }
 
     get hasBattery(): boolean {
