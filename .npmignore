@@ -11,3 +11,5 @@ dist/*.js
 dist/*.txt
 tsconfig.json
 webpack.nodejs.config.js
+AGENTS.md
+CLAUDE.md
