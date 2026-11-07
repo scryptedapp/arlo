@@ -12,6 +12,10 @@ import {
     ArloIntercomWebRTCSignalingSession,
 } from './webrtc_sip';
 
+// How long WebRTC push-to-talk waits for Arlo's answer, which arrives as an
+// event rather than as a reply.
+const ANSWER_TIMEOUT = 10_000;
+
 // The camera's speaker: a two-way audio device the camera's Intercom
 // interface hands talk to. It talks over SIP when the camera supports that,
 // otherwise over the older WebRTC push-to-talk.
@@ -80,10 +84,13 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
                 this.logger.debug(`Setting local description with offer: ${offer.sdp}`);
                 await session.setRemoteDescription(offer);
                 this.logger.debug('Waiting for local description to be set by plugin session.');
-                while (!session.answer && !session.closed)
+                const deadline = Date.now() + ANSWER_TIMEOUT;
+                while (!session.answer && !session.closed && Date.now() < deadline)
                     await sleep(100);
                 if (!session.answer)
-                    throw new Error('The intercom session closed before Arlo answered.');
+                    throw new Error(session.closed
+                        ? 'The intercom session closed before Arlo answered.'
+                        : `Arlo did not answer the intercom within ${ANSWER_TIMEOUT / 1000} seconds.`);
                 this.logger.debug(`Setting remote description with answer: ${session.answer.sdp}`);
                 await scryptedSession.setRemoteDescription(session.answer, setup);
                 this.logger.debug('WebRTC signaling session established.');
