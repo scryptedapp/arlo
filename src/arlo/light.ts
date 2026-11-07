@@ -10,6 +10,14 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
+    // Starts from the state the camera reported when it was discovered.
+    protected override async delayedInit(signal: AbortSignal): Promise<void> {
+        await super.delayedInit(signal);
+        const on = this.reportedState(this.camera?.arloProperties ?? this.arloProperties ?? {});
+        if (typeof on === 'boolean')
+            this.on = on;
+    }
+
     override getApplicableInterfaces(): string[] {
         return [ScryptedInterface.OnOff];
     }
@@ -34,11 +42,17 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
 
     protected abstract readonly lightName: string;
 
+    protected abstract reportedState(properties: Record<string, any>): unknown;
+
     protected abstract sendLightState(on: boolean): Promise<void>;
 }
 
 export class ArloSpotlight extends ArloBaseLight {
     protected readonly lightName = 'spotlight';
+
+    protected reportedState(properties: Record<string, any>): unknown {
+        return properties.spotlight?.enabled;
+    }
 
     protected async sendLightState(on: boolean): Promise<void> {
         await this.provider.arlo!.setSpotlight(this.arloBasestation, this.arloDevice, on);
@@ -47,6 +61,10 @@ export class ArloSpotlight extends ArloBaseLight {
 
 export class ArloFloodlight extends ArloBaseLight {
     protected readonly lightName = 'floodlight';
+
+    protected reportedState(properties: Record<string, any>): unknown {
+        return properties.floodlight?.on;
+    }
 
     protected async sendLightState(on: boolean): Promise<void> {
         await this.provider.arlo!.setFloodlight(this.arloBasestation, this.arloDevice, on);
@@ -57,6 +75,10 @@ export class ArloFloodlight extends ArloBaseLight {
 // basestation for the command.
 export class ArloNightlight extends ArloBaseLight {
     protected readonly lightName = 'nightlight';
+
+    protected reportedState(properties: Record<string, any>): unknown {
+        return properties.nightLight?.enabled;
+    }
 
     constructor(nativeId: string, arloDevice: ArloDevice, arloProperties: Record<string, any>, provider: ArloProvider, camera?: ArloDeviceBase) {
         super(nativeId, arloDevice, arloDevice, arloProperties, provider, camera);
