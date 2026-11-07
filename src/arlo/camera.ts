@@ -555,6 +555,18 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await this.onDeviceEvent(ScryptedInterface.Settings, undefined);
     }
 
+    // Gives an Arlo request 10 seconds, then cancels it, so the request layer
+    // does not go on retrying a stream or snapshot nobody waits for.
+    private async withRequestTimeout<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+        const controller = new AbortController();
+        try {
+            return await withTimeout(request(controller.signal), TIMEOUT);
+        }
+        finally {
+            controller.abort();
+        }
+    }
+
     // Arlo serves one connection per camera: a stream or a cloud snapshot.
     private get arloConnection(): 'snapshot' | 'stream' | undefined {
         if (this.ownStream?.kind === 'webrtc')
@@ -706,7 +718,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.lastSnapshotUrl = await this.connectionLock.run(async () => {
                 if (this.arloConnection)
                     throw new SourceUnavailable(`the camera is busy (${this.busyReason})`);
-                return this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT });
+                return this.withRequestTimeout(signal => this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT, signal }));
             });
         }
         catch (e) {
@@ -807,7 +819,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
         this.logger.info('Requesting rtsp stream');
         try {
-            const stream = await withTimeout(this.provider.arlo!.startStream(this.arloDevice, !this.disableEagerStreams, { timeout: TIMEOUT }), TIMEOUT);
+            const stream = await this.withRequestTimeout(signal => this.provider.arlo!.startStream(this.arloDevice, !this.disableEagerStreams, { timeout: TIMEOUT, signal }));
             this.streamSipInfo = stream.sipInfo;
             this.ownStream = { kind: 'rtsp', id: option.id! };
             this.logger.debug(`Got rtsp stream URL${stream.sipInfo ? ', with a SIP session for the intercom' : ''}`);
