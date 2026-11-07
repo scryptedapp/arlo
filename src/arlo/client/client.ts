@@ -705,7 +705,7 @@ export class ArloClient {
         const resetAfter = (ms: number) => {
             clearTimeout(reset);
             reset = setTimeout(() => {
-                logger.debug(`${key}: False`);
+                logger.debug(`${key}: false`);
                 reset = undefined;
                 callback(false);
             }, ms);

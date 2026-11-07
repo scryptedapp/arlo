@@ -67,7 +67,7 @@ export class ArloLocalStreamProxy {
     private nonce = 0;
     private readonly logger: Logger;
 
-    constructor(private readonly privateKey: string, private readonly basestation: ArloBasestation, private readonly camera: ArloCamera) {
+    constructor(private readonly privateKey: string, private readonly basestation: ArloBasestation, camera: ArloCamera) {
         this.logger = camera.logger;
     }
 

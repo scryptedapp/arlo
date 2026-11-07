@@ -257,7 +257,6 @@ export class InvalidResponseError extends RequestError { }
 export class BadRequestError extends RequestError { }
 
 const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
 
 export class RateLimitPause {
     static readonly delay = 65 * MINUTE;
