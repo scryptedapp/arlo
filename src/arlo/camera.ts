@@ -662,8 +662,9 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
     }
 
+    // Cloud snapshots are throttled only in eco mode, as its settings say.
     private isTimeForNewSnapshot(): boolean {
-        const interval = this.snapshotThrottleInterval;
+        const interval = this.ecoMode ? this.snapshotThrottleInterval : 0;
         return interval === 0 || Date.now() - this.lastSnapshotTime >= interval * 60_000;
     }
 
