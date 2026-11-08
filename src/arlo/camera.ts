@@ -15,7 +15,6 @@ import sdk, {
     ObjectDetector,
     ObjectsDetected,
     OnOff,
-    RequestMediaStream,
     RequestMediaStreamOptions,
     RequestPictureOptions,
     ResponseMediaStreamOptions,
@@ -26,7 +25,6 @@ import sdk, {
     RTCSignalingSession,
     ScryptedDeviceType,
     ScryptedInterface,
-    ScryptedMimeTypes,
     Setting,
     Settings,
     SettingValue,
@@ -56,14 +54,6 @@ const ARLO_TO_SCRYPTED_BRIGHTNESS: Record<number, number> = Object.fromEntries(
 const TIMEOUT = 10_000;
 const DAY = 86_400_000;
 
-type SnapshotSource = 'prebuffer' | 'in_progress' | 'arlo_cloud';
-
-const SNAPSHOT_SOURCES: Record<SnapshotSource, string> = {
-    prebuffer: 'Prebuffer',
-    in_progress: 'Snapshot in progress',
-    arlo_cloud: 'Arlo Cloud',
-};
-
 // A snapshot source that does not apply right now, which is not a failure.
 class SourceUnavailable extends Error { }
 
@@ -81,19 +71,11 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private intercomActive = false;
     private skipPrebufferOnFirstAutoSnapshot = true;
     private readonly snapshotLock = new AsyncLock();
-    // Held while this plugin asks the camera for a cloud snapshot, a stream or
-    // a WebRTC session, until Arlo has taken the request: Arlo reports the
-    // camera busy only seconds later.
-    private readonly connectionLock = new AsyncLock();
     private readonly rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
     // The SIP session that came with the current cloud RTSP stream, for the
     // SIP-only intercom. Held in memory only, since it carries a SIP password,
     // and cleared when the camera reports the stream ended.
     streamSipInfo?: StreamSipInfo;
-    // This plugin's own stream on the camera's one Arlo connection: a cloud
-    // RTSP stream (normally Rebroadcast's), cleared when the camera reports
-    // idle, or a WebRTC session, cleared when it ends.
-    private ownStream?: { kind: 'rtsp', id: string } | { kind: 'webrtc' };
 
     readonly storageSettings = new StorageSettings(this, {
         wired_to_power: {
@@ -210,8 +192,13 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             (code, message) => this.logger.error(`Arlo returned error code ${code} with message: ${message}`)));
         this.createOrRegisterEventSubscription('device_state_subscription', () => arlo().subscribeToDeviceStateEvents(this.arloDevice,
             state => this.deviceState = state));
-        this.createOrRegisterEventSubscription('activity_state_subscription', () => arlo().subscribeToActivityStateEvents(this.arloDevice,
-            state => this.applyActivityState(state)));
+        this.createOrRegisterEventSubscription('activity_state_subscription', () => arlo().subscribeToActivityStateEvents(this.arloDevice, state => {
+            this.activityState = state;
+            if (state === 'idle' && this.streamSipInfo) {
+                this.logger.debug('Stream ended; clearing its SIP session.');
+                this.streamSipInfo = undefined;
+            }
+        }));
         this.createOrRegisterEventSubscription('snapshot_subscription', () => arlo().subscribeToSnapshotEvents(this.arloDevice, url => {
             this.taskManager.createTask(() => this.getSnapshotFromEventUrl(url), { tag: `snapshot_event_update:${this.nativeId}`, owner: this });
         }));
@@ -295,7 +282,19 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 continue;
             }
             await this.snapshotLock.run(async () => {
-                await this.createSnapshot(!this.skipPrebufferOnFirstAutoSnapshot);
+                const sources: ['prebuffer' | 'arlo_cloud', string][] = [['arlo_cloud', 'Arlo Cloud']];
+                if (!this.skipPrebufferOnFirstAutoSnapshot)
+                    sources.unshift(['prebuffer', 'Prebuffer']);
+                for (const [source, label] of sources) {
+                    try {
+                        await this.createSnapshotFromSource(source);
+                        this.logger.debug(`Snapshot created successfully from ${label}`);
+                        break;
+                    }
+                    catch (e) {
+                        this.logSnapshotFailure(label, e);
+                    }
+                }
                 this.skipPrebufferOnFirstAutoSnapshot = false;
             }, signal).catch(e => {
                 if (signal.aborted)
@@ -567,49 +566,28 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
     }
 
-    // Arlo serves one connection per camera: a stream or a cloud snapshot.
-    private get arloConnection(): 'snapshot' | 'stream' | undefined {
-        if (this.ownStream?.kind === 'webrtc')
-            return 'stream';
-        const state = this.activityState;
-        if (!state || state === 'idle' || state === 'unavailable')
-            return undefined;
-        return state === 'fullFrameSnapshot' ? 'snapshot' : 'stream';
-    }
-
-    private get busyReason(): string {
-        return this.ownStream?.kind === 'webrtc' ? 'WebRTC session' : this.activityState ?? 'unknown';
-    }
-
-    private applyActivityState(state: string): void {
-        this.activityState = state;
-        if (state !== 'idle')
-            return;
-        if (this.streamSipInfo) {
-            this.logger.debug('Stream ended; clearing its SIP session.');
-            this.streamSipInfo = undefined;
+    // Waits up to 10 seconds for the camera to go idle, unless the named stream
+    // is the one the prebuffer already keeps running.
+    private async waitForStateChange(name?: string): Promise<void> {
+        const start = Date.now();
+        this.logger.debug('Checking activity state...');
+        while (true) {
+            let prebufferName: string | undefined;
+            if (!this.skipPrebufferOnFirstAutoSnapshot) {
+                const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id!) as any;
+                const options = await device?.getVideoStreamOptions().catch(() => undefined);
+                prebufferName = options?.find(option => 'prebuffer' in option)?.name;
+            }
+            if (this.activityState === 'idle' || (prebufferName && name === prebufferName)) {
+                this.logger.debug('Activity State is idle or selected stream is currently active, continuing...');
+                return;
+            }
+            if (Date.now() - start > TIMEOUT) {
+                this.activityState = 'idle';
+                throw new TimeoutError('Waiting for activity state to be idle timed out');
+            }
+            await sleep(500);
         }
-        if (this.ownStream?.kind === 'rtsp')
-            this.ownStream = undefined;
-    }
-
-    // Waits up to 10 seconds for the camera's connection to come free, then
-    // asks the camera, in case the reported state is stale.
-    private async waitForConnection(purpose: string): Promise<void> {
-        if (!this.arloConnection)
-            return;
-        this.logger.debug(`Camera is busy (${this.busyReason}); waiting to ${purpose}.`);
-        const deadline = Date.now() + TIMEOUT;
-        while (this.arloConnection && Date.now() < deadline)
-            await sleep(250);
-        if (this.arloConnection && this.ownStream?.kind !== 'webrtc') {
-            const properties = await this.provider.getDeviceProperties(this.arloBasestation, this.arloDevice);
-            if (typeof properties.activityState === 'string')
-                this.applyActivityState(properties.activityState);
-        }
-        if (this.arloConnection)
-            throw new Error(`The camera is busy (${this.busyReason}); Arlo serves one stream or snapshot at a time.`);
-        this.logger.debug(`Camera is free; continuing to ${purpose}.`);
     }
 
     // Snapshots.
@@ -618,9 +596,31 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return [];
     }
 
+    // Takes the prebuffer's current frame, or else asks Arlo Cloud, which
+    // within the throttle interval returns the last snapshot instead.
     async takePicture(options?: RequestPictureOptions): Promise<MediaObject> {
         this.logger.info('Requesting snapshot');
-        const snapshot = await this.snapshotLock.run(() => this.createSnapshot(true));
+        const snapshot = await this.snapshotLock.run(async () => {
+            for (const [source, label] of [['prebuffer', 'Prebuffer'], ['arlo_cloud', 'Arlo Cloud']] as const) {
+                if (source === 'arlo_cloud' && !this.isTimeForNewSnapshot()) {
+                    if (this.lastSnapshot) {
+                        this.logger.debug('Returning cached snapshot within throttle interval');
+                        return this.lastSnapshot;
+                    }
+                    this.logger.warn('No cached snapshot available within throttle interval');
+                    continue;
+                }
+                try {
+                    await this.createSnapshotFromSource(source);
+                    this.logger.debug(`Snapshot created successfully from ${label}`);
+                    return this.lastSnapshot;
+                }
+                catch (e) {
+                    this.logSnapshotFailure(label, e);
+                }
+            }
+            return undefined;
+        });
         if (!snapshot) {
             this.logger.error('Failed to create or retrieve any snapshot');
             throw new Error('Failed to create or retrieve any snapshot');
@@ -628,50 +628,11 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return snapshot;
     }
 
-    // Takes a frame from Rebroadcast's running stream (its prebuffer) where
-    // there is one. Otherwise, since Arlo serves one connection per camera, a
-    // cloud snapshot is asked for only while the camera is free: while it
-    // streams, the picture is the last one; while it takes a snapshot, it is
-    // that snapshot. Within the throttle interval, or when the source fails,
-    // the last picture is returned.
-    private async createSnapshot(usePrebuffer: boolean): Promise<MediaObject | undefined> {
-        if (usePrebuffer && await this.trySnapshotSource('prebuffer'))
-            return this.lastSnapshot;
-        const connection = this.arloConnection;
-        if (connection === 'stream') {
-            this.logger.debug(`Camera is busy (${this.busyReason}); returning the last snapshot.`);
-            return this.lastSnapshot;
-        }
-        if (connection === 'snapshot') {
-            this.logger.debug('Camera is already taking a snapshot; waiting for it.');
-            await this.trySnapshotSource('in_progress');
-            return this.lastSnapshot;
-        }
-        if (!this.isTimeForNewSnapshot()) {
-            if (this.lastSnapshot)
-                this.logger.debug('Returning cached snapshot within throttle interval');
-            else
-                this.logger.warn('No cached snapshot available within throttle interval');
-            return this.lastSnapshot;
-        }
-        await this.trySnapshotSource('arlo_cloud');
-        return this.lastSnapshot;
-    }
-
-    private async trySnapshotSource(source: SnapshotSource): Promise<boolean> {
-        const label = SNAPSHOT_SOURCES[source];
-        try {
-            await this.createSnapshotFromSource(source);
-            this.logger.debug(`Snapshot created successfully from ${label}`);
-            return true;
-        }
-        catch (e) {
-            if (e instanceof SourceUnavailable)
-                this.logger.debug(`${label} snapshot skipped: ${e.message}`);
-            else
-                this.logger.error(`${label} snapshot failed: ${e}`);
-            return false;
-        }
+    private logSnapshotFailure(label: string, e: unknown): void {
+        if (e instanceof SourceUnavailable)
+            this.logger.debug(`${label} snapshot skipped: ${e.message}`);
+        else
+            this.logger.error(`${label} snapshot failed: ${e}`);
     }
 
     // Cloud snapshots are throttled only in eco mode, as its settings say.
@@ -680,17 +641,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return interval === 0 || Date.now() - this.lastSnapshotTime >= interval * 60_000;
     }
 
-    private async createSnapshotFromSource(source: SnapshotSource): Promise<void> {
-        let buffer: Buffer;
-        if (source === 'prebuffer')
-            buffer = await this.getBufferFromPrebuffer();
-        else if (source === 'in_progress') {
-            const url = await this.provider.arlo!.waitForFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT });
-            buffer = await this.getBufferFromUrl(url);
-            this.lastSnapshotUrl = url;
-        }
-        else
-            buffer = await this.getBufferFromUrl(await this.getSnapshotUrl());
+    private async createSnapshotFromSource(source: 'prebuffer' | 'arlo_cloud'): Promise<void> {
+        const buffer = source === 'prebuffer'
+            ? await this.getBufferFromPrebuffer()
+            : await this.getBufferFromUrl(await this.getSnapshotUrl());
         await this.createSnapshotFromBuffer(buffer);
     }
 
@@ -715,15 +669,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private async getSnapshotUrl(): Promise<string> {
         this.logger.debug('Getting snapshot URL');
         try {
-            this.lastSnapshotUrl = await this.connectionLock.run(async () => {
-                if (this.arloConnection)
-                    throw new SourceUnavailable(`the camera is busy (${this.busyReason})`);
-                return this.withRequestTimeout(signal => this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT, signal }));
-            });
+            await this.waitForStateChange();
+            this.lastSnapshotUrl = await this.withRequestTimeout(signal => this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT, signal }));
         }
         catch (e) {
-            if (e instanceof SourceUnavailable)
-                throw e;
             if (e instanceof TimeoutError)
                 throw new Error('Timed out waiting for snapshot URL from Arlo Cloud');
             throw new Error(`Failed to get snapshot URL: ${e}`);
@@ -779,7 +728,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         const all = await this.getVideoStreamOptions();
         const option = all.find(o => o.id === (options?.id ?? 'default')) ?? all[0];
         const mso: ResponseMediaStreamOptions = { ...option, refreshAt: Date.now() + 30 * 60_000 };
-        const url = await this.getVideoStreamUrl(option);
+        const url = await this.getVideoStreamUrl(mso.name!);
         const input: FFmpegInput = {
             url,
             container: 'rtsp',
@@ -789,17 +738,9 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return sdk.mediaManager.createFFmpegMediaObject(input);
     }
 
-    private getVideoStreamUrl(option: ResponseMediaStreamOptions): Promise<string> {
-        return this.connectionLock.run(() => this.startVideoStream(option));
-    }
-
-    private async startVideoStream(option: ResponseMediaStreamOptions): Promise<string> {
-        // Rebroadcast refreshes the stream it runs; that reuses this plugin's
-        // own connection rather than asking for a second one.
-        const own = this.ownStream;
-        if (!(own?.kind === 'rtsp' && own.id === option.id))
-            await this.waitForConnection('start a stream');
-        if (option.name === 'Local RTSP') {
+    private async getVideoStreamUrl(name: string): Promise<string> {
+        await this.waitForStateChange(name);
+        if (name === 'Local RTSP') {
             this.logger.info('Requesting local stream');
             const basestation = await this.provider.getDevice(this.arloBasestation.deviceId) as ArloBasestation | undefined;
             if (!basestation)
@@ -821,7 +762,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         try {
             const stream = await this.withRequestTimeout(signal => this.provider.arlo!.startStream(this.arloDevice, !this.disableEagerStreams, { timeout: TIMEOUT, signal }));
             this.streamSipInfo = stream.sipInfo;
-            this.ownStream = { kind: 'rtsp', id: option.id! };
             this.logger.debug(`Got rtsp stream URL${stream.sipInfo ? ', with a SIP session for the intercom' : ''}`);
             return stream.url;
         }
@@ -979,23 +919,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     // Live video over SIP (WebRTC).
 
-    // Handing a viewer to Rebroadcast happens outside the connection lock,
-    // since Rebroadcast may ask this plugin for a fresh stream.
     async startRTCSignalingSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
-        const control = await this.connectionLock.run(async () =>
-            this.ownStream?.kind === 'rtsp' ? 'rebroadcast' as const : this.startOwnRTCSignalingSession(scryptedSession));
-        const own = this.ownStream;
-        if (control !== 'rebroadcast')
-            return control;
-        if (own?.kind !== 'rtsp')
-            throw new Error('The Rebroadcast stream ended before the WebRTC session could use it.');
-        return this.startRTCSignalingSessionFromRebroadcast(scryptedSession, own.id);
-    }
-
-    private async startOwnRTCSignalingSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
         let session: ArloCameraWebRTCSignalingSession | undefined;
         try {
-            await this.waitForConnection('start a WebRTC session');
+            await this.waitForStateChange('WebRTC');
             this.logger.debug('Starting RTC signaling session.');
             session = new ArloCameraWebRTCSignalingSession(this);
             this.rtcSessions.add(session);
@@ -1022,12 +949,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             await scryptedSession.setRemoteDescription(answer, setup);
             this.logger.debug('RTC signaling session established successfully.');
             const established = session;
-            this.ownStream = { kind: 'webrtc' };
-            return new ArloCameraWebRTCSessionControl(established, () => {
-                this.rtcSessions.delete(established);
-                if (this.ownStream?.kind === 'webrtc' && !this.rtcSessions.size)
-                    this.ownStream = undefined;
-            });
+            return new ArloCameraWebRTCSessionControl(established, () => this.rtcSessions.delete(established));
         }
         catch (e) {
             if (session) {
@@ -1037,19 +959,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.logger.error('Failed to start RTC signaling session:', e);
             throw e;
         }
-    }
-
-    // While this plugin's own stream holds the camera, a WebRTC viewer gets
-    // that stream through Rebroadcast instead of a second Arlo connection.
-    private async startRTCSignalingSessionFromRebroadcast(scryptedSession: RTCSignalingSession, id: string): Promise<RTCSessionControl | undefined> {
-        this.logger.debug('Camera is streaming through Rebroadcast; serving the WebRTC session from that stream.');
-        const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id!) as any;
-        if (!device)
-            throw new Error('Scrypted Device not found');
-        const request: RequestMediaStream = options => device.getVideoStream({ ...options, id });
-        const media = await sdk.mediaManager.createMediaObject(request, ScryptedMimeTypes.RequestMediaStream, { sourceId: this.id });
-        const channel = await sdk.mediaManager.convertMediaObject<RTCSignalingChannel>(media, ScryptedMimeTypes.RTCSignalingChannel);
-        return channel.startRTCSignalingSession(scryptedSession);
     }
 
     // The status light, or the charge notification LED.

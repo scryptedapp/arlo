@@ -834,29 +834,17 @@ export class ArloClient {
 
     // Snapshots and streams.
 
-    // The next snapshot URL the camera reports.
-    private waitForSnapshotUrl(camera: ArloDevice, timeout?: number, signal?: AbortSignal): Promise<string> {
+    async triggerFullFrameSnapshot(camera: ArloDevice, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<string> {
         const actions: ActionSpec[] = [];
         for (const action of ['fullFrameSnapshotAvailable', 'lastImageSnapshotAvailable', 'is'])
             for (const property of ['presignedFullFrameSnapshotUrl', 'presignedLastImageUrl'])
                 actions.push([action, property]);
-        return this.events.waitFor(`cameras/${camera.deviceId}`, actions, event => {
+        await this.subscribe();
+        return this.triggerAndWait(waitSignal => this.events.waitFor(`cameras/${camera.deviceId}`, actions, event => {
             if ('error' in event)
                 return undefined;
             return event.properties?.presignedFullFrameSnapshotUrl || event.properties?.presignedLastImageUrl || undefined;
-        }, { timeout, signal });
-    }
-
-    // Waits for the snapshot the camera is already taking, without asking
-    // for another.
-    async waitForFullFrameSnapshot(camera: ArloDevice, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<string> {
-        await this.subscribe();
-        return this.waitForSnapshotUrl(camera, timeout, signal);
-    }
-
-    async triggerFullFrameSnapshot(camera: ArloDevice, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<string> {
-        await this.subscribe();
-        return this.triggerAndWait(waitSignal => this.waitForSnapshotUrl(camera, timeout, waitSignal), () => this.api.post(`https://${API_URL}/hmsweb/users/devices/fullFrameSnapshot`, {
+        }, { timeout, signal: waitSignal }), () => this.api.post(`https://${API_URL}/hmsweb/users/devices/fullFrameSnapshot`, {
             params: {
                 to: camera.parentId,
                 from: `${this.userId}_web`,
