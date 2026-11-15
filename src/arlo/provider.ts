@@ -37,6 +37,9 @@ const DEVICE_TYPE_DOORBELL = 'doorbell';
 
 const MFA_STRATEGIES = ['Manual', 'IMAP'];
 const LOGIN_COOLDOWN = 60_000;
+// A failed login is not retried, so that Arlo and Cloudflare see no repeated
+// attempts.
+const LOGIN_AGAIN = 'The plugin does not retry; restart it, or turn on Force Re-Authentication, to log in again.';
 const MANUAL_MFA_TIMEOUT = 278_000;
 // Browser authentication is refreshed every 14 days to avoid MFA churn.
 const HARD_LOGIN_INTERVAL = 14 * 24 * 60 * 60_000;
@@ -509,8 +512,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 result.resolve(true);
                 return;
             }
-            this.logger.error('Arlo Cloud login failed, retrying in 10 seconds.');
-            await sleep(10_000, signal);
+            this.logger.error(`Arlo Cloud login failed. ${LOGIN_AGAIN}`);
         }
         catch (e) {
             if (e instanceof CancelledError || signal?.aborted) {
@@ -524,11 +526,10 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.logger.warn(`Arlo Cloud login paused by rate limit for ${Math.floor((e.retryAfter ?? this.errorManager.rateLimitRemaining()) / 1000)} seconds.`);
             }
             else if (e instanceof TransientRequestError) {
-                this.logger.warn(`Temporary Arlo Cloud login error: ${e.message}. Retrying after cooldown.`);
+                this.logger.error(`Arlo Cloud login failed with a temporary error: ${e.message}. ${LOGIN_AGAIN}`);
             }
             else {
-                this.logger.error('Exception during login:', e);
-                await sleep(10_000, signal).catch(() => { });
+                this.logger.error(`Arlo Cloud login failed. ${LOGIN_AGAIN}`, e);
             }
         }
         finally {
