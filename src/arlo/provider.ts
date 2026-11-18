@@ -37,6 +37,9 @@ const DEVICE_TYPE_DOORBELL = 'doorbell';
 
 const MFA_STRATEGIES = ['Manual', 'IMAP'];
 const LOGIN_COOLDOWN = 60_000;
+// The longest Scrypted's request for a device waits while the plugin builds
+// its devices after loading.
+const BUILD_WAIT = 60_000;
 // A failed login is not retried, so that Arlo and Cloudflare see no repeated
 // attempts.
 const LOGIN_AGAIN = 'The plugin does not retry; restart it, or turn on Force Re-Authentication, to log in again.';
@@ -206,6 +209,16 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     arloMvss = new Map<string, ModeVirtualSecuritySystemInfo>();
     allDeviceIds: string[] = [];
     readonly scryptedDevices = new Map<string, ArloDeviceBase>();
+    // Scrypted asks for every device it knows as soon as the plugin loads,
+    // before login, discovery and creation. Until that first build ends, a
+    // request waits for its device instead of finding none, which would leave
+    // the device and its children unavailable.
+    private building = true;
+    private readonly deviceWaiters = new Map<string, Deferred<ArloDeviceBase | undefined>>();
+    // The object Scrypted was last given for each device. Scrypted keeps using
+    // it until told to fetch the device again, so a device rebuilt after an
+    // internal restart is reported with refresh.
+    private readonly handedOut = new Map<string, ArloDeviceBase>();
     setupInProgress = false;
     fullResetNeeded = false;
 
@@ -350,11 +363,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             return;
         }
         await this.initializeLock.run(async () => {
-            if (this.errorManager.handleRateLimitStartup())
+            if (this.errorManager.handleRateLimitStartup()) {
+                this.endBuild();
                 return;
+            }
             if (this.disablePlugin) {
                 this.logger.info('Plugin has been disabled. Will not initialize Arlo client.');
                 this.logger.info('To re-enable the plugin, uncheck the "Disable Arlo Plugin" setting.');
+                this.endBuild();
                 return;
             }
             try {
@@ -363,6 +379,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.logger.debug(`Using Device ID: ${this.arloDeviceId}`);
                 if (!this.arloUsername || !this.arloPassword) {
                     this.logger.info('Arlo Cloud username or password not set. Waiting for user to enter credentials.');
+                    this.endBuild();
                     return;
                 }
                 this.taskManager.cancelAllExcept('initialize_plugin', this);
@@ -376,6 +393,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.settingsChanged();
             }
             catch (e) {
+                this.endBuild();
                 if (!(e instanceof CancelledError))
                     this.logger.error('Error during plugin initialization:', e);
             }
@@ -536,6 +554,8 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             result.resolve(false);
             if (transitionOpen)
                 this.errorManager.endAuthTransition(false);
+            if (!this.arlo?.loggedIn)
+                this.endBuild();
         }
     }
 
@@ -853,6 +873,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
         finally {
             this.setupInProgress = false;
+            this.endBuild();
             this.arlo?.events.releaseHeld();
             if (this.arlo?.loggedIn)
                 await this.arlo.startHeartbeat();
@@ -1063,6 +1084,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.logger.warn(`Timed out waiting for ${deviceDict.deviceName} to finish startup initialization; continuing device registration.`);
             }
         }
+        this.deviceReady(nativeId, device);
         if (device instanceof ArloModeVirtualSecuritySystem)
             device.completeInit();
         const manifest = nativeId.endsWith('mvss') && locationName
@@ -1075,9 +1097,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.logger.debug(`Interfaces for ${deviceDict.deviceName}: ${JSON.stringify(device.getApplicableInterfaces())}`);
         const provider = !parentId || this.hiddenDeviceIds.includes(parentId) || nativeId === parentId ? undefined : parentId;
         this.appendManifest(manifests, provider, manifest);
-        await sdk.deviceManager.onDeviceDiscovered(manifest);
+        // A device rebuilt after an internal restart, and its children with it.
+        const given = this.handedOut.get(nativeId);
+        const refresh = !!given && given !== device;
+        if (refresh)
+            this.logger.debug(`Asking Scrypted to fetch the rebuilt ${deviceDict.deviceName} and its children again.`);
+        await sdk.deviceManager.onDeviceDiscovered(refresh ? { ...manifest, refresh } : manifest);
         for (const child of device.getBuiltinChildDeviceManifests()) {
-            await sdk.deviceManager.onDeviceDiscovered(child);
+            await sdk.deviceManager.onDeviceDiscovered(refresh ? { ...child, refresh } : child);
             this.appendManifest(manifests, child.providerNativeId, child);
         }
         return true;
@@ -1363,13 +1390,41 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             const name = this.arloBasestations.get(nativeId)?.deviceName ?? this.arloCameras.get(nativeId)?.deviceName ?? this.arloMvss.get(nativeId)?.deviceName ?? nativeId;
             this.logger.debug(`Scrypted requested to load device ${name}`);
         }
-        return this.scryptedDevices.get(nativeId);
+        let device = this.scryptedDevices.get(nativeId);
+        if (!device && this.building && !this.disablePlugin) {
+            let waiter = this.deviceWaiters.get(nativeId);
+            if (!waiter) {
+                waiter = new Deferred();
+                this.deviceWaiters.set(nativeId, waiter);
+            }
+            device = await withTimeout(waiter.promise, BUILD_WAIT).catch(() => undefined);
+        }
+        if (device)
+            this.handedOut.set(nativeId, device);
+        return device;
     }
 
     // A device removed in Scrypted stops its work here.
     async releaseDevice(id: string, nativeId: string): Promise<void> {
         const device = this.scryptedDevices.get(nativeId);
         this.scryptedDevices.delete(nativeId);
+        this.handedOut.delete(nativeId);
         await device?.close();
+    }
+
+    private deviceReady(nativeId: string, device: ArloDeviceBase): void {
+        this.deviceWaiters.get(nativeId)?.resolve(device);
+        this.deviceWaiters.delete(nativeId);
+    }
+
+    // The first build is over, or will not happen; any device still waited
+    // for is not coming.
+    private endBuild(): void {
+        if (!this.building)
+            return;
+        this.building = false;
+        for (const waiter of this.deviceWaiters.values())
+            waiter.resolve(undefined);
+        this.deviceWaiters.clear();
     }
 }
