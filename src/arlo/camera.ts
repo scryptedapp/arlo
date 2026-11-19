@@ -870,6 +870,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         catch (e) {
             this.intercomActive = false;
             this.logger.error('Error in startIntercom:', e);
+            throw e;
         }
     }
 
