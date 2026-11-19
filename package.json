@@ -2,7 +2,7 @@
    "name": "@scrypted/arlo",
    "version": "0.13.0",
    "description": "Arlo Plugin for Scrypted",
-   "license": "Apache",
+   "license": "Apache-2.0",
    "repository": {
       "type": "git",
       "url": "git+https://github.com/scryptedapp/arlo.git"
@@ -11,6 +11,12 @@
       "url": "https://github.com/scryptedapp/arlo/issues"
    },
    "homepage": "https://github.com/scryptedapp/arlo",
+   "engines": {
+      "node": ">=20.11"
+   },
+   "files": [
+      "dist/plugin.zip"
+   ],
    "keywords": [
       "scrypted",
       "plugin",
@@ -18,17 +24,14 @@
       "camera"
    ],
    "scripts": {
-      "scrypted-setup-project": "scrypted-setup-project",
-      "prescrypted-setup-project": "scrypted-package-json",
       "koffi-binaries": "node scripts/koffi-binaries.mjs",
       "build": "npm run koffi-binaries && scrypted-webpack",
-      "prepublishOnly": "npm run koffi-binaries && NODE_ENV=production scrypted-webpack",
+      "prepublishOnly": "npm run koffi-binaries && node scripts/production-build.mjs",
       "prescrypted-vscode-launch": "npm run build",
       "scrypted-vscode-launch": "scrypted-deploy-debug",
       "scrypted-deploy-debug": "scrypted-deploy-debug",
       "scrypted-debug": "scrypted-debug",
       "scrypted-deploy": "scrypted-deploy",
-      "scrypted-readme": "scrypted-readme",
       "scrypted-package-json": "scrypted-package-json",
       "update-impers": "npm install impers@latest && npm update koffi"
    },
@@ -60,6 +63,7 @@
       "terser-webpack-plugin": "^5.6.1"
    },
    "allowScripts": {
+      "fsevents": false,
       "koffi": false
    }
 }
