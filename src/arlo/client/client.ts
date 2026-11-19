@@ -458,7 +458,7 @@ export class ArloClient {
                         return undefined;
                     Object.assign(properties, event.properties ?? {});
                     return event.properties ?? {};
-                }, { fromId: basestation.deviceId, timeout: deadline && Math.max(0, deadline - Date.now()), signal: waitSignal }),
+                }, { fromId: basestation.deviceId, replay: false, timeout: deadline && Math.max(0, deadline - Date.now()), signal: waitSignal }),
                 () => this.notify(basestation, { action: 'get', resource, publishResponse: false }, signal), signal);
             }
             return properties;
@@ -797,7 +797,7 @@ export class ArloClient {
         const stops = resources.map(resource => {
             const action: ActionSpec = resource === subscriptions ? 'is'
                 : resource !== 'basestation' || wifi ? ['is', 'connectionState'] : ['is', 'state'];
-            return this.events.listen(resource, [action], handle, deviceId);
+            return this.events.listen(resource, [action], handle, { fromId: deviceId });
         });
         return () => stops.forEach(stop => stop());
     }
@@ -807,7 +807,7 @@ export class ArloClient {
         return this.events.listen(`cameras/${camera.deviceId}`, [['is', 'activityState']], event => {
             if (!('to' in event) && event.properties && 'activityState' in event.properties)
                 callback(event.properties.activityState);
-        }, fromId);
+        }, { fromId });
     }
 
     subscribeToSnapshotEvents(camera: ArloDevice, callback: (url: string) => void): Unsubscribe {
@@ -824,11 +824,12 @@ export class ArloClient {
     }
 
     // WebRTC push-to-talk answers, by type: 'answerSdp' or 'answerCandidate'.
+    // An earlier session's answer is not replayed to a new one.
     subscribeToPushToTalkEvents(camera: ArloDevice, type: 'answerSdp' | 'answerCandidate', callback: (data: any) => void): Unsubscribe {
         return this.events.listen(`cameras/${camera.deviceId}`, ['pushToTalk'], event => {
             if (event.properties?.type === type)
                 callback(event.properties.data);
-        });
+        }, { replay: false });
     }
 
     // Snapshots and streams.
@@ -843,7 +844,7 @@ export class ArloClient {
             if ('error' in event)
                 return undefined;
             return event.properties?.presignedFullFrameSnapshotUrl || event.properties?.presignedLastImageUrl || undefined;
-        }, { timeout, signal: waitSignal }), () => this.api.post(`https://${API_URL}/hmsweb/users/devices/fullFrameSnapshot`, {
+        }, { replay: false, timeout, signal: waitSignal }), () => this.api.post(`https://${API_URL}/hmsweb/users/devices/fullFrameSnapshot`, {
             params: {
                 to: camera.parentId,
                 from: `${this.userId}_web`,
@@ -892,7 +893,7 @@ export class ArloClient {
             if ('error' in event)
                 return undefined;
             return event.properties?.activityState === 'userStreamActive' && stream.url ? stream : undefined;
-        }, { timeout, signal: waitSignal }), trigger, signal);
+        }, { replay: false, timeout, signal: waitSignal }), trigger, signal);
     }
 
     // SIP streaming and push to talk. The SIP-only intercom takes its SIP

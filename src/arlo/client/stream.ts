@@ -56,7 +56,8 @@ export interface DispatcherHost {
 // Delivers events from whichever event stream is running to the listeners
 // registered with the client, so listeners survive stream restarts. Events
 // stay replayable for five seconds, for listeners that register just after
-// the event they wait for. While device setup runs, events other than property
+// the event they wait for; a listener waiting for the answer to its own
+// request turns replay off, so another request's answer cannot pass for it. While device setup runs, events other than property
 // responses are held and delivered when it finishes.
 export class EventDispatcher {
     private readonly listeners = new Set<Listener>();
@@ -67,25 +68,27 @@ export class EventDispatcher {
     }
 
     // Calls callback for each matching event until the returned function is
-    // called. Matching events from the last five seconds are replayed first.
-    listen(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => void, fromId?: string): () => void {
+    // called. Matching events from the last five seconds are replayed first,
+    // unless replay is false.
+    listen(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => void,
+        { fromId, replay = true }: { fromId?: string, replay?: boolean } = {}): () => void {
         const listener: Listener = { resource, actions, fromId, callback };
         this.listeners.add(listener);
-        const replay = this.recentEvents().filter(event => matches(event, resource, actions, fromId));
-        if (replay.length)
-            queueMicrotask(() => replay.forEach(event => this.listeners.has(listener) && this.call(listener, event)));
+        const recent = replay ? this.recentEvents().filter(event => matches(event, resource, actions, fromId)) : [];
+        if (recent.length)
+            queueMicrotask(() => recent.forEach(event => this.listeners.has(listener) && this.call(listener, event)));
         return () => this.listeners.delete(listener);
     }
 
     // Resolves with the first value callback returns for a matching event.
     waitFor<T>(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => T | undefined,
-        { fromId, timeout, signal }: { fromId?: string, timeout?: number, signal?: AbortSignal } = {}): Promise<T> {
+        { fromId, replay, timeout, signal }: { fromId?: string, replay?: boolean, timeout?: number, signal?: AbortSignal } = {}): Promise<T> {
         const result = new Deferred<T>();
         const stop = this.listen(resource, actions, event => {
             const value = callback(event);
             if (value !== undefined)
                 result.resolve(value);
-        }, fromId);
+        }, { fromId, replay });
         let wait = abortable(result.promise, signal);
         if (timeout !== undefined)
             wait = withTimeout(wait, timeout, `Timed out waiting for ${resource} event`);
