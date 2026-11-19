@@ -117,6 +117,8 @@ export class BaseArloSessionControl implements RTCSessionControl {
 // Live video over SIP (SIPStreaming), with talk switched on inside the call.
 export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
+    // Called if the camera ends the call.
+    onEnded?: () => void;
     private sipInfo: any;
 
     async delayedInit(): Promise<void> {
@@ -139,6 +141,7 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
             WebsocketHeaders: { 'User-Agent': USER_AGENTS.firefox },
             SDP: this.cleanSdp(offer.sdp ?? ''),
         }, this.provider.taskManager);
+        this.arloSip.onEnded = () => this.onEnded?.();
         this.logger.debug('SIPManager initialized for camera session.');
     }
 

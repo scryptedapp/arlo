@@ -1058,11 +1058,18 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.logger.debug('RTC signaling session established successfully.');
             const established = session;
             this.ownStream = { kind: 'webrtc' };
-            return new ArloCameraWebRTCSessionControl(established, () => {
+            const ended = () => {
                 this.rtcSessions.delete(established);
                 if (this.ownStream?.kind === 'webrtc' && !this.rtcSessions.size)
                     this.ownStream = undefined;
-            });
+            };
+            // The camera can end the call before the WebRTC plugin ends the
+            // session, or the WebRTC plugin can go without ending it.
+            established.onEnded = () => {
+                this.logger.debug('The camera ended its WebRTC call.');
+                ended();
+            };
+            return new ArloCameraWebRTCSessionControl(established, ended);
         }
         catch (e) {
             if (session) {

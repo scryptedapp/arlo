@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 
 import type { Logger } from '../logging';
-import { Deferred, sleep, TaskManager, withTimeout } from '../util';
+import { AsyncLock, Deferred, sleep, TaskManager, withTimeout } from '../util';
 
 function randString(n: number, chars = 'abcdefghijklmnopqrstuvwxyz0123456789'): string {
     let result = '';
@@ -146,11 +146,19 @@ export interface SIPConfig {
 }
 
 const READ_TIMEOUT = 5_000;
+const CONNECT_TIMEOUT = 10_000;
 
 // Places a SIP call to an Arlo camera over a WebSocket to get its SDP answer,
-// and starts and stops talk with SIP MESSAGEs.
+// and starts and stops talk with SIP MESSAGEs, one request and its reply at a
+// time.
 export class SIPManager {
+    // Called once if the call ends from the far side: the camera's BYE, or the
+    // websocket closing when close() was not asked for.
+    onEnded?: () => void;
     private readonly randHost = randString(12) + '.invalid';
+    private readonly transactions = new AsyncLock();
+    private closing = false;
+    private ended = false;
     private ws?: WebSocket;
     private readonly inbox: string[] = [];
     private inboxWaiter?: Deferred<void>;
@@ -176,16 +184,55 @@ export class SIPManager {
             origin: this.config.WebsocketOrigin,
         });
         ws.on('message', data => {
-            this.inbox.push(data.toString());
+            const text = data.toString();
+            if (text.startsWith('BYE ')) {
+                this.logger.debug(`Got SIP BYE:\n${text}`);
+                // The call is over; no BYE goes back.
+                this.inviteResponse = undefined;
+                this.farEnd('The camera ended the SIP call.');
+                return;
+            }
+            this.inbox.push(text);
             this.inboxWaiter?.resolve();
         });
-        ws.on('close', () => this.inboxWaiter?.reject(new Error('SIP websocket closed')));
-        await new Promise<void>((resolve, reject) => {
-            ws.once('open', () => resolve());
-            ws.once('error', reject);
+        ws.on('error', e => this.logger.debug(`SIP websocket error: ${e}`));
+        ws.on('close', () => {
+            this.inboxWaiter?.reject(new Error('SIP websocket closed'));
+            this.farEnd('The SIP websocket closed.');
         });
+        try {
+            await withTimeout(new Promise<void>((resolve, reject) => {
+                ws.once('open', () => resolve());
+                ws.once('error', reject);
+                ws.once('close', () => reject(new Error('SIP websocket closed before it opened')));
+            }), CONNECT_TIMEOUT, `SIP websocket did not open within ${CONNECT_TIMEOUT / 1000} seconds`);
+        }
+        catch (e) {
+            this.closing = true;
+            ws.terminate();
+            throw e;
+        }
         this.ws = ws;
         this.logger.debug('SIP websocket connected.');
+    }
+
+    private farEnd(reason: string): void {
+        if (this.closing || this.ended)
+            return;
+        this.ended = true;
+        this.logger.debug(reason);
+        this.taskManager.cancelAndAwaitByOwner(this).catch(() => { });
+        this.ws?.close();
+        this.onEnded?.();
+    }
+
+    // Sends a request and reads its reply, after any request already waiting
+    // for one.
+    private transaction(msg: SIPMessage): Promise<SIPMessage> {
+        return this.transactions.run(async () => {
+            await this.write(msg);
+            return this.read();
+        });
     }
 
     private contact(): string {
@@ -326,8 +373,7 @@ export class SIPManager {
         try {
             while (true) {
                 await sleep(30_000, signal);
-                await this.write(this.buildMessage('keepAlive'));
-                const response = await this.read();
+                const response = await this.transaction(this.buildMessage('keepAlive'));
                 if (response.statusCode !== 200 && response.statusCode !== 202) {
                     this.logger.warn(`Did not receive 200 OK or 202 Accepted for keepAlive, got ${response.statusCode}`);
                     break;
@@ -342,6 +388,7 @@ export class SIPManager {
 
     async close(): Promise<void> {
         this.logger.debug('Closing SIPManager session.');
+        this.closing = true;
         await this.taskManager.cancelAndAwaitByOwner(this);
         if (this.inviteResponse && this.ws?.readyState === WebSocket.OPEN) {
             try {
@@ -370,8 +417,7 @@ export class SIPManager {
     }
 
     private async talk(action: 'startTalk' | 'stopTalk'): Promise<void> {
-        await this.write(this.buildMessage(`deviceId:${this.config.DeviceID};${action}`));
-        const response = await this.read();
+        const response = await this.transaction(this.buildMessage(`deviceId:${this.config.DeviceID};${action}`));
         if (response.statusCode !== 200 && response.statusCode !== 202)
             throw new Error(`Did not receive 200 OK or 202 Accepted for ${action}, got ${response.statusCode}`);
     }
