@@ -851,7 +851,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.arloBasestations = new Map();
                 this.arloMvss = new Map();
                 this.allDeviceIds = [];
-                this.scryptedDevices.clear();
+                // A rebuild without a shutdown first (the 14-day login) still
+                // has the previous devices running.
+                await this.deviceLock.run(async () => {
+                    const previous = [...this.scryptedDevices.values()];
+                    this.scryptedDevices.clear();
+                    for (const device of previous)
+                        await device.close().catch(e => this.logger.debug(`Error closing ${device.arloDevice.deviceName} before setup: ${e}`));
+                }, signal);
                 await this.arlo!.subscribe();
                 await this.deviceLock.run(() => this.mdns(), signal);
                 await this.deviceHandler(false, signal);
