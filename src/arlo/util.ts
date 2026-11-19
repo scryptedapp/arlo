@@ -17,15 +17,34 @@ export class TimeoutError extends Error {
     override name = 'TimeoutError';
 }
 
+// Node runs a timer longer than this (about 24.8 days) after 1 ms.
+const MAX_TIMER = 2 ** 31 - 1;
+
+// setTimeout for any delay, waiting in steps where one timer cannot. Returns
+// a function that cancels it.
+export function setLongTimeout(callback: () => void, ms: number): () => void {
+    const end = Date.now() + ms;
+    let timer: NodeJS.Timeout;
+    const arm = () => {
+        const remaining = end - Date.now();
+        if (remaining > 0)
+            timer = setTimeout(arm, Math.min(remaining, MAX_TIMER));
+        else
+            callback();
+    };
+    timer = setTimeout(arm, Number.isNaN(ms) ? 0 : Math.min(Math.max(ms, 0), MAX_TIMER));
+    return () => clearTimeout(timer);
+}
+
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
         if (signal?.aborted)
             return reject(new CancelledError());
         const onAbort = () => {
-            clearTimeout(timer);
+            cancel();
             reject(new CancelledError());
         };
-        const timer = setTimeout(() => {
+        const cancel = setLongTimeout(() => {
             signal?.removeEventListener('abort', onAbort);
             resolve();
         }, ms);

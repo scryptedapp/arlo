@@ -1,5 +1,5 @@
 import type { Logger } from '../logging';
-import { abortable, CancelledError, Deferred, withTimeout } from '../util';
+import { abortable, CancelledError, Deferred, setLongTimeout, withTimeout } from '../util';
 
 // An Arlo event as it arrives on the event stream.
 export interface ArloEvent {
@@ -151,7 +151,7 @@ export abstract class Stream {
     initializing = true;
     protected stopped = false;
     private connectWait?: Deferred<void>;
-    private refreshTimer?: NodeJS.Timeout;
+    private cancelRefresh?: () => void;
 
     constructor(protected readonly host: StreamHost, protected readonly dispatcher: EventDispatcher, readonly name: string) {
     }
@@ -196,11 +196,11 @@ export abstract class Stream {
 
     // Restarts the event stream every interval minutes; 0 turns this off.
     setRefreshInterval(minutes: number): void {
-        clearTimeout(this.refreshTimer);
-        this.refreshTimer = undefined;
+        this.cancelRefresh?.();
+        this.cancelRefresh = undefined;
         if (minutes <= 0 || this.stopped)
             return;
-        this.refreshTimer = setTimeout(async () => {
+        this.cancelRefresh = setLongTimeout(async () => {
             this.logger.info(`Refreshing ${this.name}`);
             try {
                 await this.host.waitForAuthReady(`${this.name} refresh`);
@@ -218,7 +218,7 @@ export abstract class Stream {
         this.stopped = true;
         this.logger.debug(`Disconnecting ${this.name}...`);
         this.connected = false;
-        clearTimeout(this.refreshTimer);
+        this.cancelRefresh?.();
         this.connectWait?.reject(new CancelledError());
         try {
             await this.closeTransport();
