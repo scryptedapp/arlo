@@ -146,17 +146,31 @@ function isSuccess(body: any): boolean {
 // Failed requests are sorted by the ErrorManager; temporary failures are
 // retried up to three times, waiting 1 and then 2 seconds.
 export class Request {
+    private session: Session;
+
     private constructor(
         private readonly impers: Impers,
-        private readonly session: Session,
         private readonly errorManager: ErrorManager,
         private readonly logger: Logger) {
+        this.session = this.newSession();
     }
 
     static async create(errorManager: ErrorManager, logger: Logger): Promise<Request> {
-        const impers = await loadImpers();
-        logger.debug('Impersonating Chrome');
-        return new Request(impers, new impers.Session({ impersonate: 'chrome' }), errorManager, logger);
+        return new Request(await loadImpers(), errorManager, logger);
+    }
+
+    private newSession(): Session {
+        this.logger.debug('Impersonating Chrome');
+        return new this.impers.Session({ impersonate: 'chrome' });
+    }
+
+    // Replaces the session with a new one, without headers or cookies. Callers
+    // keep this object, so requests waiting for a login to end go out on the
+    // session the login made rather than a closed one.
+    async renew(): Promise<void> {
+        const previous = this.session;
+        this.session = this.newSession();
+        await previous.close().catch(() => { });
     }
 
     get(url: string, options?: RequestOptions): Promise<any> {

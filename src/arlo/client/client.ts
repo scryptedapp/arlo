@@ -209,8 +209,10 @@ export class ArloClient {
         try {
             this.logger.info('Starting Arlo Cloud login...');
             this.headers = this.getHeaders();
-            await this.request?.close().catch(() => { });
-            this.request = await Request.create(this.errorManager, this.logger);
+            if (this.request)
+                await this.request.renew();
+            else
+                this.request = await Request.create(this.errorManager, this.logger);
             if (this.cookies)
                 this.request.loadCookies(this.cookies);
             this.logger.debug(`Sending authentication request to ${AUTH_URL}`);
@@ -359,14 +361,12 @@ export class ArloClient {
     // sends the session token with every request.
     private async finalizeLogin(): Promise<void> {
         this.cookies = this.api.dumpCookies();
-        const previous = this.request;
-        this.request = await Request.create(this.errorManager, this.logger);
-        await previous?.close().catch(() => { });
-        this.request.loadCookies(this.cookies);
+        await this.api.renew();
+        this.api.loadCookies(this.cookies);
         this.host.storage.setItem('arlo_cookies', this.cookies);
         this.finalizedLogin = true;
         this.headers = this.getHeaders();
-        this.request.setHeaders(this.headers);
+        this.api.setHeaders(this.headers);
     }
 
     private async userSession(signal?: AbortSignal): Promise<void> {
