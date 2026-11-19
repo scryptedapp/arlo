@@ -31,16 +31,19 @@ export class ArloSiren extends ArloDeviceBase implements OnOff {
     async turnOn(): Promise<void> {
         try {
             this.logger.info('Turning on');
-            if (this.svss.securitySystemState?.mode === SecuritySystemMode.Disarmed) {
+            // The stored mode, which reads as Disarmed when unset, so a security
+            // system whose state is not known yet never lets the siren sound.
+            const state = this.svss.securitySystemState ?? { mode: this.svss.mode };
+            if (this.svss.mode === SecuritySystemMode.Disarmed) {
                 this.logger.info('Virtual security system is disarmed, ignoring trigger');
                 this.on = true;
                 this.on = false;
-                this.svss.securitySystemState = { ...this.svss.securitySystemState, triggered: false };
+                this.svss.securitySystemState = { ...state, triggered: false };
                 return;
             }
             await this.provider.arlo!.setSiren(this.arloBasestation, this.sirenCamera(), true);
             this.on = true;
-            this.svss.securitySystemState = { ...this.svss.securitySystemState!, triggered: true };
+            this.svss.securitySystemState = { ...state, triggered: true };
         }
         catch (e) {
             this.logger.error(`Error turning on siren: ${e}`);
