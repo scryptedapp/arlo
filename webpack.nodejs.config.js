@@ -28,4 +28,18 @@ defaultConfig.externals = [
     },
 ];
 
+// The published build is minified. Class names stay, since error names in
+// logs come from them, and license comments stay in the bundle, since the
+// zip carries only the bundle.
+const TerserPlugin = require('terser-webpack-plugin');
+defaultConfig.optimization.minimizer = [
+    new TerserPlugin({
+        extractComments: false,
+        terserOptions: {
+            compress: { typeofs: false },
+            keep_classnames: true,
+        },
+    }),
+];
+
 module.exports = defaultConfig;
