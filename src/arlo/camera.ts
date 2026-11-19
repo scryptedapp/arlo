@@ -601,12 +601,22 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.activityState ?? 'unknown';
     }
 
-    private applyActivityState(state: string): void {
+    // queried is true for the camera's answer to a property request, which is
+    // current, unlike an event that may be late.
+    private applyActivityState(state: string, queried = false): void {
         this.activityState = state;
-        if (this.ownStream?.kind === 'rtsp' && (state === 'startUserStream' || state === 'userStreamActive'))
-            this.ownStream.confirmed = true;
+        const own = this.ownStream;
+        if (own?.kind === 'rtsp' && (state === 'startUserStream' || state === 'userStreamActive'))
+            own.confirmed = true;
         if (state !== 'idle')
             return;
+        // The previous stream's idle report, or a repeat of it, can arrive
+        // after a new stream was asked for. It ends only a stream the camera
+        // has reported; one it has not keeps its start grace.
+        if (own?.kind === 'rtsp' && !own.confirmed && !queried) {
+            this.logger.debug('Idle report from before the new stream started; keeping the new stream.');
+            return;
+        }
         if (this.streamSipInfo) {
             this.logger.debug('Stream ended; clearing its SIP session.');
             this.streamSipInfo = undefined;
@@ -627,7 +637,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         if (this.arloConnection && this.ownStream?.kind !== 'webrtc') {
             const properties = await this.provider.getDeviceProperties(this.arloBasestation, this.arloDevice);
             if (typeof properties.activityState === 'string')
-                this.applyActivityState(properties.activityState);
+                this.applyActivityState(properties.activityState, true);
         }
         if (this.arloConnection) {
             const own = this.ownStream?.kind === 'webrtc' || this.ownCloudStream
@@ -795,7 +805,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         const all = await this.getVideoStreamOptions();
         const option = all.find(o => o.id === (options?.id ?? 'default')) ?? all[0];
         const mso: ResponseMediaStreamOptions = { ...option, refreshAt: Date.now() + 30 * 60_000 };
-        const url = await this.getVideoStreamUrl(option);
+        // Rebroadcast refreshes a stream by asking again with the options it
+        // got, which carry refreshAt; a new session's request does not.
+        const refreshing = !!(options as ResponseMediaStreamOptions | undefined)?.refreshAt;
+        const url = await this.getVideoStreamUrl(option, refreshing);
         const input: FFmpegInput = {
             url,
             container: 'rtsp',
@@ -805,18 +818,29 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return sdk.mediaManager.createFFmpegMediaObject(input);
     }
 
-    private getVideoStreamUrl(option: ResponseMediaStreamOptions): Promise<string> {
-        return this.connectionLock.run(() => this.startVideoStream(option));
+    private getVideoStreamUrl(option: ResponseMediaStreamOptions, refreshing: boolean): Promise<string> {
+        return this.connectionLock.run(() => this.startVideoStream(option, refreshing));
     }
 
-    private async startVideoStream(option: ResponseMediaStreamOptions): Promise<string> {
-        // Rebroadcast refreshes the cloud stream it runs while the camera still
-        // reports it; that refresh reuses this plugin's own connection. A stream
-        // the camera never reported is gone.
+    private async startVideoStream(option: ResponseMediaStreamOptions, refreshing: boolean): Promise<string> {
+        // Rebroadcast's refresh of the cloud stream it runs, while the camera
+        // still reports it, reuses this plugin's own connection. A stream the
+        // camera never reported is gone.
         const own = this.ownStream;
-        const refresh = own?.kind === 'rtsp' && own.confirmed && own.id === option.id && this.activityState !== 'idle';
+        const ours = own?.kind === 'rtsp' && own.confirmed && own.id === option.id && this.activityState !== 'idle';
         if (own?.kind === 'rtsp' && !this.ownCloudStream)
             this.ownStream = undefined;
+        let refresh = ours && refreshing;
+        if (ours && !refreshing) {
+            // A new session while the camera still reports the last one, which
+            // is ending: its idle report would clear the new stream's tracking,
+            // so wait for it. A stream that does not end is reused.
+            this.logger.debug('Waiting for the previous cloud stream to end.');
+            const deadline = Date.now() + TIMEOUT;
+            while (this.ownStream === own && Date.now() < deadline)
+                await sleep(250);
+            refresh = this.ownStream === own;
+        }
         if (!refresh)
             await this.waitForConnection('start a stream');
         if (option.name === 'Local RTSP') {
