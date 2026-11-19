@@ -21,9 +21,25 @@ type Response = InstanceType<Impers['Response']>;
 interface Log {
     debug(message: string): void;
     warn(message: string): void;
+    error(message: string): void;
 }
 
 let impers: Promise<Impers> | undefined;
+let verified: Promise<Impers> | undefined;
+
+// The browser Arlo Cloud requests impersonate. It is pinned, so an impers
+// update cannot change the TLS fingerprint under the user agent sent with it,
+// which is the one libcurl-impersonate sends for this target. An impers
+// update whose library drops the target fails the check below.
+export const BROWSER = {
+    target: 'chrome152_macos',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+};
+
+const NOT_LOADED = 'libcurl-impersonate is not loaded, so the plugin sends no requests to Arlo Cloud: '
+    + 'without it they do not look like a browser, and Cloudflare blocks them. '
+    + 'On its first start the plugin downloads it from GitHub (api.github.com and its release downloads); '
+    + 'once the Scrypted server can reach them, restart the plugin.';
 
 // impers finds or downloads libcurl-impersonate when it is first imported, so
 // the cache must point into the plugin volume before that. It survives
@@ -42,6 +58,29 @@ export function loadImpers(): Promise<Impers> {
         impers = import('impers');
     }
     return impers;
+}
+
+// impers, once it has loaded libcurl-impersonate and the library can
+// impersonate BROWSER. Requests are only made through this.
+function loadVerifiedImpers(): Promise<Impers> {
+    verified ??= (async () => {
+        const loaded = await loadImpers();
+        const library = await loaded.resolveLibrary();
+        if (!library.isImpersonate || !loaded.Curl.hasImpersonateSupport())
+            throw new Error(NOT_LOADED);
+        const probe = new loaded.Curl();
+        try {
+            probe.impersonate(BROWSER.target);
+        }
+        catch (e) {
+            throw new Error(`The libcurl-impersonate at ${library.path} cannot impersonate ${BROWSER.target}, so the plugin sends no requests to Arlo Cloud: ${e}`);
+        }
+        finally {
+            probe.cleanup();
+        }
+        return loaded;
+    })();
+    return verified;
 }
 
 // The release archive also carries static and import libraries, headers,
@@ -86,7 +125,7 @@ export async function initImpers(log: Log): Promise<void> {
     const library = await resolveLibrary();
     log.debug(`Using ${Curl.version()} from ${library.path}`);
     if (!library.isImpersonate) {
-        log.warn('libcurl-impersonate is not loaded; Arlo requests will not look like a browser.');
+        log.error(NOT_LOADED);
         return;
     }
     const dir = cacheDir();
@@ -142,7 +181,7 @@ function isSuccess(body: any): boolean {
     return body.success === true;
 }
 
-// Arlo Cloud requests through an impers session that impersonates Chrome.
+// Arlo Cloud requests through an impers session that impersonates BROWSER.
 // Failed requests are sorted by the ErrorManager; temporary failures are
 // retried up to three times, waiting 1 and then 2 seconds.
 export class Request {
@@ -156,12 +195,12 @@ export class Request {
     }
 
     static async create(errorManager: ErrorManager, logger: Logger): Promise<Request> {
-        return new Request(await loadImpers(), errorManager, logger);
+        return new Request(await loadVerifiedImpers(), errorManager, logger);
     }
 
     private newSession(): Session {
-        this.logger.debug('Impersonating Chrome');
-        return new this.impers.Session({ impersonate: 'chrome' });
+        this.logger.debug(`Impersonating ${BROWSER.target}`);
+        return new this.impers.Session({ impersonate: BROWSER.target });
     }
 
     // Replaces the session with a new one, without headers or cookies. Callers

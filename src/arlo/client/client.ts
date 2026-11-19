@@ -1,7 +1,7 @@
 import { Logger } from '../logging';
 import { Deferred, abortable, ErrorManager, sleep, TaskManager, UnauthorizedError } from '../util';
 import { MQTTEventStream } from './mqtt_stream';
-import { Request, RequestOptions } from './request';
+import { BROWSER, Request, RequestOptions } from './request';
 import { ActionSpec, ArloEvent, DispatcherHost, EventDispatcher } from './stream';
 
 export const USER_AGENTS = {
@@ -263,7 +263,7 @@ export class ArloClient {
             return {
                 'Auth-Version': '2',
                 'Authorization': this.token ?? '',
-                'User-Agent': USER_AGENTS.linux,
+                'User-Agent': BROWSER.userAgent,
                 'Content-Type': 'application/json; charset=UTF-8',
             };
         }
@@ -282,7 +282,7 @@ export class ArloClient {
             'X-Service-Version': '3',
             'Priority': 'u=1, i',
             'Host': AUTH_URL,
-            'User-Agent': USER_AGENTS.linux,
+            'User-Agent': BROWSER.userAgent,
         };
         if (this.token)
             headers.Authorization = Buffer.from(this.token, 'utf8').toString('base64');
