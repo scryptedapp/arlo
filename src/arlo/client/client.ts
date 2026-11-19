@@ -563,12 +563,13 @@ export class ArloClient {
     async subscribe(basestationCameraPairs: [ArloDevice, ArloDevice][] = [], { startHeartbeat = true }: { startHeartbeat?: boolean } = {}): Promise<void> {
         await this.ignoreUnauthorized('subscribe', undefined, async () => {
             await this.errorManager.waitForAuthReady('event stream subscribe');
-            if (!this.eventStream || (!this.eventStream.initializing && !this.eventStream.connected)) {
-                this.eventStream = new MQTTEventStream(this, this.events, this);
-                await this.eventStream.start();
+            let stream = this.eventStream;
+            if (!stream || (!stream.initializing && !stream.connected)) {
+                stream = this.eventStream = new MQTTEventStream(this, this.events, this);
+                await stream.start();
             }
-            await this.eventStream.waitConnected(10_000);
-            if (!this.eventStream?.connected)
+            await stream.waitConnected(10_000);
+            if (!stream.connected || this.eventStream !== stream)
                 throw new Error('Event stream failed to initialize or connect.');
             if (!basestationCameraPairs.length)
                 return;

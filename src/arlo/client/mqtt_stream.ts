@@ -47,7 +47,7 @@ export class MQTTEventStream extends Stream {
         }
         this.logger.debug(`Starting ${this.name} (host=${this.info.mqttUrl}, transport=${this.info.mqttTransport})`);
         for (let attempt = 1; attempt <= MAX_ATTEMPTS && !this.stopped; attempt++) {
-            if (await this.connect(this.info.mqttUrl) || await this.connect(FALLBACK_HOST))
+            if (await this.connect(this.info.mqttUrl) || (!this.stopped && await this.connect(FALLBACK_HOST)))
                 break;
             this.logger.error('Failed to connect to both primary and fallback MQTT hosts.');
             if (attempt < MAX_ATTEMPTS) {
@@ -57,6 +57,9 @@ export class MQTTEventStream extends Stream {
             }
         }
         if (!this.connected) {
+            // Finished trying, so the client builds a new stream next time
+            // instead of waiting on this one.
+            this.initializing = false;
             this.logger.error(`${this.name} start failed: could not establish connection after ${MAX_ATTEMPTS - 1} retries.`);
             throw new TransientRequestError(`${this.name} start failed after retries.`);
         }
@@ -64,6 +67,8 @@ export class MQTTEventStream extends Stream {
     }
 
     private connect(host: string): Promise<boolean> {
+        if (this.stopped)
+            return Promise.resolve(false);
         this.logger.debug(`Attempting ${this.name} connect to ${host}:${this.info.mqttPort}...`);
         this.beginConnectWait();
         const websockets = this.info.mqttTransport === 'websockets';
