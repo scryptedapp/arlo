@@ -31,6 +31,9 @@ export async function browseArloServices(logger: Logger, duration = 2_000): Prom
     const targets = new Map<string, string>();
     const deviceIds = new Map<string, string>();
     const addresses = new Map<string, string>();
+    // Without these, a socket error would end the plugin.
+    mdns.on('error', e => logger.debug(`mDNS error: ${e}`));
+    mdns.on('warning', e => logger.debug(`mDNS warning: ${e}`));
     try {
         mdns.on('response', response => {
             for (const answer of [...response.answers, ...response.additionals]) {

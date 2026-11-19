@@ -71,12 +71,25 @@ export class ArloLocalStreamProxy {
         this.logger = camera.logger;
     }
 
+    // Closes itself if nothing connects within 30 seconds.
     async start(): Promise<number> {
-        const server = this.server = net.createServer(socket => this.handleConnection(socket));
+        let unused: NodeJS.Timeout | undefined;
+        const server = this.server = net.createServer(socket => {
+            clearTimeout(unused);
+            this.handleConnection(socket);
+        });
         await new Promise<void>((resolve, reject) => {
             server.once('error', reject);
             server.listen(0, '127.0.0.1', () => resolve());
         });
+        server.on('error', e => this.logger.debug(`Local stream proxy error: ${e}`));
+        unused = setTimeout(() => {
+            if (this.server !== server)
+                return;
+            this.logger.debug('Nothing connected to the local stream proxy within 30 seconds; closing it.');
+            server.close();
+            this.server = undefined;
+        }, 30_000);
         this.port = (server.address() as net.AddressInfo).port;
         this.logger.debug(`ArloLocalStreamProxy listening on 127.0.0.1:${this.port}`);
         return this.port;

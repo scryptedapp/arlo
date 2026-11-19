@@ -646,6 +646,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             auth: { user: values.imap_mfa_username, pass: values.imap_mfa_password },
             logger: false,
         });
+        client.on('error', e => this.logger.debug(`IMAP connection error: ${e}`));
         this.logger.debug('Starting IMAP polling for MFA code.');
         try {
             await client.connect();
