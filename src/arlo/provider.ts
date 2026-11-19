@@ -1060,6 +1060,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             this.logCreationMismatch('mode virtual security systems', this.arloMvss.size, mvss);
         }
+        // A provider whose children are all hidden or gone gets an empty list,
+        // so they are removed.
+        for (const list of [...manifests.values()]) {
+            for (const manifest of list) {
+                if (manifest.interfaces.includes(ScryptedInterface.DeviceProvider) && !manifests.has(manifest.nativeId))
+                    manifests.set(manifest.nativeId, []);
+            }
+        }
         // Every device this setup builds exists now, so a request still held
         // is for one that is not coming; sending can remove such a device.
         this.endBuild();
@@ -1147,7 +1155,9 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     }
 
     // Each provider's list is complete, so Scrypted removes the devices left
-    // out of it, such as newly hidden ones.
+    // out of it, such as newly hidden ones. The plugin's own list is sent
+    // empty only when discovery found devices and all are hidden, never after
+    // a discovery that found none.
     private async sendDevicesToScrypted(manifests: Map<string | undefined, Device[]>): Promise<void> {
         for (const [provider, devices] of manifests) {
             if (provider === undefined)
@@ -1156,8 +1166,8 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.logger.debug(`Sending ${name} and children to scrypted server`);
             await sdk.deviceManager.onDevicesChanged({ devices, providerNativeId: provider });
         }
-        const root = manifests.get(undefined);
-        if (root?.length)
+        const root = manifests.get(undefined) ?? [];
+        if (root.length || this.allDeviceIds.length)
             await sdk.deviceManager.onDevicesChanged({ devices: root });
     }
 
