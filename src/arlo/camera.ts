@@ -821,7 +821,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             await this.waitForConnection('start a stream');
         if (option.name === 'Local RTSP') {
             this.logger.info('Requesting local stream');
-            const basestation = await this.provider.getDevice(this.arloBasestation.deviceId) as ArloBasestation | undefined;
+            const basestation = this.provider.scryptedDevices.get(this.arloBasestation.deviceId) as ArloBasestation | undefined;
             if (!basestation)
                 throw new Error("This camera's basestation is missing or hidden, unable to use local stream.");
             if (this.arloDevice.deviceId === this.arloBasestation.deviceId)

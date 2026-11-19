@@ -1060,6 +1060,9 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             this.logCreationMismatch('mode virtual security systems', this.arloMvss.size, mvss);
         }
+        // Every device this setup builds exists now, so a request still held
+        // is for one that is not coming; sending can remove such a device.
+        this.endBuild();
         await this.sendDevicesToScrypted(manifests);
         this.logger.info('Done creating devices.');
         this.settingsChanged();
