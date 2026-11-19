@@ -45,7 +45,7 @@ import { ArloIntercom } from './intercom';
 import { ArloBaseLight, ArloFloodlight, ArloNightlight, ArloSpotlight } from './light';
 import { ArloLocalStreamProxy } from './local_stream';
 import type { ArloProvider } from './provider';
-import { AsyncLock, sleep, TimeoutError, withTimeout } from './util';
+import { abortable, AsyncLock, sleep, TimeoutError, withTimeout } from './util';
 import { ArloSirenVirtualSecuritySystem } from './vss';
 import { ArloCameraWebRTCSessionControl, ArloCameraWebRTCSignalingSession } from './webrtc_sip';
 
@@ -223,7 +223,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.createOrRegisterEventSubscription('activity_state_subscription', () => arlo().subscribeToActivityStateEvents(this.arloDevice,
             state => this.applyActivityState(state)));
         this.createOrRegisterEventSubscription('snapshot_subscription', () => arlo().subscribeToSnapshotEvents(this.arloDevice, url => {
-            this.taskManager.createTask(() => this.getSnapshotFromEventUrl(url), { tag: `snapshot_event_update:${this.nativeId}`, owner: this });
+            this.taskManager.createTask(signal => abortable(this.getSnapshotFromEventUrl(url), signal), { tag: `snapshot_event_update:${this.nativeId}`, owner: this });
         }));
         this.createOrRegisterEventSubscription('motion_subscription', () => arlo().subscribeToMotionEvents(this.arloDevice,
             detected => this.motionDetected = detected, this.logger));
@@ -304,10 +304,11 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 await sleep(interval, signal);
                 continue;
             }
-            await this.snapshotLock.run(async () => {
+            // A close does not wait for a snapshot under way to finish.
+            await abortable(this.snapshotLock.run(async () => {
                 await this.createSnapshot(!this.skipPrebufferOnFirstAutoSnapshot);
                 this.skipPrebufferOnFirstAutoSnapshot = false;
-            }, signal).catch(e => {
+            }, signal), signal).catch(e => {
                 if (signal.aborted)
                     throw e;
                 this.logger.debug(`Auto snapshot loop error: ${e}`);

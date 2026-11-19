@@ -146,6 +146,8 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
     // Starts the event subscription under key unless it is already running.
     // While device setup runs it starts once setup ends.
     protected createOrRegisterEventSubscription(key: string, subscribe: () => Unsubscribe): void {
+        if (this.stopSubscriptions)
+            return;
         if (this.subscriptions.has(key)) {
             this.logger.debug(`Event subscription "${key}" already running for device ${this.arloDevice.deviceId}.`);
             return;
@@ -158,7 +160,8 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
         this.taskManager.createTask(async signal => {
             while (this.provider.setupInProgress && !this.stopSubscriptions)
                 await sleep(1_000, signal);
-            if (!this.stopSubscriptions)
+            // Not if the device closed, or the subscription was removed, meanwhile.
+            if (!this.stopSubscriptions && this.subscriptions.get(key) === 'pending')
                 this.subscriptions.set(key, subscribe());
         }, { tag: key, owner: this });
     }
