@@ -12,6 +12,7 @@ import { initImpers } from './client/request';
 import { ArloDoorbell } from './doorbell';
 import { LOG_LEVELS, Logger, LogLevel, setLogLevel } from './logging';
 import {
+    abortable,
     AsyncEvent,
     AsyncLock,
     CancelledError,
@@ -583,7 +584,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.manualMfaCode = new Deferred();
         this.logger.info('Waiting for manual MFA code input.');
         try {
-            const code = await withTimeout(this.manualMfaCode.promise, MANUAL_MFA_TIMEOUT);
+            const code = await withTimeout(abortable(this.manualMfaCode.promise, signal), MANUAL_MFA_TIMEOUT);
             if (code) {
                 this.mfaCode?.resolve(code);
                 this.logger.debug('Manual MFA code sent to Arlo client.');
@@ -789,7 +790,8 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                         elapsed = Math.max(0, elapsed - interval);
                 }
                 else {
-                    throw e;
+                    // Any other failure ends this refresh, not the schedule.
+                    this.logger.error('Session refresh failed; trying again at the next refresh:', e);
                 }
             }
         }
