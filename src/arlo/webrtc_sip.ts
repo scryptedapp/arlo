@@ -124,6 +124,8 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
     async delayedInit(): Promise<void> {
         this.logger.debug('Fetching SIP info for camera WebRTC session.');
         this.sipInfo = await this.provider.arlo!.getSipInfoV2(this.arloDevice);
+        if (!this.sipInfo?.sipCallInfo)
+            throw new Error('Arlo did not return SIP details for this camera, so its WebRTC stream cannot start.');
         this.iceServers = this.formatIceServers(this.sipInfo.iceServers.data);
         this.logger.debug(`SIP info and ICE servers set: ${JSON.stringify(this.iceServers)}`);
     }
