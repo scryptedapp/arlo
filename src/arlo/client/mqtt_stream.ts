@@ -92,10 +92,12 @@ export class MQTTEventStream extends Stream {
         this.client = client;
         return new Promise(resolve => {
             let settled = false;
+            let timer: NodeJS.Timeout | undefined;
             const finish = (connected: boolean) => {
                 if (settled)
                     return;
                 settled = true;
+                clearTimeout(timer);
                 if (!connected) {
                     client.end(true);
                     if (this.client === client)
@@ -134,9 +136,8 @@ export class MQTTEventStream extends Stream {
                 this.logger.warn(`${this.name} disconnected.`);
                 this.onTransportError(`${this.name} unexpected disconnection`);
             });
-            setTimeout(() => {
-                if (!settled)
-                    this.logger.error(`${this.name} connect to ${host}:${this.info.mqttPort} timed out after ${CONNECT_TIMEOUT / 1000} seconds`);
+            timer = setTimeout(() => {
+                this.logger.error(`${this.name} connect to ${host}:${this.info.mqttPort} timed out after ${CONNECT_TIMEOUT / 1000} seconds`);
                 finish(false);
             }, CONNECT_TIMEOUT + 1_000);
         });

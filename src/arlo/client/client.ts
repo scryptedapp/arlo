@@ -90,7 +90,8 @@ class TtlCache<T> {
             return entry.value;
         const value = load();
         this.entries.set(key, { time: Date.now(), value });
-        value.catch(() => this.entries.delete(key));
+        // Not a newer entry made after this one expired.
+        value.catch(() => this.entries.get(key)?.value === value && this.entries.delete(key));
         return value;
     }
 }
@@ -132,6 +133,7 @@ export class ArloClient {
     mqttTransport: 'tcp' | 'websockets' = 'tcp';
     eventStream?: MQTTEventStream;
     private heartbeatDevices: ArloDevice[] = [];
+    private heartbeatGeneration = 0;
     private readonly devicesCache = new TtlCache<ArloDevice[]>(60_000);
     private readonly capabilitiesCache = new TtlCache<any>(60_000);
     private readonly smartFeaturesCache = new TtlCache<any>(60_000);
@@ -632,7 +634,11 @@ export class ArloClient {
         if (!this.eventStream?.active)
             return;
         this.logger.debug(`Will send heartbeat to the following devices: ${JSON.stringify(this.heartbeatDevices.map(device => device.deviceId))}`);
+        // Of two starts at once, only the later one runs a heartbeat.
+        const generation = ++this.heartbeatGeneration;
         await this.cancelHeartbeat();
+        if (generation !== this.heartbeatGeneration)
+            return;
         const heartbeatDevices = [...this.heartbeatDevices];
         this.taskManager.createTask(async signal => {
             while (this.eventStream?.active) {
@@ -880,6 +886,8 @@ export class ArloClient {
                 headers: { xcloudId: camera.xCloudId ?? '', 'User-Agent': USER_AGENTS.android },
                 signal,
             });
+            if (!response?.url)
+                throw new Error('Arlo did not return a stream URL.');
             stream.url = String(response.url).replace('rtsp://', 'rtsps://');
             if (response.sipCallInfo && response.iceServers)
                 stream.sipInfo = { sipCallInfo: response.sipCallInfo, iceServers: response.iceServers };

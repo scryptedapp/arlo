@@ -306,7 +306,7 @@ export class SIPManager {
 
     private async write(msg: SIPMessage): Promise<void> {
         // Arlo expects the WebRTC-UDP transport name quoted.
-        const text = msg.build().replace('WebRTC-UDP', '"WebRTC-UDP"');
+        const text = msg.build().replaceAll('WebRTC-UDP', '"WebRTC-UDP"');
         this.logger.debug(`Sending SIP message:\n${text}`);
         await new Promise<void>((resolve, reject) => this.ws!.send(text, e => e ? reject(e) : resolve()));
     }
