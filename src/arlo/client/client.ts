@@ -629,8 +629,6 @@ export class ArloClient {
             this.heartbeatDevices = devices;
         if (!this.heartbeatDevices.length)
             return;
-        while (this.host.setupInProgress)
-            await sleep(1_000);
         if (!this.eventStream?.active)
             return;
         this.logger.debug(`Will send heartbeat to the following devices: ${JSON.stringify(this.heartbeatDevices.map(device => device.deviceId))}`);

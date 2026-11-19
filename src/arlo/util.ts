@@ -391,7 +391,9 @@ export class ErrorManager {
     }
 
     // Runs fn as an auth transition that ends without marking a login success,
-    // for the cleanup steps before a new login.
+    // for the cleanup steps before a new login. Work holding the provider's
+    // locks waits for transitions to end, so take those locks before starting
+    // one, never inside it.
     async authTransition<T>(reason: string, fn: () => Promise<T>): Promise<T> {
         this.beginAuthTransition(reason);
         try {

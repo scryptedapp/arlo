@@ -465,7 +465,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     private async login(signal?: AbortSignal): Promise<void> {
         if (this.activeLogin && !this.activeLogin.done) {
             this.logger.debug('Login already in progress, waiting for it to complete.');
-            await this.activeLogin.promise;
+            await abortable(this.activeLogin.promise, signal);
             return;
         }
         const result = new Deferred<boolean>();
@@ -499,7 +499,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             const loginStep = async <T>(step: Deferred<T>, description: string): Promise<T> => {
                 const ended = task.promise.then(() => false, () => false);
                 const reached = step.promise.then(() => true);
-                if (!await Promise.race([reached, ended]) && !step.done) {
+                if (!await abortable(Promise.race([reached, ended]), signal) && !step.done) {
                     await task.promise;
                     throw new Error(`Arlo Cloud login ended before ${description} was available.`);
                 }
@@ -523,11 +523,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                     this.taskManager.createTask(mfaSignal => this.manualMfaLoop(mfaSignal), { tag: 'mfa', owner: this });
                 }
             }
-            await task.promise;
+            await abortable(task.promise, signal);
             if (arlo.loggedIn) {
                 this.errorManager.endAuthTransition(true);
                 transitionOpen = false;
-                await this.onLoginSuccess(arlo);
+                await this.onLoginSuccess(arlo, signal);
                 result.resolve(true);
                 return;
             }
@@ -729,13 +729,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         return undefined;
     }
 
-    private async onLoginSuccess(arlo: ArloClient): Promise<void> {
+    private async onLoginSuccess(arlo: ArloClient, signal?: AbortSignal): Promise<void> {
         this.arlo = arlo;
         if (!this.fullResetNeeded)
             return;
         await this.taskManager.cancelAndAwaitByTag('refresh', this);
-        this.taskManager.createTask(signal => this.refreshLoginLoop(signal), { tag: 'refresh', owner: this });
-        await this.doArloSetup();
+        this.taskManager.createTask(refreshSignal => this.refreshLoginLoop(refreshSignal), { tag: 'refresh', owner: this });
+        await this.doArloSetup(signal);
         this.fullResetNeeded = false;
     }
 
@@ -752,20 +752,20 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             try {
                 if (elapsed >= HARD_LOGIN_INTERVAL) {
                     this.logger.debug('Hard MFA refresh interval reached, refreshing Arlo login.');
-                    await this.errorManager.authTransition('hard MFA refresh cleanup', async () => {
+                    await this.periodicLock.run(() => this.deviceLock.run(() => this.errorManager.authTransition('hard MFA refresh cleanup', async () => {
                         await this.arlo?.unsubscribe();
                         await this.arlo?.cancelHeartbeat();
-                        await this.periodicLock.run(() => this.deviceLock.run(async () => { this.fullResetNeeded = true; }));
-                    });
+                        this.fullResetNeeded = true;
+                    }), signal), signal);
                     await this.login(signal);
                     return;
                 }
                 this.logger.debug('Session refresh interval reached, re-logging in.');
-                await this.errorManager.authTransition('scheduled session refresh cleanup', async () => {
+                await this.periodicLock.run(() => this.deviceLock.run(() => this.errorManager.authTransition('scheduled session refresh cleanup', async () => {
                     await this.arlo?.unsubscribe();
                     await this.arlo?.cancelHeartbeat();
-                    await this.periodicLock.run(() => this.deviceLock.run(async () => this.arlo?.resetSession()));
-                });
+                    this.arlo?.resetSession();
+                }), signal), signal);
                 await this.login(signal);
                 if (this.arlo?.loggedIn) {
                     await this.periodicLock.run(() => this.deviceLock.run(async () => {
@@ -773,7 +773,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                             await this.subscribeToEventStream();
                             this.settingsChanged();
                         }
-                    }));
+                    }, signal), signal);
                 }
             }
             catch (e) {
@@ -809,16 +809,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             this.logger.info(`Attempting Arlo soft relogin after auth error: ${reason}`);
             const arlo = this.arlo;
-            await this.errorManager.authTransition(`auth recovery cleanup: ${reason}`, async () => {
+            await this.restartLock.run(() => this.periodicLock.run(() => this.deviceLock.run(() => this.errorManager.authTransition(`auth recovery cleanup: ${reason}`, async () => {
                 await arlo.unsubscribe().catch(e => this.logger.debug(`Error stopping event stream during auth recovery: ${e}`));
                 await arlo.cancelHeartbeat().catch(e => this.logger.debug(`Error stopping heartbeat during auth recovery: ${e}`));
-                await this.restartLock.run(() => this.periodicLock.run(() => this.deviceLock.run(async () => {
-                    if (this.errorManager.rateLimitRemaining() > 0)
-                        return;
-                    this.arlo?.resetSession();
-                    this.fullResetNeeded = false;
-                })));
-            });
+                if (this.errorManager.rateLimitRemaining() > 0)
+                    return;
+                this.arlo?.resetSession();
+                this.fullResetNeeded = false;
+            }), signal), signal), signal);
             await this.login(signal);
             if (this.arlo?.loggedIn) {
                 await this.periodicLock.run(() => this.deviceLock.run(async () => {
@@ -826,7 +824,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                         await this.subscribeToEventStream();
                         this.settingsChanged();
                     }
-                }));
+                }, signal), signal);
             }
         }
         catch (e) {
@@ -843,10 +841,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
 
     // Device setup after a full login.
 
-    private async doArloSetup(): Promise<void> {
+    private async doArloSetup(signal?: AbortSignal): Promise<void> {
         this.setupInProgress = true;
+        let cancelled = false;
         try {
-            await this.errorManager.waitForAuthReady('Arlo setup');
+            await this.errorManager.waitForAuthReady('Arlo setup', { signal });
             await this.periodicLock.run(async () => {
                 this.arloCameras = new Map();
                 this.arloBasestations = new Map();
@@ -854,11 +853,15 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.allDeviceIds = [];
                 this.scryptedDevices.clear();
                 await this.arlo!.subscribe();
-                await this.deviceLock.run(() => this.mdns());
-                await this.deviceHandler();
-            });
+                await this.deviceLock.run(() => this.mdns(), signal);
+                await this.deviceHandler(false, signal);
+            }, signal);
         }
         catch (e) {
+            if (e instanceof CancelledError || signal?.aborted) {
+                cancelled = true;
+                throw e;
+            }
             if (e instanceof UnauthorizedError) {
                 this.logger.warn(`Arlo setup saw an expired session and queued auth recovery: ${e.message}`);
                 this.errorManager.requestAuthRecovery(e.message);
@@ -877,9 +880,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.setupInProgress = false;
             this.endBuild();
             this.arlo?.events.releaseHeld();
-            if (this.arlo?.loggedIn)
-                await this.arlo.startHeartbeat();
-            this.logger.info('Arlo plugin initialized.');
+            if (!cancelled) {
+                if (this.arlo?.loggedIn)
+                    await this.arlo.startHeartbeat();
+                this.logger.info('Arlo plugin initialized.');
+            }
         }
     }
 
@@ -1266,6 +1271,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         for (const tag of ['initialize_plugin', 'periodic_discovery', 'periodic_refresh', 'refresh'])
             await this.taskManager.cancelAndAwaitByTag(tag, this);
         await this.cleanUpLoginTasks();
+        await this.taskManager.cancelAndAwaitByTag('auth_recovery', this);
         await this.resetArloClient();
         this.logger.info('Provider shutdown finished');
     }
