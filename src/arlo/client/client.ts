@@ -253,7 +253,8 @@ export class ArloClient {
             }
         }
         catch (e) {
-            this.logger.error('Arlo Cloud login failed:', e);
+            // The provider reports the failure.
+            this.logger.debug(`Arlo Cloud login stopped: ${e}`);
             throw e;
         }
     }

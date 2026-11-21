@@ -580,7 +580,8 @@ export class ErrorManager {
     }
 
     // Starts session recovery after a 401, unless the 401 predates the latest
-    // login, recovery is already running, or the plugin is rate limited.
+    // login, came during a login, recovery is already running, or the plugin
+    // is rate limited.
     requestAuthRecovery(reason: string, requestStartedAt?: number): void {
         if (this.rateLimitRemaining() > 0) {
             this.logRateLimitWait('AUTH_RECOVERY', reason);
@@ -592,14 +593,13 @@ export class ErrorManager {
             this.logger.debug(`Session recovery already in progress. Latest reason: ${reason}`);
             return;
         }
-        const options = { tag: 'auth_recovery', owner: this.host };
+        // Cloud requests wait out an auth transition, so a 401 during one
+        // comes from the login itself, which reports its own failure.
         if (!this.authReady.isSet()) {
-            this.logger.debug(`Deferring auth recovery until active Arlo auth transition finishes. Latest reason: ${reason}`);
-            const transitionStartedAt = this.authStartedAt;
-            this.authRecovery = this.host.taskManager.createTask(signal => this.recoverAfterAuthTransition(reason, transitionStartedAt, signal), options);
+            this.logger.debug(`Ignoring a 401 during an Arlo auth transition (${this.authReason || 'auth refresh'}): ${reason}`);
             return;
         }
-        this.authRecovery = this.host.taskManager.createTask(signal => this.options.recoverAuth(reason, signal), options);
+        this.authRecovery = this.host.taskManager.createTask(signal => this.options.recoverAuth(reason, signal), { tag: 'auth_recovery', owner: this.host });
     }
 
     // Starts a 65-minute pause: the plugin disables itself and restarts.
@@ -644,25 +644,5 @@ export class ErrorManager {
             return true;
         }
         return false;
-    }
-
-    private async recoverAfterAuthTransition(reason: string, transitionStartedAt: number, signal: AbortSignal): Promise<void> {
-        try {
-            await withTimeout(this.authReady.wait(signal), AUTH_WAIT);
-        }
-        catch (e) {
-            if (!(e instanceof TimeoutError))
-                throw e;
-            this.logger.warn('Arlo auth transition did not finish before deferred recovery; continuing recovery.');
-        }
-        if (this.rateLimitRemaining() > 0) {
-            this.logRateLimitWait('AUTH_RECOVERY', reason);
-            return;
-        }
-        if (transitionStartedAt && this.lastAuthSuccessAt >= transitionStartedAt) {
-            this.logger.debug('Skipping deferred auth recovery because the active auth transition succeeded.');
-            return;
-        }
-        await this.options.recoverAuth(reason, signal);
     }
 }

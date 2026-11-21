@@ -41,9 +41,12 @@ const LOGIN_COOLDOWN = 60_000;
 // The longest Scrypted's request for a device waits while the plugin builds
 // its devices after loading.
 const BUILD_WAIT = 60_000;
-// A failed login is not retried, so that Arlo and Cloudflare see no repeated
-// attempts.
-const LOGIN_AGAIN = 'The plugin does not retry; restart it, or turn on Force Re-Authentication, to log in again.';
+// A login that failed on a network or server error is tried again after 5
+// and 15 minutes, then hourly. Any other failure, such as a rejected
+// password or a missed MFA code, is not, so that Arlo and Cloudflare see no
+// repeated attempts; nor is anything tried during a 429 pause.
+const LOGIN_RETRY_DELAYS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
+const LOGIN_AGAIN = 'The plugin does not try again after this; once the cause is fixed, restart the plugin or turn on Force Re-Authentication.';
 const MANUAL_MFA_TIMEOUT = 278_000;
 // Browser authentication is refreshed every 14 days to avoid MFA churn.
 const HARD_LOGIN_INTERVAL = 14 * 24 * 60 * 60_000;
@@ -222,6 +225,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     private readonly handedOut = new Map<string, ArloDeviceBase>();
     setupInProgress = false;
     fullResetNeeded = false;
+    // Why the last login failed: temporary ones are tried again on a
+    // schedule, final ones wait for the owner. Either way nothing else logs in
+    // meanwhile.
+    private loginFailure?: 'temporary' | 'final';
+    private loginRetries = 0;
 
     private readonly initializeLock = new AsyncLock();
     private readonly restartLock = new AsyncLock();
@@ -470,6 +478,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
         const result = new Deferred<boolean>();
         this.activeLogin = result;
+        this.loginFailure = undefined;
         this.errorManager.beginAuthTransition('Arlo Cloud login');
         let transitionOpen = true;
         let loginTask: Task<void> | undefined;
@@ -493,7 +502,16 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.mfaLoop = arlo.mfaLoop = new Deferred();
             this.mfaCode = arlo.mfaCode = new Deferred();
             this.logger.debug('Setup ArloClient and MFA futures.');
-            const task = loginTask = this.taskManager.createTask(loginSignal => arlo.login(loginSignal), { tag: 'login-arlo', owner: this });
+            // The failure is reported below, once, not as a failed task too.
+            let failure: unknown;
+            const task = loginTask = this.taskManager.createTask(async loginSignal => {
+                try {
+                    await arlo.login(loginSignal);
+                }
+                catch (e) {
+                    failure = e;
+                }
+            }, { tag: 'login-arlo', owner: this });
 
             // Waits for a step of the login, failing if the login ends first.
             const loginStep = async <T>(step: Deferred<T>, description: string): Promise<T> => {
@@ -501,6 +519,8 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 const reached = step.promise.then(() => true);
                 if (!await abortable(Promise.race([reached, ended]), signal) && !step.done) {
                     await task.promise;
+                    if (failure)
+                        throw failure;
                     throw new Error(`Arlo Cloud login ended before ${description} was available.`);
                 }
                 return step.promise;
@@ -524,13 +544,17 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 }
             }
             await abortable(task.promise, signal);
+            if (failure)
+                throw failure;
             if (arlo.loggedIn) {
                 this.errorManager.endAuthTransition(true);
                 transitionOpen = false;
+                this.loginRetries = 0;
                 await this.onLoginSuccess(arlo, signal);
                 result.resolve(true);
                 return;
             }
+            this.loginFailure = 'final';
             this.logger.error(`Arlo Cloud login failed. ${LOGIN_AGAIN}`);
         }
         catch (e) {
@@ -542,12 +566,16 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 throw e;
             }
             if (e instanceof RateLimitedError) {
+                this.loginFailure = 'final';
                 this.logger.warn(`Arlo Cloud login paused by rate limit for ${Math.floor((e.retryAfter ?? this.errorManager.rateLimitRemaining()) / 1000)} seconds.`);
             }
             else if (e instanceof TransientRequestError) {
-                this.logger.error(`Arlo Cloud login failed with a temporary error: ${e.message}. ${LOGIN_AGAIN}`);
+                this.loginFailure = 'temporary';
+                const delay = this.scheduleLoginRetry();
+                this.logger.error(`Arlo Cloud login failed with a temporary error: ${e.message}. Trying again in ${delay / 60_000} minutes.`);
             }
             else {
+                this.loginFailure = 'final';
                 this.logger.error(`Arlo Cloud login failed. ${LOGIN_AGAIN}`, e);
             }
         }
@@ -558,6 +586,36 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             if (!this.arlo?.loggedIn)
                 this.endBuild();
         }
+    }
+
+    // Tries the login again after the next delay in LOGIN_RETRY_DELAYS.
+    // Returns the delay.
+    private scheduleLoginRetry(): number {
+        const delay = LOGIN_RETRY_DELAYS[Math.min(this.loginRetries, LOGIN_RETRY_DELAYS.length - 1)];
+        this.loginRetries++;
+        // A relogin that kept the devices subscribes again afterwards; a full
+        // login sets everything up itself.
+        const relogin = !this.fullResetNeeded;
+        this.taskManager.cancelAndAwaitByTag('login_retry', this).catch(() => { });
+        this.taskManager.createTask(async signal => {
+            await sleep(delay, signal);
+            this.logger.info('Trying the Arlo Cloud login again.');
+            await this.login(signal);
+            if (relogin)
+                await this.resubscribeAfterRelogin(signal);
+        }, { tag: 'login_retry', owner: this });
+        return delay;
+    }
+
+    private async resubscribeAfterRelogin(signal: AbortSignal): Promise<void> {
+        if (!this.arlo?.loggedIn)
+            return;
+        await this.periodicLock.run(() => this.deviceLock.run(async () => {
+            if (this.arlo?.loggedIn) {
+                await this.subscribeToEventStream();
+                this.settingsChanged();
+            }
+        }, signal), signal);
     }
 
     private async resetArloClient(): Promise<void> {
@@ -590,18 +648,17 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.logger.debug('Manual MFA code sent to Arlo client.');
                 return;
             }
-            this.logger.error('Manual MFA code was not provided. Restarting plugin.');
+            this.mfaCode?.reject(new Error('An empty MFA code was entered.'));
         }
         catch (e) {
             if (!(e instanceof TimeoutError))
                 throw e;
-            this.logger.error('Manual MFA code not entered within 5 minutes. Restarting plugin.');
+            // Arlo's code is good for 5 minutes.
+            this.mfaCode?.reject(new Error('No MFA code was entered within 5 minutes.'));
         }
         finally {
             this.manualMfaCode = undefined;
         }
-        if (!signal.aborted)
-            this.requestRestart('plugin');
     }
 
     private imapSettingsReady(): boolean {
@@ -626,10 +683,8 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.logger.debug('IMAP MFA code sent to Arlo client.');
             return;
         }
-        if (!arlo.loggedIn && !signal.aborted) {
-            this.logger.error('IMAP MFA Loop failed. Restarting plugin.');
-            this.requestRestart('plugin');
-        }
+        if (!arlo.loggedIn && !signal.aborted)
+            this.mfaCode?.reject(new Error('The MFA code was not found by IMAP; check the IMAP settings.'));
     }
 
     // Looks for the Arlo code in mail from the configured sender received since
@@ -768,14 +823,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                     this.arlo?.resetSession();
                 }), signal), signal);
                 await this.login(signal);
-                if (this.arlo?.loggedIn) {
-                    await this.periodicLock.run(() => this.deviceLock.run(async () => {
-                        if (this.arlo?.loggedIn) {
-                            await this.subscribeToEventStream();
-                            this.settingsChanged();
-                        }
-                    }, signal), signal);
+                if (this.loginFailure === 'final') {
+                    this.logger.info('Session refreshes stop until the next login.');
+                    return;
                 }
+                await this.resubscribeAfterRelogin(signal);
             }
             catch (e) {
                 if (signal.aborted)
@@ -799,10 +851,16 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     }
 
     // A 401 outside a login: log in again without rebuilding the devices.
+    // Not after a failed login, which is retried on its own schedule or not
+    // at all.
     private async recoverAuth(reason: string, signal: AbortSignal): Promise<void> {
         try {
             if (this.errorManager.rateLimitRemaining() > 0)
                 return;
+            if (this.loginFailure) {
+                this.logger.debug(`Not logging in again after an auth error, since the last login failed: ${reason}`);
+                return;
+            }
             if (!this.arlo) {
                 this.fullResetNeeded = true;
                 await this.login(signal);
@@ -819,14 +877,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.fullResetNeeded = false;
             }), signal), signal), signal);
             await this.login(signal);
-            if (this.arlo?.loggedIn) {
-                await this.periodicLock.run(() => this.deviceLock.run(async () => {
-                    if (this.arlo?.loggedIn) {
-                        await this.subscribeToEventStream();
-                        this.settingsChanged();
-                    }
-                }, signal), signal);
-            }
+            await this.resubscribeAfterRelogin(signal);
         }
         catch (e) {
             if (signal.aborted)
@@ -1289,7 +1340,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.storage.removeItem('arlo_cookies');
         for (const device of [...this.scryptedDevices.values()])
             await device.close().catch(() => { });
-        for (const tag of ['initialize_plugin', 'periodic_discovery', 'periodic_refresh', 'refresh'])
+        for (const tag of ['initialize_plugin', 'periodic_discovery', 'periodic_refresh', 'refresh', 'login_retry'])
             await this.taskManager.cancelAndAwaitByTag(tag, this);
         await this.cleanUpLoginTasks();
         await this.taskManager.cancelAndAwaitByTag('auth_recovery', this);
