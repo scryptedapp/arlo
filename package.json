@@ -24,16 +24,15 @@
       "camera"
    ],
    "scripts": {
-      "koffi-binaries": "node scripts/koffi-binaries.mjs",
-      "build": "npm run koffi-binaries && node scripts/libcurl-hashes.mjs --check && scrypted-webpack",
-      "prepublishOnly": "npm run koffi-binaries && node scripts/libcurl-hashes.mjs --check && node scripts/production-build.mjs",
+      "build": "node scripts/koffi-version.mjs --check && node scripts/libcurl-hashes.mjs --check && scrypted-webpack",
+      "prepublishOnly": "node scripts/koffi-version.mjs --check && node scripts/libcurl-hashes.mjs --check && node scripts/production-build.mjs",
       "prescrypted-vscode-launch": "npm run build",
       "scrypted-vscode-launch": "scrypted-deploy-debug",
       "scrypted-deploy-debug": "scrypted-deploy-debug",
       "scrypted-debug": "scrypted-debug",
       "scrypted-deploy": "scrypted-deploy",
       "scrypted-package-json": "scrypted-package-json",
-      "update-impers": "npm install impers@latest && npm update koffi && node scripts/libcurl-hashes.mjs"
+      "update-impers": "npm install impers@latest && node scripts/koffi-version.mjs --update && node scripts/libcurl-hashes.mjs"
    },
    "scrypted": {
       "name": "Arlo Camera Plugin",
@@ -65,5 +64,8 @@
    "allowScripts": {
       "fsevents": false,
       "koffi": false
+   },
+   "optionalDependencies": {
+      "koffi": "3.3.7"
    }
 }

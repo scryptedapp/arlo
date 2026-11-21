@@ -8,27 +8,18 @@ defaultConfig.module.rules.push({
     enforce: 'pre',
 });
 
-// koffi is impers' dependency, not ours, so resolve it from impers.
-const koffi = require.resolve('koffi', {
-    paths: [path.dirname(require.resolve('impers'))],
-});
-
 // impers' library loader, which the plugin calls to check a downloaded
 // libcurl-impersonate before impers loads it. impers exports only its main
 // module, so it is reached by path.
 defaultConfig.resolve.alias['impers-loader$'] = path.join(path.dirname(require.resolve('impers')), 'ffi', 'loader.js');
 
-// koffi's ES module build locates itself through import.meta, which the
-// default config removes, so bundle its CommonJS build instead.
-defaultConfig.resolve.alias['koffi$'] = koffi;
-
-// koffi loads its native code from per-platform packages (@koromix/koffi-*).
-// scripts/koffi-binaries.mjs places them in fs/koffi, which the plugin zip
-// carries next to the bundle, so require them from there at runtime.
+// koffi carries native binaries, which a bundle cannot, so it is left out:
+// Scrypted installs the version package.json pins under optionalDependencies
+// on the server, and the plugin requires it from there.
 defaultConfig.externals = [
     ({ request }, callback) => {
-        if (/^@koromix\/koffi-/.test(request))
-            return callback(null, `commonjs ./fs/koffi/${request}`);
+        if (request === 'koffi')
+            return callback(null, 'commonjs koffi');
         callback();
     },
 ];
