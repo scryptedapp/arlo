@@ -13,6 +13,11 @@ const koffi = require.resolve('koffi', {
     paths: [path.dirname(require.resolve('impers'))],
 });
 
+// impers' library loader, which the plugin calls to check a downloaded
+// libcurl-impersonate before impers loads it. impers exports only its main
+// module, so it is reached by path.
+defaultConfig.resolve.alias['impers-loader$'] = path.join(path.dirname(require.resolve('impers')), 'ffi', 'loader.js');
+
 // koffi's ES module build locates itself through import.meta, which the
 // default config removes, so bundle its CommonJS build instead.
 defaultConfig.resolve.alias['koffi$'] = koffi;

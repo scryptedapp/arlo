@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { extraDebug, Logger } from '../logging';
+import LIBCURL_SHA256 from './libcurl-sha256.json';
 import {
     BadRequestError,
     CancelledError,
@@ -55,9 +56,35 @@ export function loadImpers(): Promise<Impers> {
         const dir = cacheDir();
         if (dir)
             process.env.IMPER_CACHE_DIR = dir;
-        impers = import('impers');
+        impers = checkDownloadedLibrary().then(() => import('impers'));
     }
     return impers;
+}
+
+// Has impers' loader find or download libcurl-impersonate without loading
+// it, and checks a library it downloaded against the SHA-256 recorded for
+// this platform by scripts/libcurl-hashes.mjs. One that does not match is
+// deleted and never loaded. A library installed on the system, or named by
+// an environment variable, is the server owner's choice and is not checked.
+async function checkDownloadedLibrary(): Promise<void> {
+    const dir = cacheDir();
+    if (!dir)
+        return;
+    const { LIBCURL_IMPERSONATE_VERSION: release, resolveLibrary } = await import('impers-loader');
+    const library = await resolveLibrary();
+    const relative = path.relative(dir, library.path);
+    if (!library.isImpersonate || relative.startsWith('..') || path.isAbsolute(relative))
+        return;
+    const platform = `${process.platform}-${process.arch}`;
+    const expected = LIBCURL_SHA256.release !== release ? [] : Object.entries(LIBCURL_SHA256.files)
+        .filter(([key]) => key === platform || key.startsWith(`${platform}-`))
+        .map(([, sha256]) => sha256);
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(fs.realpathSync(library.path))).digest('hex');
+    if (expected.includes(actual))
+        return;
+    fs.rmSync(path.join(dir, release), { recursive: true, force: true });
+    throw new Error(`The libcurl-impersonate ${release} downloaded from GitHub does not match its recorded SHA-256, `
+        + 'so it was deleted and not loaded, and the plugin sends no requests to Arlo Cloud.');
 }
 
 // impers, once it has loaded libcurl-impersonate and the library can

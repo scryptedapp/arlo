@@ -1,0 +1,13 @@
+{
+    "release": "v2.3.2",
+    "files": {
+        "linux-x64-gnu": "bb18749d9c19d7454aca31b610e9aa31117daf41d6bb140cf31b7a3fa5c869eb",
+        "linux-x64-musl": "153f6dbcb3b75dc07dd10996da9d6b6d8a556e09d3e124e4487b20671d510321",
+        "linux-arm64-gnu": "98db1c4bc35a7085854dd44a522672c2fab1ab12e7642ca87b51282e6acca529",
+        "linux-arm64-musl": "cf2a7960937b801b6331f0c113cf4b9e8cc56d844ab08a98ec35bff91eab0c37",
+        "darwin-x64": "6fa11babe65275ed6a9ea274b1578285d6e88e3194dc58ea738555e726c582d3",
+        "darwin-arm64": "de0655ae4f8c3a60d1d264cae718e95bab6c32d0eae19b5ca2838375dacff058",
+        "win32-x64": "1c72ca2f379aa6af587cfaeb08330a631e39b5b4aee7f61a6b76c84a40c0ca6b",
+        "win32-arm64": "a0d65aa1e661c4effffe98dfe3e374de952b4364d44deb62cd48533d23884707"
+    }
+}

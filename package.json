@@ -25,15 +25,15 @@
    ],
    "scripts": {
       "koffi-binaries": "node scripts/koffi-binaries.mjs",
-      "build": "npm run koffi-binaries && scrypted-webpack",
-      "prepublishOnly": "npm run koffi-binaries && node scripts/production-build.mjs",
+      "build": "npm run koffi-binaries && node scripts/libcurl-hashes.mjs --check && scrypted-webpack",
+      "prepublishOnly": "npm run koffi-binaries && node scripts/libcurl-hashes.mjs --check && node scripts/production-build.mjs",
       "prescrypted-vscode-launch": "npm run build",
       "scrypted-vscode-launch": "scrypted-deploy-debug",
       "scrypted-deploy-debug": "scrypted-deploy-debug",
       "scrypted-debug": "scrypted-debug",
       "scrypted-deploy": "scrypted-deploy",
       "scrypted-package-json": "scrypted-package-json",
-      "update-impers": "npm install impers@latest && npm update koffi"
+      "update-impers": "npm install impers@latest && npm update koffi && node scripts/libcurl-hashes.mjs"
    },
    "scrypted": {
       "name": "Arlo Camera Plugin",
