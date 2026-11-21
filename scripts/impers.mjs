@@ -1,11 +1,15 @@
-// Records the SHA-256 of the libcurl-impersonate library impers downloads
-// for each platform the plugin supports, in src/arlo/client/libcurl-sha256.json.
-// The plugin loads a downloaded library only if it matches. Each platform is
-// fetched by impers' own loader, run as if on that platform, so the file
-// recorded is the one impers picks and unpacks there.
+// Keeps impers' two native parts, which the plugin does not bundle, matched
+// to the impers that is:
+// - koffi, which Scrypted installs on the server, at the version package.json
+//   pins under optionalDependencies. It must be the koffi impers uses here.
+// - libcurl-impersonate, which impers downloads from GitHub when the plugin
+//   first starts. The plugin loads it only if its SHA-256 matches the one in
+//   src/arlo/client/libcurl-sha256.json for the platform. Each platform's hash
+//   is taken by running impers' own loader as if on that platform, so it is of
+//   the file impers picks and unpacks there.
 //
-//   node scripts/libcurl-hashes.mjs           record the hashes (npm run update-impers runs this)
-//   node scripts/libcurl-hashes.mjs --check   fail unless they are for the release impers pins
+//   node scripts/impers.mjs           record the hashes (npm run update-impers runs this)
+//   node scripts/impers.mjs --check   fail unless the koffi pin and the hashes match (the builds run this)
 
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -59,6 +63,14 @@ if (mode === '--target') {
 const { LIBCURL_IMPERSONATE_VERSION: release } = await import(loaderUrl);
 
 if (mode === '--check') {
+    // The koffi impers resolves from its own folder.
+    let dir = path.dirname(require.resolve('koffi', { paths: [path.dirname(require.resolve('impers'))] }));
+    while (!fs.existsSync(path.join(dir, 'package.json')))
+        dir = path.dirname(dir);
+    const used = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version;
+    const pinned = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).optionalDependencies?.koffi;
+    if (pinned !== used)
+        throw new Error(`impers uses koffi ${used} here, but package.json pins ${pinned ?? 'none'} under optionalDependencies, which Scrypted installs; pin the koffi impers needs.`);
     let recorded;
     try {
         recorded = JSON.parse(fs.readFileSync(output, 'utf8')).release;
@@ -66,7 +78,7 @@ if (mode === '--check') {
     catch {
     }
     if (recorded !== release)
-        throw new Error(`${path.relative(root, output)} has hashes for libcurl-impersonate ${recorded ?? '(none)'}, but impers pins ${release}; run node scripts/libcurl-hashes.mjs.`);
+        throw new Error(`${path.relative(root, output)} has hashes for libcurl-impersonate ${recorded ?? '(none)'}, but impers pins ${release}; run node scripts/impers.mjs.`);
     process.exit(0);
 }
 
@@ -101,7 +113,7 @@ function runTarget(platform, arch, libc, cache) {
 const files = {};
 for (const [platform, arch, libc] of TARGETS) {
     const key = [platform, arch, libc].filter(Boolean).join('-');
-    const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'libcurl-hashes-'));
+    const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'impers-libcurl-'));
     try {
         const result = await runTarget(platform, arch, libc, cache);
         files[key] = result.sha256;

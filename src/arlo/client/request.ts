@@ -63,7 +63,7 @@ export function loadImpers(): Promise<Impers> {
 
 // Has impers' loader find or download libcurl-impersonate without loading
 // it, and checks a library it downloaded against the SHA-256 recorded for
-// this platform by scripts/libcurl-hashes.mjs. One that does not match is
+// this platform by scripts/impers.mjs. One that does not match is
 // deleted and never loaded. A library installed on the system, or named by
 // an environment variable, is the server owner's choice and is not checked.
 async function checkDownloadedLibrary(): Promise<void> {
