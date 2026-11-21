@@ -47,6 +47,9 @@ const BUILD_WAIT = 60_000;
 // repeated attempts; nor is anything tried during a 429 pause.
 const LOGIN_RETRY_DELAYS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
 const LOGIN_AGAIN = 'The plugin does not try again after this; once the cause is fixed, restart the plugin or turn on Force Re-Authentication.';
+// An event stream that drops again within this long of its last restart
+// waits before the next: 5 seconds, doubling up to a minute.
+const EVENT_STREAM_STABLE = 60_000;
 const MANUAL_MFA_TIMEOUT = 278_000;
 // Browser authentication is refreshed every 14 days to avoid MFA churn.
 const HARD_LOGIN_INTERVAL = 14 * 24 * 60 * 60_000;
@@ -230,6 +233,9 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     // meanwhile.
     private loginFailure?: 'temporary' | 'final';
     private loginRetries = 0;
+    private eventStreamRestartPending = false;
+    private eventStreamRestartAt = 0;
+    private eventStreamBackoff = 0;
 
     private readonly initializeLock = new AsyncLock();
     private readonly restartLock = new AsyncLock();
@@ -1282,10 +1288,40 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     // Restarts.
 
     requestRestart(scope: RestartScope): void {
+        if (scope === 'event_stream') {
+            this.requestEventStreamRestart();
+            return;
+        }
         const run = scope === 'plugin'
             ? this.requestPluginRestart(false)
             : this.handleRestart(scope);
         run.catch(e => this.logger.error(`Failed to request restart for scope ${scope}:`, e));
+    }
+
+    // Restarts the event stream, after a wait if it dropped again within a
+    // minute of its last restart. Requests during the wait are the same one.
+    private requestEventStreamRestart(): void {
+        if (this.eventStreamRestartPending)
+            return;
+        this.eventStreamRestartPending = true;
+        const quick = Date.now() - this.eventStreamRestartAt < EVENT_STREAM_STABLE;
+        this.eventStreamBackoff = quick ? Math.min(Math.max(this.eventStreamBackoff * 2, 5_000), 60_000) : 0;
+        if (this.eventStreamBackoff)
+            this.logger.info(`The event stream dropped again within a minute of its last restart; restarting it in ${this.eventStreamBackoff / 1000} seconds.`);
+        this.taskManager.createTask(async signal => {
+            try {
+                await sleep(this.eventStreamBackoff, signal);
+            }
+            finally {
+                this.eventStreamRestartPending = false;
+            }
+            this.eventStreamRestartAt = Date.now();
+            await this.handleRestart('event_stream', signal).catch(e => {
+                if (signal.aborted)
+                    throw e;
+                this.logger.error('Failed to request restart for scope event_stream:', e);
+            });
+        }, { tag: 'event_stream_restart', owner: this });
     }
 
     private async requestPluginRestart(clearCookies: boolean): Promise<void> {
@@ -1305,7 +1341,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         });
     }
 
-    private async handleRestart(scope: Exclude<RestartScope, 'plugin'>): Promise<void> {
+    private async handleRestart(scope: Exclude<RestartScope, 'plugin'>, signal?: AbortSignal): Promise<void> {
         await this.restartLock.run(async () => {
             if (scope === 'refresh_login_loop') {
                 await this.periodicLock.run(async () => {
@@ -1320,14 +1356,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 await this.initializePlugin(undefined, { awaitLogin: true });
             }
             else if (scope === 'event_stream') {
-                await this.errorManager.waitForAuthReady('event stream restart');
+                await this.errorManager.waitForAuthReady('event stream restart', { signal });
                 await this.periodicLock.run(() => this.deviceLock.run(async () => {
                     if (this.arlo?.loggedIn)
                         await this.arlo.unsubscribe();
                     await this.subscribeToEventStream();
-                }));
+                }, signal), signal);
             }
-        });
+        }, signal);
     }
 
     private async shutdown(clearCookies: boolean): Promise<void> {
@@ -1340,7 +1376,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.storage.removeItem('arlo_cookies');
         for (const device of [...this.scryptedDevices.values()])
             await device.close().catch(() => { });
-        for (const tag of ['initialize_plugin', 'periodic_discovery', 'periodic_refresh', 'refresh', 'login_retry'])
+        for (const tag of ['initialize_plugin', 'periodic_discovery', 'periodic_refresh', 'refresh', 'login_retry', 'event_stream_restart'])
             await this.taskManager.cancelAndAwaitByTag(tag, this);
         await this.cleanUpLoginTasks();
         await this.taskManager.cancelAndAwaitByTag('auth_recovery', this);
