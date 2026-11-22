@@ -64,6 +64,9 @@
       "fsevents": false,
       "koffi": false
    },
+   "overrides": {
+      "webpack": "5.108.4"
+   },
    "optionalDependencies": {
       "koffi": "3.3.7"
    }

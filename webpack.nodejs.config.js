@@ -1,13 +1,6 @@
 const path = require('path');
 const defaultConfig = require(process.env.SCRYPTED_DEFAULT_WEBPACK_CONFIG);
 
-// Keep the Scrypted SDK's CommonJS build CommonJS; see the loader for why.
-defaultConfig.module.rules.push({
-    test: /[\\/]@scrypted[\\/]sdk[\\/]dist[\\/]src[\\/]index\.js$/,
-    loader: path.resolve(__dirname, 'scripts/sdk-import-meta-loader.cjs'),
-    enforce: 'pre',
-});
-
 // impers' library loader, which the plugin calls to check a downloaded
 // libcurl-impersonate before impers loads it. impers exports only its main
 // module, so it is reached by path.
