@@ -6,7 +6,7 @@ The Arlo Plugin connects Scrypted to Arlo Cloud, allowing you to access all of y
 
 Arlo no longer limits active logins per account, so you can use the Arlo app, website, and this plugin simultaneously without logging out of any devices. However, be mindful of any potential conflicts or issues that may arise when using the plugin concurrently with other Arlo services.
 
-The plugin supports Local RTSP streaming from cameras that support `local live streaming` in the Arlo App, when the camera is connected to a basestation that also supports `local live streaming`. This Local RTSP stream pulls the secured stream directly from the basestation without having to access the Arlo Cloud, creating less overhead.
+The plugin supports Local RTSP streaming from cameras that support `local live streaming` in the Arlo App, when the camera is connected to a basestation that also supports `local live streaming`. This Local RTSP stream pulls the secured stream directly from the basestation without having to access the Arlo Cloud, creating less overhead. Local RTSP is only available for cameras owned by the account the plugin logs in with; cameras shared with that account get Cloud RTSP, and WebRTC if they support it.
 
 The account you use for this plugin must have either **SMS** or **EMAIL** set as the default MFA option. Once you enter your username and password on the plugin settings page, you should receive a MFA code through your default MFA option. Enter that code into the provided box, and your cameras will appear in Scrypted. Or, see below for configuring IMAP to auto-login with MFA.
 
@@ -25,6 +25,8 @@ If you experience any trouble logging in, turn on **Force Re-Authentication** in
 
 ## General Setup Notes
 
+- **Switching from the Python plugin (0.12):** Uninstall the Arlo plugin first, then install this version and set it up from scratch. Do the same to go back.
+
 - **MFA Requirement:** Ensure that your Arlo account's default MFA option is set to either SMS or EMAIL. Without this, you will not be able to log in and use the plugin. The plugin will require you to enter a MFA code once your credentials are entered. This code is sent to you via your selected method, and you will need to input it into the plugin settings.
 
 - **Motion Event Notifications:** Motion event notifications must be enabled in the Arlo app. This is important because when motion is detected, the plugin will receive these events and trigger actions. If you are receiving push notifications directly from Arlo, you can disable these notifications in your phone's settings after enabling them in the Arlo app. This avoids receiving duplicate alerts from both the Arlo app and Scrypted or any other downstream options.
@@ -37,11 +39,12 @@ If you experience any trouble logging in, turn on **Force Re-Authentication** in
   - **WebRTC**: This stream option is the standard connection type for most cameras and doorbells through the Arlo app, and needs the WebRTC Plugin. The connection process does take a little longer, but does seem to be reliable. Downstream services (like HomeKit) may automatically transcode WebRTC streams for recording because of the audio requirements for HomeKit Secure Video.
   - **Local RTSP**: This stream is available if the camera and basestation it is connected to support it. This stream should connect quickly and keep all communication on the local network. Downstream services (like HomeKit) may automatically transcode Local RTSP streams for live streaming because of the audio requirements for HomeKit Live Streaming.
   - **Cloud RTSP**: This stream is usually faster in connecting and recording. Downstream services (like HomeKit) may automatically transcode Cloud RTSP streams for live streaming because of the audio requirements for HomeKit Live Streaming.
-  - **Synthetic Stream**: Scrypted itself can add synthetic streams. Entering a name for a Synthetic stream creates a new stream option that feeds one of the streams above into an on-demand transcode with the FFmpeg arguments provided. You can only feed one stream in at a time here.
+
+  Scrypted can also add **Synthetic Streams**, which use one of these three as their source and transcode it on demand with the FFmpeg arguments provided.
 
   Note that Arlo's single-stream limitation means you can only use one of these stream types at a time. If you have one stream selected for streaming and another for recording, if a downstream service (like HomeKit) tries to access a camera while the stream is already open, it may prevent recording. Therefore, it is recommended to use the same stream type for all streams in Scrypted and the Rebroadcast plugin will handle sending the same stream to multiple places, i.e. streaming while recording. There is a limitation from Arlo on the number of concurrent local live streams that a basestation can handle, the maximum is 5 streams at one time. This means that if you have more than 5 cameras connected to a basestation, that only 5 of them can connect and stream locally at a time. If 5 cameras are already connected and streaming locally, either live streaming or recording, if any others try to connect and stream locally, it will fail.
 
-- **Video Codecs:** Each camera's Cloud RTSP stream is listed with the codec the camera actually sends, H.264 or H.265. Newer models, such as the Essential Generation 2 cameras, send H.265. A downstream service that needs H.264, like HomeKit, has to transcode those streams, using the FFmpeg (TCP) Parser or a Synthetic stream. This is not necessary for WebRTC streaming.
+- **Video Codecs:** Arlo cameras send H.264 or H.265; newer models, such as the Essential Generation 2 cameras, send H.265. A downstream service that needs H.264, like HomeKit, has to transcode H.265 streams, using the FFmpeg (TCP) Parser or a Synthetic stream. This is not necessary for WebRTC streaming.
 
 - **Downstream Plugin RTP Sender:** The recommended RTP Sender in the HomeKit plugin or similar plugins is `default`. If you have any issues with recording or streaming, try setting the RTP Sender to `FFmpeg`. The default configuration helps ensure compatibility between Scrypted and downstream services (like HomeKit).
 
@@ -55,7 +58,7 @@ If you experience any trouble logging in, turn on **Force Re-Authentication** in
 
 Each camera with a speaker gets an **Intercom** device, which carries two-way audio and needs the WebRTC Plugin. A camera talks in one of two ways, chosen from what it supports:
 
-- **SIP**, used by most current cameras. Talking joins the session of the camera's running Cloud RTSP stream, so a Cloud RTSP stream must be open, such as a live view in HomeKit. Without one, talking fails with a message saying so.
+- **SIP**, used by most current cameras. Talking joins the session of the camera's running Cloud RTSP stream, so a Cloud RTSP stream must be open, such as a live view in HomeKit.
 - **WebRTC push-to-talk**, used by older cameras and some doorbells. Talking works without an open stream.
 
 With the WebRTC stream type, talking happens inside the same session as the video.
@@ -119,16 +122,3 @@ The plugin will display video clips from Arlo Cloud for cameras with cloud recor
 
 - Clips are streamed on-demand, not downloaded to your Scrypted server.
 - To delete clips, use the Arlo App or My Arlo Web Dashboard.
-
----
-
-## Development
-
-```bash
-npm ci
-npm run build                        # packages the plugin into out/plugin.zip
-npm run scrypted-deploy <server-ip>  # installs it on a Scrypted server
-npm run update-impers                # updates impers and koffi together
-```
-
-The build fetches koffi's native binaries for the six supported platforms from npm, checks them against `package-lock.json`, and bundles them. The libcurl-impersonate release is set by the impers version and is downloaded by the plugin when it starts.
