@@ -12,18 +12,16 @@ import sdk, {
 } from '@scrypted/sdk';
 
 import { ArloDeviceBase } from './base';
-import type { ArloDevice, Unsubscribe } from './client';
+import type { ArloBasestation } from './basestation';
+import type { ArloCamera } from './camera';
+import type { ArloDevice } from './client';
 import type { ArloProvider } from './provider';
 import { ArloSiren } from './siren';
 import { sleep } from './util';
 
 const SUPPORTED_MODES = [SecuritySystemMode.AwayArmed, SecuritySystemMode.HomeArmed, SecuritySystemMode.Disarmed];
 
-export abstract class ArloBaseVirtualSecuritySystem extends ArloDeviceBase implements SecuritySystem, Settings, Readme {
-    abstract get mode(): SecuritySystemMode;
-
-    abstract setMode(mode: SecuritySystemMode): void;
-
+export class ArloBaseVirtualSecuritySystem extends ArloDeviceBase implements SecuritySystem, Settings, Readme {
     protected async delayedInit(signal: AbortSignal): Promise<void> {
         await super.delayedInit(signal);
         for (let attempt = 0; attempt < 100; attempt++) {
@@ -42,6 +40,14 @@ export abstract class ArloBaseVirtualSecuritySystem extends ArloDeviceBase imple
             await sleep(100, signal);
         }
         this.logger.error('Delayed init exceeded iteration limit for ArloBaseVirtualSecuritySystem security system state, giving up.');
+    }
+
+    get mode(): SecuritySystemMode {
+        throw new Error('Not implemented');
+    }
+
+    set mode(mode: SecuritySystemMode) {
+        throw new Error('Not implemented');
     }
 
     getApplicableInterfaces(): string[] {
@@ -66,7 +72,7 @@ export abstract class ArloBaseVirtualSecuritySystem extends ArloDeviceBase imple
         if (key !== 'mode')
             throw new Error(`invalid setting ${key}`);
         try {
-            this.setMode(value as SecuritySystemMode);
+            this.mode = value as SecuritySystemMode;
         }
         catch (e) {
             this.logger.error(`Error setting mode: ${e}`);
@@ -77,16 +83,20 @@ export abstract class ArloBaseVirtualSecuritySystem extends ArloDeviceBase imple
         return this.readmeMarkdown().trim();
     }
 
-    protected abstract modeDescription(): string;
+    protected modeDescription(): string {
+        return 'Set the security system arm/disarm mode.';
+    }
 
-    protected abstract readmeMarkdown(): string;
+    protected readmeMarkdown(): string {
+        return '# Virtual Security System\n\nThis is a virtual security system device.';
+    }
 
     async armSecuritySystem(mode: SecuritySystemMode): Promise<void> {
         if (!SUPPORTED_MODES.includes(mode))
             throw new Error(`invalid mode ${mode}`);
         try {
             this.logger.info(`Arming ${mode}`);
-            this.setMode(mode);
+            this.mode = mode;
         }
         catch (e) {
             this.logger.error(`Error arming security system: ${e}`);
@@ -96,16 +106,11 @@ export abstract class ArloBaseVirtualSecuritySystem extends ArloDeviceBase imple
     async disarmSecuritySystem(): Promise<void> {
         try {
             this.logger.info('Disarming');
-            this.setMode(SecuritySystemMode.Disarmed);
+            this.mode = SecuritySystemMode.Disarmed;
         }
         catch (e) {
             this.logger.error(`Error disarming security system: ${e}`);
         }
-    }
-
-    protected updateState(mode: SecuritySystemMode): void {
-        this.securitySystemState = { ...this.securitySystemState, supportedModes: SUPPORTED_MODES, mode };
-        this.onDeviceEvent(ScryptedInterface.Settings, undefined).catch(() => { });
     }
 }
 
@@ -113,8 +118,13 @@ export class ArloSirenVirtualSecuritySystem extends ArloBaseVirtualSecuritySyste
     siren?: ArloSiren;
 
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
-        provider: ArloProvider, public parent: ArloDeviceBase & { hasSiren: boolean }) {
+        provider: ArloProvider, public parent: ArloBasestation | ArloCamera) {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
+    }
+
+    async close(): Promise<void> {
+        await this.siren?.close();
+        await super.close();
     }
 
     get mode(): SecuritySystemMode {
@@ -122,11 +132,12 @@ export class ArloSirenVirtualSecuritySystem extends ArloBaseVirtualSecuritySyste
         return SUPPORTED_MODES.includes(mode) ? mode : SecuritySystemMode.Disarmed;
     }
 
-    setMode(mode: SecuritySystemMode): void {
+    set mode(mode: SecuritySystemMode) {
         if (!SUPPORTED_MODES.includes(mode))
             throw new Error(`invalid mode ${mode}`);
         this.storage.setItem('mode', mode);
-        this.updateState(mode);
+        this.securitySystemState = { ...this.securitySystemState, supportedModes: SUPPORTED_MODES, mode };
+        this.onDeviceEvent(ScryptedInterface.Settings, undefined).catch(() => { });
     }
 
     async putSetting(key: string, value: SettingValue): Promise<void> {
@@ -148,7 +159,7 @@ export class ArloSirenVirtualSecuritySystem extends ArloBaseVirtualSecuritySyste
         })];
     }
 
-    async getDevice(nativeId: string): Promise<any> {
+    async getDevice(nativeId: string): Promise<ArloSiren | undefined> {
         return nativeId.endsWith('siren') ? this.getSiren() : undefined;
     }
 
@@ -171,11 +182,6 @@ export class ArloSirenVirtualSecuritySystem extends ArloBaseVirtualSecuritySyste
         return this.siren;
     }
 
-    async close(): Promise<void> {
-        await this.siren?.close();
-        await super.close();
-    }
-
     protected modeDescription(): string {
         return 'If disarmed, the associated siren will not be physically triggered even if toggled.';
     }
@@ -193,21 +199,21 @@ If synced to HomeKit, the siren will appear as a switch within the same security
     }
 }
 
-const ARLO_TO_SCRYPTED: Record<string, SecuritySystemMode> = {
-    armAway: SecuritySystemMode.AwayArmed,
-    armHome: SecuritySystemMode.HomeArmed,
-    standby: SecuritySystemMode.Disarmed,
-};
-
-const SCRYPTED_TO_ARLO: Record<string, string> = Object.fromEntries(Object.entries(ARLO_TO_SCRYPTED).map(([arlo, scrypted]) => [scrypted, arlo]));
-
 export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem {
+    static arloToScrypted: Record<string, SecuritySystemMode> = {
+        armAway: SecuritySystemMode.AwayArmed,
+        armHome: SecuritySystemMode.HomeArmed,
+        standby: SecuritySystemMode.Disarmed,
+    };
+
+    static scryptedToArlo: Record<string, string> = Object.fromEntries(
+        Object.entries(ArloModeVirtualSecuritySystem.arloToScrypted).map(([arlo, scrypted]) => [scrypted, arlo]));
+
     private initCompleted = false;
-    private unsubscribeActiveMode?: Unsubscribe;
 
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>, provider: ArloProvider) {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider, false);
-        this.markReady();
+        this.readyEvent.set();
     }
 
     completeInit(): void {
@@ -216,7 +222,8 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
     }
 
     protected async delayedInit(signal: AbortSignal): Promise<void> {
-        for (let attempt = 0; ; attempt++) {
+        let attempt = 0;
+        for (; attempt < 100; attempt++) {
             try {
                 if (sdk.deviceManager.getDeviceState(this.nativeId)?.id)
                     break;
@@ -224,11 +231,11 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
             catch (e) {
                 this.logger.debug(`Delayed init failed for ArloModeVirtualSecuritySystem device state, will try again: ${e}`);
             }
-            if (attempt >= 100) {
-                this.logger.error('Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem device state, giving up.');
-                return;
-            }
             await sleep(100, signal);
+        }
+        if (attempt === 100) {
+            this.logger.error('Delayed init exceeded iteration limit for ArloModeVirtualSecuritySystem device state, giving up.');
+            return;
         }
         for (let attempt = 0; attempt < 100; attempt++) {
             if (this.stopSubscriptions)
@@ -237,9 +244,7 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
                 this.securitySystemState = { supportedModes: SUPPORTED_MODES, mode: this.mode };
                 const [mode, revision] = await this.getInitialModeAndRevision();
                 this.setModeAndRevision(mode, revision);
-                this.unsubscribeActiveMode ??= this.provider.arlo.subscribeToActiveModeEvents(this.location, modeAndRevision => {
-                    this.setModeAndRevision(modeAndRevision.properties.mode, modeAndRevision.revision);
-                });
+                this.startActiveModeSubscription();
                 this.initCompleted = true;
                 return;
             }
@@ -253,43 +258,65 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
 
     private async getInitialModeAndRevision(): Promise<[string, string]> {
         const response = await this.provider.arlo.getModeAndRevision();
-        const entry = this.provider.oneLocation ? response : response?.[this.location];
-        if (!entry)
+        const location = this.provider.oneLocation ? response : response?.[this.location];
+        if (!location)
             throw new Error(`Location "${this.location}" not found in response: ${JSON.stringify(response)}`);
-        const mode = entry.properties?.mode;
-        const revision = entry.revision;
+        const mode = location.properties?.mode;
+        const revision = location.revision;
         if (mode == null || revision == null)
             throw new Error(`Mode or revision missing in response: ${JSON.stringify(response)}`);
         return [mode, revision];
     }
 
     private setModeAndRevision(arloMode: string, revision: string | number): void {
-        const mode = ARLO_TO_SCRYPTED[arloMode] ?? arloMode as SecuritySystemMode;
-        this.securitySystemState = { supportedModes: SUPPORTED_MODES, mode };
-        this.setMode(mode);
-        this.storage.setItem('next_revision', String(Number(revision) + 1));
+        const scryptedMode = this.arloToScryptedMode(arloMode);
+        this.securitySystemState = { supportedModes: SUPPORTED_MODES, mode: scryptedMode };
+        this.mode = scryptedMode;
+        this.nextRevision = String(Number(revision) + 1);
+    }
+
+    private startActiveModeSubscription(): void {
+        this.createOrRegisterEventSubscription('active_mode_subscription', () =>
+            this.provider.arlo.subscribeToActiveModeEvents(this.location, modeAndRevision =>
+                this.setModeAndRevision(modeAndRevision.properties.mode, modeAndRevision.revision)));
     }
 
     get location(): string {
         return this.nativeId.replace('.mvss', '');
     }
 
-    get mode(): SecuritySystemMode {
-        const arloMode = this.storage.getItem('mode') ?? '';
-        return ARLO_TO_SCRYPTED[arloMode] ?? arloMode as SecuritySystemMode;
+    private arloToScryptedMode(arloMode: string): SecuritySystemMode {
+        return ArloModeVirtualSecuritySystem.arloToScrypted[arloMode] ?? arloMode as SecuritySystemMode;
     }
 
-    setMode(mode: SecuritySystemMode): void {
-        if (!SUPPORTED_MODES.includes(mode))
-            throw new Error(`invalid mode ${mode}`);
-        this.storage.setItem('mode', SCRYPTED_TO_ARLO[mode] ?? mode);
-        this.updateState(mode);
+    private scryptedToArloMode(scryptedMode: SecuritySystemMode): string {
+        return ArloModeVirtualSecuritySystem.scryptedToArlo[scryptedMode] ?? scryptedMode;
+    }
+
+    get mode(): SecuritySystemMode {
+        return this.arloToScryptedMode(this.storage.getItem('mode') ?? '');
+    }
+
+    set mode(scryptedMode: SecuritySystemMode) {
+        if (!SUPPORTED_MODES.includes(scryptedMode))
+            throw new Error(`invalid mode ${scryptedMode}`);
+        this.storage.setItem('mode', this.scryptedToArloMode(scryptedMode));
+        this.securitySystemState = { ...this.securitySystemState, supportedModes: SUPPORTED_MODES, mode: scryptedMode };
+        this.onDeviceEvent(ScryptedInterface.Settings, undefined).catch(() => { });
+    }
+
+    get nextRevision(): string {
+        return this.storage.getItem('next_revision') ?? '';
+    }
+
+    set nextRevision(nextRevision: string) {
+        this.storage.setItem('next_revision', nextRevision);
     }
 
     private async changeArloMode(mode: SecuritySystemMode): Promise<void> {
         this.logger.info(`Setting Arlo Security Mode to ${mode}`);
-        await this.provider.arlo.setMode(SCRYPTED_TO_ARLO[mode] ?? mode, this.location, this.storage.getItem('next_revision') ?? '');
-        this.setMode(mode);
+        await this.provider.arlo.setMode(this.scryptedToArloMode(mode), this.location, this.nextRevision);
+        this.mode = mode;
     }
 
     async putSetting(key: string, value: SettingValue): Promise<void> {
@@ -308,11 +335,6 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
 
     getApplicableInterfaces(): string[] {
         return [ScryptedInterface.SecuritySystem, ScryptedInterface.Settings, ScryptedInterface.Readme];
-    }
-
-    async close(): Promise<void> {
-        this.unsubscribeActiveMode?.();
-        await super.close();
     }
 
     protected modeDescription(): string {

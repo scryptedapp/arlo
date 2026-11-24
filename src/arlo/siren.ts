@@ -20,10 +20,6 @@ export class ArloSiren extends ArloDeviceBase implements OnOff {
         return ScryptedDeviceType.Siren;
     }
 
-    private sirenCamera(): ArloDevice | undefined {
-        return this.svss.parent instanceof ArloBasestation ? undefined : this.arloDevice;
-    }
-
     async turnOn(): Promise<void> {
         try {
             this.logger.info('Turning on');
@@ -35,7 +31,14 @@ export class ArloSiren extends ArloDeviceBase implements OnOff {
                 this.svss.securitySystemState = { ...state, triggered: false };
                 return;
             }
-            await this.provider.arlo.setSiren(this.arloBasestation, this.sirenCamera(), true);
+            if (this.svss.parent instanceof ArloBasestation) {
+                this.logger.debug('Parent device is a basestation');
+                await this.provider.arlo.setSiren(this.arloBasestation, undefined, true);
+            }
+            else {
+                this.logger.debug('Parent device is a camera');
+                await this.provider.arlo.setSiren(this.arloBasestation, this.arloDevice, true);
+            }
             this.on = true;
             this.svss.securitySystemState = { ...state, triggered: true };
         }
@@ -47,9 +50,13 @@ export class ArloSiren extends ArloDeviceBase implements OnOff {
     async turnOff(): Promise<void> {
         try {
             this.logger.info('Turning off');
-            await this.provider.arlo.setSiren(this.arloBasestation, this.sirenCamera(), false);
+            const state = this.svss.securitySystemState ?? { mode: this.svss.mode };
+            if (this.svss.parent instanceof ArloBasestation)
+                await this.provider.arlo.setSiren(this.arloBasestation, undefined, false);
+            else
+                await this.provider.arlo.setSiren(this.arloBasestation, this.arloDevice, false);
             this.on = false;
-            this.svss.securitySystemState = { ...this.svss.securitySystemState, triggered: false };
+            this.svss.securitySystemState = { ...state, triggered: false };
         }
         catch (e) {
             this.logger.error(`Error turning off siren: ${e}`);

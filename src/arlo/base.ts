@@ -5,7 +5,7 @@ import { Logger } from './logging';
 import type { ArloProvider } from './provider';
 import { AsyncEvent, sleep, TaskManager } from './util';
 
-export interface ManifestOptions {
+interface ManifestOptions {
     name?: string;
     interfaces?: string[];
     deviceType?: string;
@@ -19,20 +19,18 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
     arloCapabilities: any = {};
     arloSmartFeatures: any = {};
     stopSubscriptions = false;
-    private subscriptions = new Map<string, Unsubscribe | 'pending'>();
-    private ready = new AsyncEvent();
+    activeEventSubscriptions = new Map<string, Unsubscribe | 'pending'>();
+    taskManager: TaskManager;
+    protected readyEvent = new AsyncEvent();
     private closed = false;
 
     constructor(nativeId: string, public arloDevice: ArloDevice, public arloBasestation: ArloDevice,
         public arloProperties: Record<string, any>, public provider: ArloProvider, autoInit = true) {
         super(nativeId);
         this.logger = new Logger(arloDevice.deviceName, this.console);
+        this.taskManager = provider.taskManager;
         if (autoInit)
             this.taskManager.createTask(signal => this.delayedInit(signal), { tag: `delayed_init:${nativeId}`, owner: this });
-    }
-
-    get taskManager(): TaskManager {
-        return this.provider.taskManager;
     }
 
     get registered(): boolean {
@@ -50,11 +48,11 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
             return;
         this.closed = true;
         this.stopSubscriptions = true;
-        for (const unsubscribe of this.subscriptions.values()) {
+        for (const unsubscribe of this.activeEventSubscriptions.values()) {
             if (unsubscribe !== 'pending')
                 unsubscribe();
         }
-        this.subscriptions.clear();
+        this.activeEventSubscriptions.clear();
         await this.taskManager.cancelAndAwaitByOwner(this).catch(() => { });
     }
 
@@ -64,7 +62,7 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
                 return;
             try {
                 await this.loadDeviceCapabilitiesAndSmartFeatures();
-                this.ready.set();
+                this.readyEvent.set();
                 return;
             }
             catch (e) {
@@ -73,7 +71,7 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
             }
         }
         this.logger.error('Delayed init exceeded iteration limit for ArloDeviceBase, giving up.');
-        this.ready.set();
+        this.readyEvent.set();
     }
 
     private async loadDeviceCapabilitiesAndSmartFeatures(): Promise<void> {
@@ -90,12 +88,8 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
         }
     }
 
-    protected markReady(): void {
-        this.ready.set();
-    }
-
     waitForReady(signal?: AbortSignal): Promise<void> {
-        return this.ready.wait(signal);
+        return this.readyEvent.wait(signal);
     }
 
     getApplicableInterfaces(): string[] {
@@ -140,35 +134,35 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
     protected createOrRegisterEventSubscription(key: string, subscribe: () => Unsubscribe): void {
         if (this.stopSubscriptions)
             return;
-        if (this.subscriptions.has(key)) {
+        if (this.activeEventSubscriptions.has(key)) {
             this.logger.debug(`Event subscription "${key}" already running for device ${this.arloDevice.deviceId}.`);
             return;
         }
         if (!this.provider.setupInProgress) {
-            this.subscriptions.set(key, subscribe());
+            this.activeEventSubscriptions.set(key, subscribe());
             return;
         }
-        this.subscriptions.set(key, 'pending');
+        this.activeEventSubscriptions.set(key, 'pending');
         this.taskManager.createTask(async signal => {
             while (this.provider.setupInProgress && !this.stopSubscriptions)
                 await sleep(1_000, signal);
-            if (!this.stopSubscriptions && this.subscriptions.get(key) === 'pending')
-                this.subscriptions.set(key, subscribe());
+            if (!this.stopSubscriptions && this.activeEventSubscriptions.get(key) === 'pending')
+                this.activeEventSubscriptions.set(key, subscribe());
         }, { tag: key, owner: this });
     }
 
     protected removeEventSubscription(key: string): void {
-        const unsubscribe = this.subscriptions.get(key);
-        this.subscriptions.delete(key);
+        const unsubscribe = this.activeEventSubscriptions.get(key);
+        this.activeEventSubscriptions.delete(key);
         if (unsubscribe && unsubscribe !== 'pending')
             unsubscribe();
     }
 
-    hasFeature(feature: string): boolean {
+    protected hasFeature(feature: string): boolean {
         return !!this.arloSmartFeatures?.planFeatures?.[feature];
     }
 
-    private capabilities(subCapability?: string, subSubCapability?: string): any {
+    private getCapabilities(subCapability?: string, subSubCapability?: string): any {
         let capabilities = this.arloCapabilities?.Capabilities ?? {};
         if (subCapability)
             capabilities = capabilities[subCapability] ?? {};
@@ -177,17 +171,17 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
         return capabilities;
     }
 
-    hasCapability(capability: string, subCapability?: string, subSubCapability?: string): boolean {
-        const capabilities = this.capabilities(subCapability, subSubCapability);
+    protected hasCapability(capability: string, subCapability?: string, subSubCapability?: string): boolean {
+        const capabilities = this.getCapabilities(subCapability, subSubCapability);
         return Array.isArray(capabilities) ? capabilities.includes(capability) : capability in capabilities;
     }
 
-    getCapability(capability: string, subCapability?: string, subSubCapability?: string): any {
-        const capabilities = this.capabilities(subCapability, subSubCapability);
+    protected getCapability(capability: string, subCapability?: string, subSubCapability?: string): any {
+        const capabilities = this.getCapabilities(subCapability, subSubCapability);
         return Array.isArray(capabilities) ? undefined : capabilities[capability];
     }
 
-    hasProperty(property: string, subProperty?: string): boolean {
+    protected hasProperty(property: string, subProperty?: string): boolean {
         if (!this.arloProperties)
             return false;
         return subProperty ? property in (this.arloProperties[subProperty] ?? {}) : property in this.arloProperties;

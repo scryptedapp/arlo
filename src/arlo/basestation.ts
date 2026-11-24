@@ -27,7 +27,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
                 + 'Note that the basestation must be in the same network as Scrypted for this to work. '
                 + 'If this is empty, it means mDNS failed to find your basestation, '
                 + 'You will have to input the IP Address into this field manually.',
-            onGet: async () => ({ hide: !this.hasLocalLiveStreaming, readonly: this.mdnsFound }),
+            onGet: async () => ({ hide: !this.hasLocalLiveStreaming, readonly: this.mdnsBoolean }),
         },
         host_name: {
             group: 'General',
@@ -39,7 +39,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
                 + 'You will have to input the Hostname into this field manually, '
                 + 'Usually the model including the domain, i.e. "VMB5000.local" or "VMB5000-2.local" '
                 + 'if you have mutliple of the same model basestation.',
-            onGet: async () => ({ hide: !this.hasLocalLiveStreaming, readonly: this.mdnsFound }),
+            onGet: async () => ({ hide: !this.hasLocalLiveStreaming, readonly: this.mdnsBoolean }),
         },
         print_debug: {
             group: 'General',
@@ -60,14 +60,12 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
 
     constructor(nativeId: string, arloBasestation: ArloDevice, arloProperties: Record<string, any>, provider: ArloProvider) {
         super(nativeId, arloBasestation, arloBasestation, arloProperties, provider);
-        this.createOrRegisterEventSubscription('device_state_subscription', () =>
-            this.provider.arlo.subscribeToDeviceStateEvents(this.arloDevice, state => {
-                if (state === 'available' && this.rebootTime && Date.now() - this.rebootTime < 30_000)
-                    return;
-                this.deviceState = state;
-                if (state === 'available')
-                    this.rebootTime = undefined;
-            }));
+        this.startDeviceStateSubscription();
+    }
+
+    async close(): Promise<void> {
+        await this.svss?.close();
+        await super.close();
     }
 
     protected async delayedInit(signal: AbortSignal): Promise<void> {
@@ -93,6 +91,92 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         this.logger.error('Delayed init exceeded iteration limit for ArloBasestation, giving up.');
     }
 
+    private startDeviceStateSubscription(): void {
+        this.createOrRegisterEventSubscription('device_state_subscription', () =>
+            this.provider.arlo.subscribeToDeviceStateEvents(this.arloDevice, state => {
+                if (state === 'available' && this.rebootTime && Date.now() - this.rebootTime < 30_000)
+                    return;
+                this.deviceState = state;
+                if (state === 'available')
+                    this.rebootTime = undefined;
+            }));
+    }
+
+    private async checkCertificates(): Promise<void> {
+        this.logger.debug('Checking if Certificates are created with Arlo');
+        if (!this.peerCert || !this.deviceCert || !this.icaCert) {
+            this.logger.debug('Certificates have not been created with Arlo, proceeding with Certificate Creation');
+            await this.createCertificates();
+            return;
+        }
+        if (!this.checkCertificateAndKeyMatch()) {
+            this.logger.debug('Certificates exist but do not match the expected keys, generating new keypair and creating new certificates.');
+            this.provider.generateArloKeypair();
+            await this.createCertificates();
+            return;
+        }
+        this.logger.debug('Certificates have been created with Arlo and match the expected keys, skipping Certificate Creation');
+    }
+
+    private checkCertificateAndKeyMatch(): boolean {
+        try {
+            return new crypto.X509Certificate(this.peerCert).checkPrivateKey(crypto.createPrivateKey(this.provider.arloPrivateKey));
+        }
+        catch (e) {
+            this.logger.warn(`Error checking peer certificate and private key match: ${e}`);
+            return false;
+        }
+    }
+
+    private async createCertificates(): Promise<void> {
+        const publicKey = this.provider.arloPublicKey.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s+/g, '');
+        const certificates = await this.provider.arlo.createCertificates(this.arloBasestation, publicKey);
+        if (!certificates) {
+            this.logger.error('Failed to create Certificates with Arlo');
+            return;
+        }
+        this.logger.debug('Certificates have been created with Arlo, parsing certificates');
+        this.parseCertificates(certificates);
+    }
+
+    private parseCertificates(certificates: any): void {
+        const peerCert = certificates.certsData?.[0]?.peerCert;
+        const deviceCert = certificates.certsData?.[0]?.deviceCert;
+        const icaCert = certificates.icaCert;
+        if (peerCert && deviceCert && icaCert) {
+            this.logger.debug('Certificates have been parsed, storing certificates');
+            this.storeCertificates(peerCert, deviceCert, icaCert);
+            return;
+        }
+        if (!peerCert)
+            this.logger.error('Failed to parse peer Certificate');
+        if (!deviceCert)
+            this.logger.error('Failed to parse device Certificate');
+        if (!icaCert)
+            this.logger.error('Failed to parse ICA Certificate');
+    }
+
+    private storeCertificates(peerCert: string, deviceCert: string, icaCert: string): void {
+        this.storage.setItem('peer_cert', pemCertificate(peerCert));
+        this.storage.setItem('device_cert', pemCertificate(deviceCert));
+        this.storage.setItem('ica_cert', pemCertificate(icaCert));
+        this.logger.debug('Certificates have been stored with Scrypted');
+    }
+
+    private mdns(): void {
+        this.logger.debug('Checking if Basestation is found in mDNS.');
+        const service = this.provider.mdnsServices[this.arloDevice.deviceId];
+        this.storage.setItem('mdns_boolean', String(!!service));
+        if (service) {
+            this.logger.debug('Basestation found in mDNS, setting IP Address and Hostname.');
+            this.storage.setItem('ip', service.address);
+            this.storage.setItem('host_name', service.server);
+        }
+        else if (!this.ip || !this.hostName) {
+            this.logger.error('Basestation not found in mDNS, manual input needed under basestation settings.');
+        }
+    }
+
     get hasSiren(): boolean {
         return this.hasCapability('Siren', 'ResourceTypes');
     }
@@ -113,8 +197,8 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         return this.storage.getItem('host_name') || undefined;
     }
 
-    private get mdnsFound(): boolean {
-        return this.storage.getItem('mdns_found') === 'true';
+    get mdnsBoolean(): boolean {
+        return this.storage.getItem('mdns_boolean') === 'true';
     }
 
     get peerCert(): string | undefined {
@@ -127,69 +211,6 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
 
     get icaCert(): string | undefined {
         return this.storage.getItem('ica_cert') || undefined;
-    }
-
-    private async checkCertificates(): Promise<void> {
-        this.logger.debug('Checking if Certificates are created with Arlo');
-        if (!this.peerCert || !this.deviceCert || !this.icaCert) {
-            this.logger.debug('Certificates have not been created with Arlo, proceeding with Certificate Creation');
-            await this.createCertificates();
-            return;
-        }
-        if (!this.certificateMatchesKey()) {
-            this.logger.debug('Certificates exist but do not match the expected keys, generating new keypair and creating new certificates.');
-            this.provider.generateArloKeypair();
-            await this.createCertificates();
-            return;
-        }
-        this.logger.debug('Certificates have been created with Arlo and match the expected keys, skipping Certificate Creation');
-    }
-
-    private certificateMatchesKey(): boolean {
-        try {
-            return new crypto.X509Certificate(this.peerCert).checkPrivateKey(crypto.createPrivateKey(this.provider.arloPrivateKey));
-        }
-        catch (e) {
-            this.logger.warn(`Error checking peer certificate and private key match: ${e}`);
-            return false;
-        }
-    }
-
-    private async createCertificates(): Promise<void> {
-        const publicKey = this.provider.arloPublicKey.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s+/g, '');
-        const certificates = await this.provider.arlo.createCertificates(this.arloBasestation, publicKey);
-        if (!certificates) {
-            this.logger.error('Failed to create Certificates with Arlo');
-            return;
-        }
-        this.logger.debug('Certificates have been created with Arlo, parsing certificates');
-        const peerCert = certificates.certsData?.[0]?.peerCert;
-        const deviceCert = certificates.certsData?.[0]?.deviceCert;
-        const icaCert = certificates.icaCert;
-        if (!peerCert || !deviceCert || !icaCert) {
-            for (const [name, value] of [['peer', peerCert], ['device', deviceCert], ['ICA', icaCert]])
-                if (!value)
-                    this.logger.error(`Failed to parse ${name} Certificate`);
-            return;
-        }
-        this.storage.setItem('peer_cert', pemCertificate(peerCert));
-        this.storage.setItem('device_cert', pemCertificate(deviceCert));
-        this.storage.setItem('ica_cert', pemCertificate(icaCert));
-        this.logger.debug('Certificates have been stored with Scrypted');
-    }
-
-    private mdns(): void {
-        this.logger.debug('Checking if Basestation is found in mDNS.');
-        const service = this.provider.mdnsServices[this.arloDevice.deviceId];
-        this.storage.setItem('mdns_found', String(!!service));
-        if (service) {
-            this.logger.debug('Basestation found in mDNS, setting IP Address and Hostname.');
-            this.storage.setItem('ip', service.address);
-            this.storage.setItem('host_name', service.server);
-        }
-        else if (!this.ip || !this.hostName) {
-            this.logger.error('Basestation not found in mDNS, manual input needed under basestation settings.');
-        }
     }
 
     getApplicableInterfaces(): string[] {
@@ -235,7 +256,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         }
     }
 
-    async getDevice(nativeId: string): Promise<any> {
+    async getDevice(nativeId: string): Promise<ArloDeviceBase | undefined> {
         if (!nativeId.startsWith(this.nativeId))
             return this.provider.getDevice(nativeId);
         return nativeId.endsWith('svss') ? this.getSvss() : undefined;
@@ -247,11 +268,6 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
     private getSvss(): ArloSirenVirtualSecuritySystem {
         this.svss ??= new ArloSirenVirtualSecuritySystem(`${this.arloDevice.deviceId}.svss`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this);
         return this.svss;
-    }
-
-    async close(): Promise<void> {
-        await this.svss?.close();
-        await super.close();
     }
 
     async getSettings(): Promise<Setting[]> {
