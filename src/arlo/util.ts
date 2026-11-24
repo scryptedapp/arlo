@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { Logger } from './logging';
+import type { ArloProvider } from './provider';
 
 export class CancelledError extends Error {
     name = 'CancelledError';
@@ -147,11 +148,6 @@ export class AsyncLock {
     }
 }
 
-export interface TaskOptions {
-    tag: string;
-    owner: object;
-}
-
 export class Task<T = unknown> {
     controller = new AbortController();
     promise: Promise<T>;
@@ -168,12 +164,12 @@ export class Task<T = unknown> {
 const currentTask = new AsyncLocalStorage<Task>();
 
 export class TaskManager {
-    private tasks = new Set<Task>();
+    tasks = new Set<Task>();
 
     constructor(private logger: Logger) {
     }
 
-    createTask<T>(fn: (signal: AbortSignal) => Promise<T>, { tag, owner }: TaskOptions): Task<T> {
+    createTask<T>(fn: (signal: AbortSignal) => Promise<T>, { tag, owner }: { tag: string, owner: object }): Task<T> {
         if (!tag)
             throw new Error('A task needs a tag.');
         const task = new Task<T>(tag, owner);
@@ -217,13 +213,6 @@ export class TaskManager {
     }
 }
 
-export interface RequestErrorDetails {
-    statusCode?: number;
-    retryAfter?: number;
-    method?: string;
-    url?: string;
-}
-
 /** Base error for request-related failures. */
 export class RequestError extends Error {
     statusCode?: number;
@@ -231,10 +220,13 @@ export class RequestError extends Error {
     method?: string;
     url?: string;
 
-    constructor(message: string, details: RequestErrorDetails = {}) {
+    constructor(message: string, { statusCode, retryAfter, method, url }: { statusCode?: number, retryAfter?: number, method?: string, url?: string } = {}) {
         super(message);
         this.name = new.target.name;
-        Object.assign(this, details);
+        this.statusCode = statusCode;
+        this.retryAfter = retryAfter;
+        this.method = method;
+        this.url = url;
     }
 }
 
@@ -253,29 +245,26 @@ export class InvalidResponseError extends RequestError { }
 /** HTTP 4xx non-auth client errors that should not trigger restart. */
 export class BadRequestError extends RequestError { }
 
-const MINUTE = 60_000;
-
-export class RateLimitPause {
-    static delay = 65 * MINUTE;
-    static noticeInterval = 5 * MINUTE;
-
-    private nextNotice = 0;
+class RateLimitPause {
+    delay = 65 * 60_000;
+    noticeInterval = 300_000;
+    nextNotice = 0;
 
     activate(): number {
         const now = Date.now();
-        this.nextNotice = now + RateLimitPause.noticeInterval;
-        return now + RateLimitPause.delay;
+        this.nextNotice = now + this.noticeInterval;
+        return now + this.delay;
     }
 
     shouldLogWait(): boolean {
         const now = Date.now();
         if (now < this.nextNotice)
             return false;
-        this.nextNotice = now + RateLimitPause.noticeInterval;
+        this.nextNotice = now + this.noticeInterval;
         return true;
     }
 
-    static formatRemaining(ms: number): string {
+    formatRemaining(ms: number): string {
         const totalMinutes = Math.ceil(Math.max(0, Math.floor(ms / 1000)) / 60);
         const hours = Math.floor(totalMinutes / 60);
         const minutes = totalMinutes % 60;
@@ -287,94 +276,60 @@ export class RateLimitPause {
     }
 }
 
-function formatLocalTime(time: number): string {
-    const date = new Date(time);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const zone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
-        .formatToParts(date).find(part => part.type === 'timeZoneName')?.value ?? '';
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
-        + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${zone}`.trim();
-}
-
-const AUTH_FLOW_MARKERS = [
-    'ocapi-app.arlo.com/api/',
-    '/api/auth',
-    '/api/getFactorId',
-    '/api/getFactors',
-    '/api/startAuth',
-    '/api/finishAuth',
-    '/api/validateAccessToken',
-    '/api/startPairingFactor',
-    '/hmsweb/users/session',
-    '/hmsweb/logout',
-    '/hmsweb/client/unsubscribe',
-];
-
-const AUTH_WAIT = 75_000;
-
-export interface ErrorManagerHost {
-    storage: Storage;
-    logger: Logger;
-    taskManager: TaskManager;
-}
-
-export interface ErrorManagerOptions {
-    recoverAuth(reason: string, signal: AbortSignal): Promise<void>;
-    restartPlugin(): void;
-}
-
-export interface RequestOptions {
-    suppressRestartOn401?: boolean;
-}
-
 export class ErrorManager {
-    private rateLimit = new RateLimitPause();
-    private authReady = new AsyncEvent(true);
-    private authRecovery?: Task;
-    private authDepth = 0;
-    private authReason = '';
-    private authStartedAt = 0;
-    private authSucceeded = false;
-    private lastAuthSuccessAt = 0;
+    static authFlowMarkers = [
+        'ocapi-app.arlo.com/api/',
+        '/api/auth',
+        '/api/getFactorId',
+        '/api/getFactors',
+        '/api/startAuth',
+        '/api/finishAuth',
+        '/api/validateAccessToken',
+        '/api/startPairingFactor',
+        '/hmsweb/users/session',
+        '/hmsweb/logout',
+        '/hmsweb/client/unsubscribe',
+    ];
 
-    constructor(private host: ErrorManagerHost, private options: ErrorManagerOptions) {
+    recoverAuth: (reason: string, signal: AbortSignal) => Promise<void>;
+    restartPlugin: () => void;
+    rateLimit = new RateLimitPause();
+    authReadyEvent = new AsyncEvent(true);
+    authRecoveryTask?: Task;
+    authDepth = 0;
+    authReason = '';
+    authStartedAt = 0;
+    authSucceeded = false;
+    lastAuthSuccessAt = 0;
+
+    constructor(public provider: ArloProvider, { recoverAuth, restartPlugin }: { recoverAuth: (reason: string, signal: AbortSignal) => Promise<void>, restartPlugin: () => void }) {
+        this.recoverAuth = recoverAuth;
+        this.restartPlugin = restartPlugin;
     }
 
-    private get logger(): Logger {
-        return this.host.logger;
+    get logger(): Logger {
+        return this.provider.logger;
     }
 
-    private get storage(): Storage {
-        return this.host.storage;
+    get authTransitionActive(): boolean {
+        return !this.authReadyEvent.isSet();
     }
 
-    private get rateLimitUntil(): number {
-        const until = Number(this.storage.getItem('arlo_rate_limit_until'));
+    get rateLimitUntil(): number {
+        const until = Number(this.provider.storage.getItem('arlo_rate_limit_until'));
         return Number.isFinite(until) ? until : 0;
     }
 
-    private set rateLimitUntil(until: number) {
-        this.storage.setItem('arlo_rate_limit_until', String(until || 0));
+    set rateLimitUntil(until: number) {
+        this.provider.storage.setItem('arlo_rate_limit_until', String(until || 0));
     }
 
-    private get rateLimitDisableActive(): boolean {
-        return this.storage.getItem('arlo_rate_limit_disable_active') === 'true';
+    get rateLimitDisableActive(): boolean {
+        return this.provider.storage.getItem('arlo_rate_limit_disable_active') === 'true';
     }
 
-    private set rateLimitDisableActive(active: boolean) {
-        this.storage.setItem('arlo_rate_limit_disable_active', String(active));
-    }
-
-    private set disablePlugin(disabled: boolean) {
-        this.storage.setItem('disable_plugin', String(disabled));
-    }
-
-    rateLimitRemaining(): number {
-        return Math.max(0, this.rateLimitUntil - Date.now());
-    }
-
-    private resumeTime(): string {
-        return formatLocalTime(this.rateLimitUntil);
+    set rateLimitDisableActive(active: boolean) {
+        this.provider.storage.setItem('arlo_rate_limit_disable_active', String(active));
     }
 
     async authTransition<T>(reason: string, fn: () => Promise<T>): Promise<T> {
@@ -392,7 +347,7 @@ export class ErrorManager {
             this.logger.debug(`Arlo auth transition started: ${reason}`);
             this.authStartedAt = Date.now();
             this.authSucceeded = false;
-            this.authReady.clear();
+            this.authReadyEvent.clear();
         }
         this.authDepth++;
         this.authReason = reason;
@@ -407,28 +362,45 @@ export class ErrorManager {
             this.authDepth--;
         if (this.authDepth > 0)
             return;
-        if (!this.authReady.isSet())
+        if (!this.authReadyEvent.isSet())
             this.logger.debug(`Arlo auth transition ${this.authSucceeded ? 'succeeded' : 'ended'}: ${this.authReason || 'auth refresh'}`);
         this.authReason = '';
-        this.authReady.set();
+        this.authReadyEvent.set();
+    }
+
+    rateLimitRemaining(): number {
+        return Math.max(0, this.rateLimitUntil - Date.now());
+    }
+
+    formatRemaining(ms: number): string {
+        return this.rateLimit.formatRemaining(ms);
+    }
+
+    rateLimitResumeTime(): string {
+        const date = new Date(this.rateLimitUntil);
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const zone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
+            .formatToParts(date).find(part => part.type === 'timeZoneName')?.value ?? '';
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+            + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${zone}`.trim();
     }
 
     handleRateLimitStartup(): boolean {
         const remaining = this.rateLimitRemaining();
         if (remaining > 0) {
             this.rateLimitDisableActive = true;
-            this.disablePlugin = true;
+            this.provider.storage.setItem('disable_plugin', 'true');
             this.logger.warn(
                 'Arlo plugin is disabled because Arlo/Cloudflare returned 429 Too Many Requests. '
-                + `Waiting about ${RateLimitPause.formatRemaining(remaining)} before trying again after ${this.resumeTime()}. `
+                + `Waiting about ${this.formatRemaining(remaining)} before trying again after ${this.rateLimitResumeTime()}. `
                 + 'No Arlo Cloud requests, relogin, or MFA will run during this pause.');
-            this.host.taskManager.createTask(signal => this.restartAfterRateLimitPause(signal), { tag: 'rate_limit_pause', owner: this.host });
+            this.provider.taskManager.createTask(signal => this.restartAfterRateLimitPause(signal), { tag: 'rate_limit_pause', owner: this.provider });
             return true;
         }
         if (this.rateLimitDisableActive) {
             this.logger.info('Arlo rate-limit pause has ended. Re-enabling plugin.');
             this.clearRateLimitPause();
-            this.disablePlugin = false;
+            this.provider.storage.setItem('disable_plugin', 'false');
         }
         return false;
     }
@@ -436,22 +408,22 @@ export class ErrorManager {
     handleDisablePluginSetting(requestedDisable: boolean): boolean {
         const remaining = this.rateLimitRemaining();
         if (!requestedDisable && remaining > 0) {
-            this.disablePlugin = true;
+            this.provider.storage.setItem('disable_plugin', 'true');
             this.rateLimitDisableActive = true;
             this.logger.warn(
                 'Arlo plugin cannot be re-enabled yet because the Arlo/Cloudflare 429 pause '
-                + `has about ${RateLimitPause.formatRemaining(remaining)} remaining. `
-                + `The plugin can be re-enabled after ${this.resumeTime()}.`);
+                + `has about ${this.formatRemaining(remaining)} remaining. `
+                + `The plugin can be re-enabled after ${this.rateLimitResumeTime()}.`);
             return false;
         }
         if (!requestedDisable && this.rateLimitDisableActive)
             this.clearRateLimitPause();
-        this.disablePlugin = requestedDisable;
+        this.provider.storage.setItem('disable_plugin', requestedDisable ? 'true' : 'false');
         this.logger.debug(`Arlo plugin will be ${requestedDisable ? 'disabled' : 'enabled'}. Restarting...`);
         return true;
     }
 
-    private clearRateLimitPause(): void {
+    clearRateLimitPause(): void {
         this.rateLimitUntil = 0;
         this.rateLimitDisableActive = false;
     }
@@ -461,16 +433,16 @@ export class ErrorManager {
         if (remaining > 0)
             await sleep(remaining, signal);
         if (this.rateLimitRemaining() > 0) {
-            this.options.restartPlugin();
+            this.restartPlugin();
             return;
         }
         this.clearRateLimitPause();
-        this.disablePlugin = false;
+        this.provider.storage.setItem('disable_plugin', 'false');
         this.logger.info('Arlo rate-limit pause complete. Restarting plugin to resume Arlo Cloud.');
-        this.options.restartPlugin();
+        this.restartPlugin();
     }
 
-    beforeRequest(method: string, url: string, { suppressRestartOn401 = false }: RequestOptions = {}): void {
+    beforeRequest(method: string, url: string, { suppressRestartOn401 = false }: { suppressRestartOn401?: boolean } = {}): void {
         if (this.rateLimitRemaining() > 0) {
             const remaining = this.logRateLimitWait(method, url);
             throw new RateLimitedError(
@@ -481,12 +453,12 @@ export class ErrorManager {
             throw new TransientRequestError('Arlo auth refresh is in progress; cloud request was deferred.', { method, url });
     }
 
-    async waitForAuthReady(url = '', { timeout = AUTH_WAIT, suppressRestartOn401 = false, signal }: { timeout?: number, suppressRestartOn401?: boolean, signal?: AbortSignal } = {}): Promise<void> {
+    async waitForAuthReady(url = '', { timeout = 75_000, suppressRestartOn401 = false, signal }: { timeout?: number, suppressRestartOn401?: boolean, signal?: AbortSignal } = {}): Promise<void> {
         if (!this.shouldDeferCloudRequest(url, suppressRestartOn401))
             return;
         this.logger.debug(`Waiting for Arlo auth transition (${this.authReason || 'auth refresh'}) before cloud request: ${url}`);
         try {
-            await withTimeout(this.authReady.wait(signal), timeout);
+            await withTimeout(this.authReadyEvent.wait(signal), timeout);
         }
         catch (e) {
             if (e instanceof TimeoutError)
@@ -495,13 +467,13 @@ export class ErrorManager {
         }
     }
 
-    private shouldDeferCloudRequest(url: string, suppressRestartOn401: boolean): boolean {
-        if (suppressRestartOn401 || this.authReady.isSet())
+    shouldDeferCloudRequest(url: string, suppressRestartOn401: boolean): boolean {
+        if (suppressRestartOn401 || this.authReadyEvent.isSet())
             return false;
-        return !AUTH_FLOW_MARKERS.some(marker => url.includes(marker));
+        return !ErrorManager.authFlowMarkers.some(marker => url.includes(marker));
     }
 
-    handleHttpError(statusCode: number, method: string, url: string, requestStartedAt?: number, { suppressRestartOn401 = false }: RequestOptions = {}): Record<string, never> {
+    handleHttpError(statusCode: number, method: string, url: string, requestStartedAt?: number, { suppressRestartOn401 = false }: { suppressRestartOn401?: boolean } = {}): Record<string, never> {
         if (suppressRestartOn401 && statusCode === 401) {
             this.logger.debug(`Ignoring 401 for cleanup request ${method} ${url}.`);
             return {};
@@ -515,7 +487,7 @@ export class ErrorManager {
             `Request (${method} ${url}) failed: ${JSON.stringify(body)}`, method, url, requestStartedAt);
     }
 
-    private raiseRequestError(statusCode: number | undefined, message: string, method: string, url: string, requestStartedAt?: number): never {
+    raiseRequestError(statusCode: number | undefined, message: string, method: string, url: string, requestStartedAt?: number): never {
         if (statusCode === 401) {
             this.requestAuthRecovery(message, requestStartedAt);
             throw new UnauthorizedRestartException(message, { statusCode, method, url });
@@ -541,29 +513,29 @@ export class ErrorManager {
         }
         if (this.isStaleAuthError(requestStartedAt))
             return;
-        if (this.authRecovery && !this.authRecovery.done) {
+        if (this.authRecoveryTask && !this.authRecoveryTask.done) {
             this.logger.debug(`Session recovery already in progress. Latest reason: ${reason}`);
             return;
         }
-        if (!this.authReady.isSet()) {
+        if (this.authTransitionActive) {
             this.logger.debug(`Ignoring a 401 during an Arlo auth transition (${this.authReason || 'auth refresh'}): ${reason}`);
             return;
         }
-        this.authRecovery = this.host.taskManager.createTask(signal => this.options.recoverAuth(reason, signal), { tag: 'auth_recovery', owner: this.host });
+        this.authRecoveryTask = this.provider.taskManager.createTask(signal => this.recoverAuth(reason, signal), { tag: 'auth_recovery', owner: this.provider });
     }
 
     private activateRateLimit(source: string): number {
         const until = this.rateLimit.activate();
         this.rateLimitUntil = until;
         this.rateLimitDisableActive = true;
-        this.disablePlugin = true;
+        this.provider.storage.setItem('disable_plugin', 'true');
         const remaining = until - Date.now();
         this.logger.warn(
             'Arlo/Cloudflare returned 429 Too Many Requests. '
-            + `Disabling Arlo plugin for about ${RateLimitPause.formatRemaining(remaining)} until ${this.resumeTime()}. `
+            + `Disabling Arlo plugin for about ${this.formatRemaining(remaining)} until ${this.rateLimitResumeTime()}. `
             + 'No Arlo Cloud requests, relogin, or MFA will run during this pause.'
             + (source ? ` Source: ${source}` : ''));
-        this.options.restartPlugin();
+        this.restartPlugin();
         return remaining;
     }
 
@@ -572,7 +544,7 @@ export class ErrorManager {
         const target = method && url ? ` ${method} ${url}` : '';
         if (this.rateLimit.shouldLogWait()) {
             this.logger.warn(
-                `Arlo Cloud requests are still paused for about ${RateLimitPause.formatRemaining(remaining)} after a 429 rate limit. `
+                `Arlo Cloud requests are still paused for about ${this.formatRemaining(remaining)} after a 429 rate limit. `
                 + `Skipping${target}; no network request was sent.`);
         }
         else {
@@ -582,7 +554,7 @@ export class ErrorManager {
     }
 
     private isStaleAuthError(requestStartedAt?: number): boolean {
-        if (!this.authReady.isSet() && requestStartedAt && this.authStartedAt) {
+        if (this.authTransitionActive && requestStartedAt && this.authStartedAt) {
             if (requestStartedAt >= this.authStartedAt)
                 return false;
             this.logger.debug(`Ignoring stale 401 from request that began before active Arlo auth transition: ${this.authReason || 'auth refresh'}`);

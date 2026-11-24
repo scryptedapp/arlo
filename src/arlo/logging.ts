@@ -1,15 +1,9 @@
-export const LOG_LEVELS = ['Info', 'Debug', 'Extra Debug'] as const;
+export const LOG_LEVELS = ['Info', 'Debug', 'Extra Debug'];
 
-export type LogLevel = typeof LOG_LEVELS[number];
+let level = 'Info';
 
-let level: LogLevel = 'Info';
-
-export function setLogLevel(value: LogLevel): void {
+export function setLogLevel(value: string): void {
     level = value;
-}
-
-export function getLogLevel(): LogLevel {
-    return level;
 }
 
 export function extraDebug(): boolean {

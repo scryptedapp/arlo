@@ -10,7 +10,7 @@ import { ArloCamera } from './camera';
 import { ArloClient, ArloClientHost, ArloDevice, browseArloServices } from './client';
 import { initImpers } from './client/request';
 import { ArloDoorbell } from './doorbell';
-import { LOG_LEVELS, Logger, LogLevel, setLogLevel } from './logging';
+import { LOG_LEVELS, Logger, setLogLevel } from './logging';
 import {
     abortable,
     AsyncEvent,
@@ -336,7 +336,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     }
 
     private propagateLogLevel(): void {
-        const level = this.storageSettings.values.plugin_log_level as LogLevel;
+        const level = this.storageSettings.values.plugin_log_level;
         setLogLevel(LOG_LEVELS.includes(level) ? level : 'Info');
         this.logger.info(`Setting plugin log level to ${level}`);
     }
@@ -1418,7 +1418,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             if (number < 0)
                 return fail('must be nonnegative');
         }
-        if (key === 'plugin_log_level' && !LOG_LEVELS.includes(value as LogLevel))
+        if (key === 'plugin_log_level' && !LOG_LEVELS.includes(String(value)))
             return fail(`must be one of ${LOG_LEVELS.join(', ')}`);
         if (key === 'mfa_strategy' && !MFA_STRATEGIES.includes(String(value)))
             return fail(`must be one of ${MFA_STRATEGIES.join(', ')}`);
