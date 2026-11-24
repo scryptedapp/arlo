@@ -1,85 +1,65 @@
 import mqtt, { MqttClient } from 'mqtt';
 
 import { sleep, TransientRequestError } from '../util';
-import { EventDispatcher, Stream, StreamHost } from './stream';
-
-const FALLBACK_HOST = 'mqtt-cluster-z1-1.arloxcld.com';
-const CONNECT_TIMEOUT = 10_000;
-const MAX_ATTEMPTS = 4;
-
-export interface MQTTClientInfo {
-    userId: string;
-    authorization: string;
-    mqttUrl: string;
-    mqttPort: number;
-    mqttTransport: 'tcp' | 'websockets';
-    mvssEnabled: boolean;
-}
-
-export interface MQTTStreamHost extends StreamHost {
-    requestAuthRecovery(reason: string): void;
-}
+import type { ArloClient } from './client';
+import { Stream } from './stream';
 
 export class MQTTEventStream extends Stream {
     private client?: MqttClient;
-    private topics = new Set<string>();
+    private cachedTopics = new Set<string>();
 
-    constructor(host: MQTTStreamHost, dispatcher: EventDispatcher, private info: MQTTClientInfo) {
-        super(host, dispatcher, 'MQTT Event Stream');
+    constructor(arlo: ArloClient) {
+        super(arlo, 'MQTT Event Stream');
     }
 
-    private get mqttHost(): MQTTStreamHost {
-        return this.host as MQTTStreamHost;
+    private genClientId(): string {
+        return `user_${this.arlo.userId}_${1_000_000_000 + Math.floor(Math.random() * 9_000_000_000)}`;
     }
 
-    private clientId(): string {
-        return `user_${this.info.userId}_${1_000_000_000 + Math.floor(Math.random() * 9_000_000_000)}`;
-    }
-
-    async start(signal?: AbortSignal): Promise<void> {
+    async start(signal?: AbortSignal, retryLimit = 4): Promise<void> {
         if (this.client) {
             this.logger.debug(`${this.name} already initialized. Skipping start.`);
             return;
         }
-        this.logger.debug(`Starting ${this.name} (host=${this.info.mqttUrl}, transport=${this.info.mqttTransport})`);
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS && !this.stopped; attempt++) {
-            if (await this.connect(this.info.mqttUrl) || (!this.stopped && await this.connect(FALLBACK_HOST)))
+        this.logger.debug(`Starting ${this.name} (host=${this.arlo.mqttUrl}, transport=${this.arlo.mqttTransport})`);
+        for (let attempt = 1; attempt <= retryLimit && !this.stopped; attempt++) {
+            if (await this.connectWithTimeout(this.arlo.mqttUrl) || (!this.stopped && await this.connectWithTimeout('mqtt-cluster-z1-1.arloxcld.com')))
                 break;
             this.logger.error('Failed to connect to both primary and fallback MQTT hosts.');
-            if (attempt < MAX_ATTEMPTS) {
+            if (attempt < retryLimit) {
                 const delay = 2_000 * 2 ** attempt + Math.random() * 1_000;
-                this.logger.debug(`Retrying MQTT connection in ${(delay / 1000).toFixed(2)} seconds (${attempt}/${MAX_ATTEMPTS - 1})...`);
+                this.logger.debug(`Retrying MQTT connection in ${(delay / 1000).toFixed(2)} seconds (${attempt}/${retryLimit - 1})...`);
                 await sleep(delay, signal);
             }
         }
         if (!this.connected) {
             this.initializing = false;
-            this.logger.error(`${this.name} start failed: could not establish connection after ${MAX_ATTEMPTS - 1} retries.`);
+            this.logger.error(`${this.name} start failed: could not establish connection after ${retryLimit - 1} retries.`);
             throw new TransientRequestError(`${this.name} start failed after retries.`);
         }
         this.resubscribe();
     }
 
-    private connect(host: string): Promise<boolean> {
+    private connectWithTimeout(host: string, timeout = 10_000): Promise<boolean> {
         if (this.stopped)
             return Promise.resolve(false);
-        this.logger.debug(`Attempting ${this.name} connect to ${host}:${this.info.mqttPort}...`);
+        this.logger.debug(`Attempting ${this.name} connect to ${host}:${this.arlo.mqttPort}...`);
         this.beginConnectWait();
-        const websockets = this.info.mqttTransport === 'websockets';
-        const url = websockets ? `wss://${host}:${this.info.mqttPort}/mqtt` : `mqtts://${host}:${this.info.mqttPort}`;
+        const websockets = this.arlo.mqttTransport === 'websockets';
+        const url = websockets ? `wss://${host}:${this.arlo.mqttPort}/mqtt` : `mqtts://${host}:${this.arlo.mqttPort}`;
         const client = mqtt.connect(url, {
-            clientId: this.clientId(),
-            username: this.info.userId,
-            password: this.info.authorization,
+            clientId: this.genClientId(),
+            username: this.arlo.userId,
+            password: this.arlo.headers.Authorization,
             clean: false,
             protocolVersion: 4,
             reconnectPeriod: 0,
-            connectTimeout: CONNECT_TIMEOUT,
+            connectTimeout: timeout,
             rejectUnauthorized: true,
             wsOptions: {
                 headers: {
-                    Host: `${this.info.mqttUrl}:${this.info.mqttPort}`,
-                    Origin: 'https://my.arlo.com',
+                    Host: `${this.arlo.mqttUrl}:${this.arlo.mqttPort}`,
+                    Origin: `https://${this.arlo.arloUrl}`,
                 },
             },
         });
@@ -102,11 +82,11 @@ export class MQTTEventStream extends Stream {
             client.on('connect', () => {
                 this.markConnected(`${this.name} connected to ${host}.`);
                 const sessionTopics = [
-                    `u/${this.info.userId}/in/userSession/connect`,
-                    `u/${this.info.userId}/in/userSession/disconnect`,
+                    `u/${this.arlo.userId}/in/userSession/connect`,
+                    `u/${this.arlo.userId}/in/userSession/disconnect`,
                 ];
-                if (this.info.mvssEnabled)
-                    sessionTopics.push(`u/${this.info.userId}/in/automation/activeMode/#`);
+                if (this.provider.mvssEnabled)
+                    sessionTopics.push(`u/${this.arlo.userId}/in/automation/activeMode/#`);
                 this.subscribe(sessionTopics);
                 finish(true);
             });
@@ -115,7 +95,7 @@ export class MQTTEventStream extends Stream {
                 const code = (error as { code?: number }).code;
                 this.logger.error(`${this.name} error: ${error.message}`);
                 if (code === 5)
-                    this.onTransportError(`${this.name} failed to connect`, code);
+                    this.handleTransportError(`${this.name} failed to connect`, code);
                 this.failConnectWait(error);
                 finish(false);
             });
@@ -128,12 +108,12 @@ export class MQTTEventStream extends Stream {
                     return;
                 this.connected = false;
                 this.logger.warn(`${this.name} disconnected.`);
-                this.onTransportError(`${this.name} unexpected disconnection`);
+                this.handleTransportError(`${this.name} unexpected disconnection`);
             });
             timer = setTimeout(() => {
-                this.logger.error(`${this.name} connect to ${host}:${this.info.mqttPort} timed out after ${CONNECT_TIMEOUT / 1000} seconds`);
+                this.logger.error(`${this.name} connect to ${host}:${this.arlo.mqttPort} timed out after ${timeout / 1000} seconds`);
                 finish(false);
-            }, CONNECT_TIMEOUT + 1_000);
+            }, timeout + 1_000);
         });
     }
 
@@ -149,24 +129,24 @@ export class MQTTEventStream extends Stream {
         if (!event?.resource)
             return;
         this.logger.debug(`Received MQTT event: ${JSON.stringify(event)}`);
-        this.dispatcher.dispatch(event);
+        this.arlo.events.dispatch(event);
     }
 
-    private onTransportError(context: string, code?: number): void {
+    private handleTransportError(context: string, code?: number): void {
         if (code === 5) {
             this.logger.error(`${context}; MQTT reports authorization failure. Requesting relogin.`);
-            this.mqttHost.requestAuthRecovery(`${context}; MQTT return code ${code}`);
+            this.errorManager.requestAuthRecovery(`${context}; MQTT return code ${code}`);
             return;
         }
         if (this.stopped)
             return;
         this.logger.error(`${context}; scheduling event stream restart.`);
-        this.host.requestRestart('event_stream');
+        this.provider.requestRestart('event_stream');
     }
 
     subscribe(topics: string[]): void {
-        const added = topics.filter(topic => topic && !this.topics.has(topic));
-        added.forEach(topic => this.topics.add(topic));
+        const added = topics.filter(topic => topic && !this.cachedTopics.has(topic));
+        added.forEach(topic => this.cachedTopics.add(topic));
         if (!added.length)
             return;
         if (!this.client || !this.connected) {
@@ -182,10 +162,10 @@ export class MQTTEventStream extends Stream {
     }
 
     private resubscribe(): void {
-        if (!this.client || !this.connected || !this.topics.size)
+        if (!this.client || !this.connected || !this.cachedTopics.size)
             return;
         this.logger.debug(`Resubscribing to cached ${this.name} topics.`);
-        this.client.subscribe([...this.topics], { qos: 0 }, error => {
+        this.client.subscribe([...this.cachedTopics], { qos: 0 }, error => {
             if (error)
                 this.logger.error(`Resubscribe to cached ${this.name} topics failed: ${error.message}`);
         });

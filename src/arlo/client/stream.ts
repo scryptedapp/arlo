@@ -1,5 +1,7 @@
 import type { Logger } from '../logging';
-import { abortable, CancelledError, Deferred, setLongTimeout, withTimeout } from '../util';
+import type { ArloProvider } from '../provider';
+import { abortable, CancelledError, Deferred, ErrorManager, setLongTimeout, withTimeout } from '../util';
+import type { ArloClient } from './client';
 
 export interface ArloEvent {
     resource?: string;
@@ -12,8 +14,6 @@ export interface ArloEvent {
 }
 
 export type ActionSpec = string | null | [action: string, property: string];
-
-const REPLAY_WINDOW = 5_000;
 
 function matches(event: ArloEvent, resource: string, actions: ActionSpec[], fromId?: string): boolean {
     if (event.resource !== resource)
@@ -43,16 +43,17 @@ interface Listener {
     callback: (event: ArloEvent) => void;
 }
 
-export interface DispatcherHost {
-    setupInProgress: boolean;
-}
-
 export class EventDispatcher {
+    expire = 5_000;
     private listeners = new Set<Listener>();
     private recent: { event: ArloEvent, expires: number }[] = [];
-    private held: ArloEvent[] = [];
+    private eventBuffer: ArloEvent[] = [];
 
-    constructor(private host: DispatcherHost, private logger: Logger) {
+    constructor(public arlo: ArloClient) {
+    }
+
+    get logger(): Logger {
+        return this.arlo.logger;
     }
 
     listen(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => void,
@@ -80,25 +81,25 @@ export class EventDispatcher {
     }
 
     dispatch(event: ArloEvent): void {
-        if (this.host.setupInProgress && !isPropertyResponse(event)) {
+        if (this.arlo.provider.setupInProgress && !isPropertyResponse(event)) {
             this.logger.debug(`Holding event during device setup: ${JSON.stringify(event)}`);
-            this.held.push(event);
+            this.eventBuffer.push(event);
             return;
         }
         this.deliver(event);
     }
 
-    releaseHeld(): void {
-        const held = this.held;
-        this.held = [];
-        if (held.length)
-            this.logger.debug(`Processing ${held.length} events held during device setup.`);
-        held.forEach(event => this.deliver(event));
+    processBufferedEvents(): void {
+        const eventBuffer = this.eventBuffer;
+        this.eventBuffer = [];
+        if (eventBuffer.length)
+            this.logger.debug(`Processing ${eventBuffer.length} events held during device setup.`);
+        eventBuffer.forEach(event => this.deliver(event));
     }
 
     private deliver(event: ArloEvent): void {
         this.recentEvents();
-        this.recent.push({ event, expires: Date.now() + REPLAY_WINDOW });
+        this.recent.push({ event, expires: Date.now() + this.expire });
         for (const listener of [...this.listeners]) {
             if (matches(event, listener.resource, listener.actions, listener.fromId))
                 this.call(listener, event);
@@ -121,35 +122,27 @@ export class EventDispatcher {
     }
 }
 
-export interface StreamHost {
-    logger: Logger;
-    waitForAuthReady(reason: string): Promise<void>;
-    requestRestart(scope: 'event_stream'): void;
-}
-
-export abstract class Stream {
+export class Stream {
+    provider: ArloProvider;
+    errorManager: ErrorManager;
     connected = false;
     initializing = true;
     protected stopped = false;
     private connectWait?: Deferred<void>;
     private cancelRefresh?: () => void;
 
-    constructor(protected host: StreamHost, protected dispatcher: EventDispatcher, public name: string) {
+    constructor(public arlo: ArloClient, public name: string) {
+        this.provider = arlo.provider;
+        this.errorManager = this.provider.errorManager;
     }
 
-    protected get logger(): Logger {
-        return this.host.logger;
+    get logger(): Logger {
+        return this.arlo.logger;
     }
 
     get active(): boolean {
         return this.connected;
     }
-
-    abstract start(signal?: AbortSignal): Promise<void>;
-
-    abstract subscribe(topics: string[]): void;
-
-    protected abstract closeTransport(): Promise<void>;
 
     protected beginConnectWait(): void {
         this.connectWait?.reject(new CancelledError());
@@ -183,8 +176,8 @@ export abstract class Stream {
         this.cancelRefresh = setLongTimeout(async () => {
             this.logger.info(`Refreshing ${this.name}`);
             try {
-                await this.host.waitForAuthReady(`${this.name} refresh`);
-                this.host.requestRestart('event_stream');
+                await this.errorManager.waitForAuthReady(`${this.name} refresh`);
+                this.provider.requestRestart('event_stream');
             }
             catch (e) {
                 this.logger.error('Error during stream refresh:', e);
@@ -206,5 +199,16 @@ export abstract class Stream {
         catch (e) {
             this.logger.debug(`Error closing ${this.name} transport: ${e}`);
         }
+    }
+
+    protected async closeTransport(): Promise<void> {
+    }
+
+    async start(signal?: AbortSignal): Promise<void> {
+        throw new Error('Not implemented');
+    }
+
+    subscribe(topics: string[]): void {
+        throw new Error('Not implemented');
     }
 }

@@ -3,8 +3,6 @@ import makeMdns from 'multicast-dns';
 import type { Logger } from '../logging';
 import { sleep } from '../util';
 
-const SERVICE = '_arlo-video._tcp.local';
-
 export interface ArloService {
     server: string;
     address: string;
@@ -23,6 +21,7 @@ function txtValue(data: unknown, key: string): string | undefined {
 }
 
 export async function browseArloServices(logger: Logger, duration = 2_000): Promise<Record<string, ArloService>> {
+    const service = '_arlo-video._tcp.local';
     const mdns = makeMdns();
     const instances = new Set<string>();
     const targets = new Map<string, string>();
@@ -35,7 +34,7 @@ export async function browseArloServices(logger: Logger, duration = 2_000): Prom
             for (const answer of [...response.answers, ...response.additionals]) {
                 switch (answer.type) {
                     case 'PTR':
-                        if (answer.name === SERVICE && !instances.has(answer.data)) {
+                        if (answer.name === service && !instances.has(answer.data)) {
                             instances.add(answer.data);
                             mdns.query([{ name: answer.data, type: 'SRV' }, { name: answer.data, type: 'TXT' }]);
                         }
@@ -61,7 +60,7 @@ export async function browseArloServices(logger: Logger, duration = 2_000): Prom
                 }
             }
         });
-        mdns.query(SERVICE, 'PTR');
+        mdns.query(service, 'PTR');
         await sleep(duration);
     }
     catch (e) {

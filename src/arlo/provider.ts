@@ -7,8 +7,7 @@ import { ImapFlow, MessageStructureObject } from 'imapflow';
 import { ArloDeviceBase } from './base';
 import { ArloBasestation } from './basestation';
 import { ArloCamera } from './camera';
-import { ArloClient, ArloClientHost, ArloDevice, browseArloServices } from './client';
-import { initImpers } from './client/request';
+import { ArloClient, ArloDevice, browseArloServices, initImpers } from './client';
 import { ArloDoorbell } from './doorbell';
 import { LOG_LEVELS, Logger, setLogLevel } from './logging';
 import {
@@ -78,7 +77,7 @@ function htmlToText(html: string): string {
         .replace(/&amp;/gi, '&');
 }
 
-export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, Settings, ArloClientHost {
+export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, Settings {
     logger = new Logger('Arlo Provider', this.console);
     taskManager = new TaskManager(this.logger);
     errorManager: ErrorManager;
@@ -409,7 +408,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             finally {
                 this.setupInProgress = false;
-                this.arlo?.events.releaseHeld();
+                this.arlo?.events.processBufferedEvents();
                 if (this.arlo?.loggedIn)
                     await this.arlo.startHeartbeat();
             }
@@ -474,10 +473,10 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             else {
                 arlo = this.arlo ?? new ArloClient(this);
             }
-            this.mfaState = arlo.mfaState = new Deferred();
+            this.mfaState = arlo.mfaStateFuture = new Deferred();
             this.browserAuthenticated = arlo.browserAuthenticated = new Deferred();
-            this.mfaLoop = arlo.mfaLoop = new Deferred();
-            this.mfaCode = arlo.mfaCode = new Deferred();
+            this.mfaLoop = arlo.mfaLoopFuture = new Deferred();
+            this.mfaCode = arlo.mfaCodeFuture = new Deferred();
             this.logger.debug('Setup ArloClient and MFA futures.');
             let failure: unknown;
             const task = loginTask = this.taskManager.createTask(async loginSignal => {
@@ -895,7 +894,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         finally {
             this.setupInProgress = false;
             this.endBuild();
-            this.arlo?.events.releaseHeld();
+            this.arlo?.events.processBufferedEvents();
             if (!cancelled) {
                 if (this.arlo?.loggedIn)
                     await this.arlo.startHeartbeat();

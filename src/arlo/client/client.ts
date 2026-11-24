@@ -1,8 +1,9 @@
 import { Logger } from '../logging';
+import type { ArloProvider } from '../provider';
 import { Deferred, abortable, ErrorManager, sleep, TaskManager, UnauthorizedRestartException } from '../util';
 import { MQTTEventStream } from './mqtt_stream';
-import { BROWSER, Request, RequestOptions } from './request';
-import { ActionSpec, ArloEvent, DispatcherHost, EventDispatcher } from './stream';
+import { BROWSER, Request } from './request';
+import { ActionSpec, ArloEvent, EventDispatcher } from './stream';
 
 export const USER_AGENTS = {
     arlo: '(iPhone15,2 18_1_1) iOS Arlo 5.4.3',
@@ -14,21 +15,7 @@ export const USER_AGENTS = {
     android: 'Mozilla/5.0 (Linux; U; Android 8.1.0; zh-cn; PACM00 Build/O11019) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/57.0.2987.132 MQQBrowser/8.8 Mobile Safari/537.36',
 };
 
-const ARLO_URL = 'my.arlo.com';
-const API_URL = 'myapi.arlo.com';
-const AUTH_URL = 'ocapi-app.arlo.com';
-
 const VALID_DEVICE_STATES = ['provisioned', 'synced'];
-
-const HARDWIRED_MODELS = [
-    'vmc3040', 'vmc3040s', 'vmc2060', 'vmc3060',
-    'vmc2040', 'abc1000', 'avd1001', 'flw2001',
-    'ac1001', 'ac2001',
-    'vmb3010', 'vmb3500', 'vmb4000', 'vmb4500',
-    'vmb4540', 'vmb5000', 'sh1001',
-];
-
-const HEARTBEAT_INTERVAL = 30_000;
 
 export interface ArloDevice {
     deviceId: string;
@@ -57,18 +44,6 @@ export interface StreamSipInfo {
 export interface CloudStream {
     url: string;
     sipInfo?: StreamSipInfo;
-}
-
-export interface ArloClientHost extends DispatcherHost {
-    console: Console;
-    storage: Storage;
-    taskManager: TaskManager;
-    errorManager: ErrorManager;
-    arloUsername: string;
-    arloPassword: string;
-    arloDeviceId: string;
-    mvssEnabled: boolean;
-    requestRestart(scope: 'event_stream'): void;
 }
 
 class TtlCache<T> {
@@ -109,62 +84,46 @@ function formatDate(date: Date): string {
 }
 
 export class ArloClient {
+    arloUrl = 'my.arlo.com';
+    arloApiUrl = 'myapi.arlo.com';
+    authUrl = 'ocapi-app.arlo.com';
+
     logger: Logger;
     events: EventDispatcher;
-    private request?: Request;
-    private cookies?: string;
-    private token?: string;
-    private headers: Record<string, string> = {};
-    private finalizedLogin = false;
-    loggedIn = false;
+    taskManager: TaskManager;
+    errorManager: ErrorManager;
+    heartbeatDevices: ArloDevice[] = [];
+    cookies?: string;
     userId: string;
+    browserAuthenticated?: Deferred<boolean>;
+    eventStream?: MQTTEventStream;
+    finalizedLogin = false;
+    headers: Record<string, string> = {};
+    loggedIn = false;
+    mfaCodeFuture?: Deferred<string>;
+    mfaLoopFuture?: Deferred<void>;
+    mfaStateFuture?: Deferred<string>;
     mqttUrl = 'mqtt-cluster.arloxcld.com';
     mqttPort = 443;
     mqttTransport: 'tcp' | 'websockets' = 'tcp';
-    eventStream?: MQTTEventStream;
-    private heartbeatDevices: ArloDevice[] = [];
+    request?: Request;
+    token?: string;
     private heartbeatGeneration = 0;
     private devicesCache = new TtlCache<ArloDevice[]>(60_000);
-    private capabilitiesCache = new TtlCache<any>(60_000);
+    private deviceCapabilitiesCache = new TtlCache<any>(60_000);
     private smartFeaturesCache = new TtlCache<any>(60_000);
     private libraryCache = new TtlCache<any[]>(10_000);
 
-    mfaState?: Deferred<string>;
-    browserAuthenticated?: Deferred<boolean>;
-    mfaLoop?: Deferred<void>;
-    mfaCode?: Deferred<string>;
-
-    constructor(private host: ArloClientHost) {
-        this.logger = new Logger('Arlo Client', host.console);
-        this.events = new EventDispatcher(host, this.logger);
-        this.userId = host.storage.getItem('arlo_user_id') ?? '';
-        this.cookies = this.loadStoredCookies();
+    constructor(public provider: ArloProvider) {
+        this.logger = new Logger('Arlo Client', provider.console);
+        this.events = new EventDispatcher(this);
+        this.taskManager = provider.taskManager;
+        this.errorManager = provider.errorManager;
+        this.cookies = this.checkCookies(provider.storage.getItem('arlo_cookies'));
+        this.userId = provider.storage.getItem('arlo_user_id') ?? '';
     }
 
-    private get taskManager(): TaskManager {
-        return this.host.taskManager;
-    }
-
-    private get errorManager(): ErrorManager {
-        return this.host.errorManager;
-    }
-
-    get mvssEnabled(): boolean {
-        return this.host.mvssEnabled;
-    }
-
-    get authorization(): string {
-        return this.headers.Authorization ?? '';
-    }
-
-    private get api(): Request {
-        if (!this.request)
-            throw new Error('Arlo Cloud client is not logged in.');
-        return this.request;
-    }
-
-    private loadStoredCookies(): string | undefined {
-        const cookies = this.host.storage.getItem('arlo_cookies');
+    private checkCookies(cookies: string | null): string | undefined {
         if (!cookies)
             return undefined;
         try {
@@ -175,7 +134,7 @@ export class ArloClient {
         }
         catch (e) {
             this.logger.debug(`Invalid stored cookies, discarding them: ${e}`);
-            this.host.storage.removeItem('arlo_cookies');
+            this.provider.storage.removeItem('arlo_cookies');
             return undefined;
         }
     }
@@ -199,38 +158,38 @@ export class ArloClient {
             if (this.request)
                 await this.request.renew();
             else
-                this.request = await Request.create(this.errorManager, this.logger);
+                this.request = await Request.create(this.provider, this.logger);
             if (this.cookies)
-                this.request.loadCookies(this.cookies);
-            this.logger.debug(`Sending authentication request to ${AUTH_URL}`);
-            await this.request.options(`https://${AUTH_URL}/api/auth`, { headers: this.headers, signal });
-            const response = await this.request.post(`https://${AUTH_URL}/api/auth`, {
+                this.request.loadsCookies(this.cookies);
+            this.logger.debug(`Sending authentication request to ${this.authUrl}`);
+            await this.request.options(`https://${this.authUrl}/api/auth`, { headers: this.headers, signal });
+            const authResponse = await this.request.post(`https://${this.authUrl}/api/auth`, {
                 params: {
                     EnvSource: 'prod',
-                    email: this.host.arloUsername,
+                    email: this.provider.arloUsername,
                     language: 'en',
-                    password: Buffer.from(this.host.arloPassword, 'utf8').toString('base64'),
+                    password: Buffer.from(this.provider.arloPassword, 'utf8').toString('base64'),
                 },
                 headers: this.headers,
                 skipEventId: true,
                 signal,
             });
-            if (!response)
+            if (!authResponse)
                 throw new Error('Arlo Cloud login failed, no auth response returned.');
-            const data = 'data' in response ? response.data : response;
-            if (!data)
+            const authResponseData = 'data' in authResponse ? authResponse.data : authResponse;
+            if (!authResponseData)
                 throw new Error('Arlo Cloud login failed, no auth response data returned.');
             if (!this.userId) {
-                this.userId = data.userId;
-                this.host.storage.setItem('arlo_user_id', this.userId);
+                this.userId = authResponseData.userId;
+                this.provider.storage.setItem('arlo_user_id', this.userId);
             }
-            this.token = data.token;
+            this.token = authResponseData.token;
             this.headers = this.getHeaders();
-            const mfaState: string = data.MFA_State;
-            this.mfaState?.resolve(mfaState);
+            const mfaState: string = authResponseData.MFA_State;
+            this.mfaStateFuture?.resolve(mfaState);
             if (mfaState === 'ENABLED') {
                 this.logger.debug('MFA enabled, starting MFA flow...');
-                await this.handleMfaFlow(data.issued, signal);
+                await this.handleMfaFlow(authResponseData.issued, signal);
             }
             else if (mfaState === 'DISABLED') {
                 this.logger.debug('MFA disabled, continuing login...');
@@ -257,16 +216,16 @@ export class ArloClient {
             'schemaVersion': '1',
             'Auth-Version': '2',
             'Content-Type': 'application/json; charset=UTF-8',
-            'Origin': `https://${ARLO_URL}`,
-            'Referer': `https://${ARLO_URL}/`,
+            'Origin': `https://${this.arloUrl}`,
+            'Referer': `https://${this.arloUrl}/`,
             'Source': 'arloCamWeb',
             'TE': 'Trailers',
-            'x-user-device-id': this.host.arloDeviceId,
+            'x-user-device-id': this.provider.arloDeviceId,
             'x-user-device-automation-name': 'QlJPV1NFUg==',
             'x-user-device-type': 'BROWSER',
             'X-Service-Version': '3',
             'Priority': 'u=1, i',
-            'Host': AUTH_URL,
+            'Host': this.authUrl,
             'User-Agent': BROWSER.userAgent,
         };
         if (this.token)
@@ -275,64 +234,121 @@ export class ArloClient {
     }
 
     private async handleMfaFlow(issued: unknown, signal?: AbortSignal): Promise<void> {
-        const authOptions = (params: Record<string, unknown>): RequestOptions => ({ params, headers: this.headers, raw: true, skipEventId: true, signal });
-        const factorIdResponse = await this.api.post(`https://${AUTH_URL}/api/getFactorId`,
-            authOptions({ factorData: '', factorType: 'BROWSER', userId: this.userId }));
-        if (!factorIdResponse)
+        const getFactorIdResponse = await this.getFactorId(signal);
+        if (!getFactorIdResponse)
             throw new Error('No factor ID response returned.');
-        const browserTrusted = factorIdResponse.meta?.code === 200;
+        const browserTrusted = getFactorIdResponse.meta?.code === 200;
         this.browserAuthenticated?.resolve(browserTrusted);
-        if (browserTrusted) {
-            this.logger.debug('Browser authenticated, continuing login...');
-            const startAuth = await this.api.post(`https://${AUTH_URL}/api/startAuth`,
-                authOptions({ factorId: factorIdResponse.data?.factorId, factorType: 'BROWSER', userId: this.userId }));
-            if (!startAuth?.data)
+        if (!browserTrusted) {
+            this.logger.debug('Browser not authenticated, starting browser authentication...');
+            const getFactorsResponse = await this.getFactors(issued, signal);
+            if (!getFactorsResponse)
+                throw new Error('No factors response returned.');
+            const items: any[] = getFactorsResponse.data?.items ?? [];
+            this.logger.debug(`factorTypes: ${JSON.stringify(items.map(item => item.factorType))}`);
+            this.logger.debug(`factorRoles: ${JSON.stringify(items.map(item => item.factorRole))}`);
+            const factorId = items.find(item => (item.factorType === 'EMAIL' || item.factorType === 'SMS') && item.factorRole === 'PRIMARY')?.factorId;
+            if (!factorId)
+                throw new Error('Could not find valid 2FA method - is the primary 2FA set to either Email or SMS?');
+            const startAuthResponse = await this.startAuth(factorId, signal);
+            if (!startAuthResponse?.data)
                 throw new Error('No start authentication response data returned.');
-            this.token = startAuth.data.accessToken?.token;
+            const factorAuthCode = startAuthResponse.data.factorAuthCode;
+            this.mfaLoopFuture?.resolve();
+            const mfaCode = await this.waitForMfaCode(signal);
+            const finishAuthResponse = await this.finishAuth(factorAuthCode, mfaCode, signal);
+            if (!finishAuthResponse?.data)
+                throw new Error('No finish authentication response data returned.');
+            this.token = finishAuthResponse.data.token;
+            this.headers = this.getHeaders();
+            await this.validateAccessToken(signal);
+            const startPairingFactorResponse = await this.startPairingFactor(finishAuthResponse.data.browserAuthCode, signal);
+            if (!startPairingFactorResponse)
+                throw new Error('No start pairing factor response returned.');
+            await this.completeLogin(signal);
+        }
+        else {
+            this.logger.debug('Browser authenticated, continuing login...');
+            const startAuthResponse = await this.startAuth(getFactorIdResponse.data?.factorId, signal);
+            if (!startAuthResponse?.data)
+                throw new Error('No start authentication response data returned.');
+            this.token = startAuthResponse.data.accessToken?.token;
             this.headers = this.getHeaders();
             await this.validateAccessToken(signal);
             await this.completeLogin(signal);
-            return;
         }
+    }
 
-        this.logger.debug('Browser not authenticated, starting browser authentication...');
-        const factors = await this.api.get(`https://${AUTH_URL}/api/getFactors`, authOptions({ data: issued }));
-        if (!factors)
-            throw new Error('No factors response returned.');
-        const items: any[] = factors.data?.items ?? [];
-        this.logger.debug(`factorTypes: ${JSON.stringify(items.map(item => item.factorType))}`);
-        this.logger.debug(`factorRoles: ${JSON.stringify(items.map(item => item.factorRole))}`);
-        const factorId = items.find(item => (item.factorType === 'EMAIL' || item.factorType === 'SMS') && item.factorRole === 'PRIMARY')?.factorId;
-        if (!factorId)
-            throw new Error('Could not find valid 2FA method - is the primary 2FA set to either Email or SMS?');
-        const startAuth = await this.api.post(`https://${AUTH_URL}/api/startAuth`,
-            authOptions({ factorId, factorType: 'BROWSER', userId: this.userId }));
-        if (!startAuth?.data)
-            throw new Error('No start authentication response data returned.');
-        const factorAuthCode = startAuth.data.factorAuthCode;
-        this.mfaLoop?.resolve();
+    private async getFactorId(signal?: AbortSignal): Promise<any> {
+        this.logger.debug('Requesting MFA factor ID...');
+        return this.request.post(`https://${this.authUrl}/api/getFactorId`, {
+            params: { factorData: '', factorType: 'BROWSER', userId: this.userId },
+            headers: this.headers,
+            raw: true,
+            skipEventId: true,
+            signal,
+        });
+    }
+
+    private async getFactors(data: unknown, signal?: AbortSignal): Promise<any> {
+        this.logger.debug('Requesting MFA factors...');
+        return this.request.get(`https://${this.authUrl}/api/getFactors`, {
+            params: { data },
+            headers: this.headers,
+            raw: true,
+            skipEventId: true,
+            signal,
+        });
+    }
+
+    private async startAuth(factorId: string, signal?: AbortSignal): Promise<any> {
+        this.logger.debug('Starting MFA authentication...');
+        return this.request.post(`https://${this.authUrl}/api/startAuth`, {
+            params: { factorId, factorType: 'BROWSER', userId: this.userId },
+            headers: this.headers,
+            raw: true,
+            skipEventId: true,
+            signal,
+        });
+    }
+
+    private async waitForMfaCode(signal?: AbortSignal): Promise<string> {
         this.logger.info('Waiting for MFA code from provider...');
-        if (!this.mfaCode)
+        if (!this.mfaCodeFuture)
             throw new Error('No MFA code source was set up.');
-        const otp = await abortable(this.mfaCode.promise, signal);
-        const finishAuth = await this.api.post(`https://${AUTH_URL}/api/finishAuth`,
-            authOptions({ factorAuthCode, isBrowserTrusted: true, otp }));
-        if (!finishAuth?.data)
-            throw new Error('No finish authentication response data returned.');
-        this.token = finishAuth.data.token;
-        this.headers = this.getHeaders();
-        await this.validateAccessToken(signal);
-        const pairing = await this.api.post(`https://${AUTH_URL}/api/startPairingFactor`,
-            authOptions({ factorAuthCode: finishAuth.data.browserAuthCode, factorData: '', factorType: 'BROWSER' }));
-        if (!pairing)
-            throw new Error('No start pairing factor response returned.');
-        await this.completeLogin(signal);
+        return abortable(this.mfaCodeFuture.promise, signal);
+    }
+
+    private async finishAuth(factorAuthCode: string, mfaCode: string, signal?: AbortSignal): Promise<any> {
+        this.logger.debug('Finishing MFA authentication...');
+        return this.request.post(`https://${this.authUrl}/api/finishAuth`, {
+            params: { factorAuthCode, isBrowserTrusted: true, otp: mfaCode },
+            headers: this.headers,
+            raw: true,
+            skipEventId: true,
+            signal,
+        });
     }
 
     private async validateAccessToken(signal?: AbortSignal): Promise<void> {
         this.logger.debug('Validating access token...');
-        await this.api.get(`https://${AUTH_URL}/api/validateAccessToken?data=${Math.floor(Date.now() / 1000)}`,
-            { headers: this.headers, raw: true, skipEventId: true, signal });
+        await this.request.get(`https://${this.authUrl}/api/validateAccessToken?data=${Math.floor(Date.now() / 1000)}`, {
+            headers: this.headers,
+            raw: true,
+            skipEventId: true,
+            signal,
+        });
+    }
+
+    private async startPairingFactor(factorAuthCode: string, signal?: AbortSignal): Promise<any> {
+        this.logger.debug('Starting pairing factor...');
+        return this.request.post(`https://${this.authUrl}/api/startPairingFactor`, {
+            params: { factorAuthCode, factorData: '', factorType: 'BROWSER' },
+            headers: this.headers,
+            raw: true,
+            skipEventId: true,
+            signal,
+        });
     }
 
     private async completeLogin(signal?: AbortSignal): Promise<void> {
@@ -343,26 +359,27 @@ export class ArloClient {
     }
 
     private async finalizeLogin(): Promise<void> {
-        this.cookies = this.api.dumpCookies();
-        await this.api.renew();
-        this.api.loadCookies(this.cookies);
-        this.host.storage.setItem('arlo_cookies', this.cookies);
+        this.cookies = this.request.dumpsCookies();
+        await this.request.renew();
+        this.request.loadsCookies(this.cookies);
+        this.provider.storage.setItem('arlo_cookies', this.cookies);
         this.finalizedLogin = true;
         this.headers = this.getHeaders();
-        this.api.setHeaders(this.headers);
+        for (const [name, value] of Object.entries(this.headers))
+            this.request.session.headers.set(name, value);
     }
 
-    private async userSession(signal?: AbortSignal): Promise<void> {
-        const session = await this.api.get(`https://${API_URL}/hmsweb/users/session/v3`, { headers: this.headers, raw: true, signal });
-        if (session?.success !== true) {
+    async userSession(signal?: AbortSignal): Promise<void> {
+        const sessionResponse = await this.request.get(`https://${this.arloApiUrl}/hmsweb/users/session/v3`, { headers: this.headers, raw: true, signal });
+        if (sessionResponse?.success !== true) {
             this.logger.warn('Failed to fetch session details.');
             return;
         }
-        const mqttUrl: string | undefined = session.data?.mqttUrl;
+        const mqttUrl: string | undefined = sessionResponse.data?.mqttUrl;
         if (mqttUrl) {
-            const parsed = new URL(mqttUrl);
-            this.mqttUrl = parsed.hostname;
-            this.mqttPort = Number(parsed.port) || (parsed.protocol === 'ws:' ? 80 : 443);
+            const parsedUrl = new URL(mqttUrl);
+            this.mqttUrl = parsedUrl.hostname;
+            this.mqttPort = Number(parsedUrl.port) || (parsedUrl.protocol === 'ws:' ? 80 : 443);
             this.mqttTransport = this.mqttPort === 443 ? 'tcp' : 'websockets';
         }
         this.logger.debug('User session established successfully.');
@@ -379,7 +396,7 @@ export class ArloClient {
         }
         if (this.request) {
             try {
-                await this.request.put(`https://${API_URL}/hmsweb/logout`, { suppressRestartOn401: true });
+                await this.request.put(`https://${this.arloApiUrl}/hmsweb/logout`, { suppressRestartOn401: true });
             }
             catch (e) {
                 this.logger.warn(`Error during logout request: ${e}`);
@@ -396,66 +413,67 @@ export class ArloClient {
         this.loggedIn = false;
     }
 
-    async getDevices(deviceTypes?: string[], validStateOnly = false): Promise<ArloDevice[]> {
-        return this.ignoreUnauthorized('get_devices', [], async () => {
-            let devices = await this.devicesCache.get('devices', () => this.api.get(`https://${API_URL}/hmsweb/v2/users/devices`));
-            if (deviceTypes)
-                devices = devices.filter(device => deviceTypes.includes(device.deviceType));
-            if (validStateOnly)
-                devices = devices.filter(device => VALID_DEVICE_STATES.includes(device.state ?? ''));
+    async getDevices(deviceType?: string[], deviceState = false): Promise<ArloDevice[]> {
+        return this.ignoreUnauthorized('getDevices', [], async () => {
+            let devices = await this.devicesCache.get('devices', () => this.request.get(`https://${this.arloApiUrl}/hmsweb/v2/users/devices`));
+            if (deviceType)
+                devices = devices.filter(device => deviceType.includes(device.deviceType));
+            if (deviceState)
+                devices = devices.filter(device => VALID_DEVICE_STATES.includes(device.state));
             return devices;
         });
     }
 
     async getDeviceCapabilities(device: ArloDevice): Promise<any> {
-        const modelId = String(device.modelId).toLowerCase();
-        return this.ignoreUnauthorized('get_device_capabilities', {}, () => this.capabilitiesCache.get(`${modelId}|${device.interfaceVersion}`,
-            () => this.api.get(`https://${API_URL}/resources/capabilities/${modelId}/${modelId}_${device.interfaceVersion}.json`, { raw: true })));
+        const modelId = device.modelId.toLowerCase();
+        return this.ignoreUnauthorized('getDeviceCapabilities', {}, () => this.deviceCapabilitiesCache.get(`${modelId}|${device.interfaceVersion}`,
+            () => this.request.get(`https://${this.arloApiUrl}/resources/capabilities/${modelId}/${modelId}_${device.interfaceVersion}.json`, { raw: true })));
     }
 
     async getDeviceSmartFeatures(device: ArloDevice): Promise<any> {
-        return this.ignoreUnauthorized('get_device_smart_features', {}, async () => {
-            const smartFeatures = await this.smartFeaturesCache.get('features', () => this.api.get(`https://${API_URL}/hmsweb/users/subscription/smart/features`));
+        return this.ignoreUnauthorized('getDeviceSmartFeatures', {}, async () => {
+            const smartFeatures = await this.smartFeaturesCache.get('features', () => this.request.get(`https://${this.arloApiUrl}/hmsweb/users/subscription/smart/features`));
             return smartFeatures?.features?.[`${device.owner.ownerId}_${device.deviceId}`] ?? {};
         });
     }
 
     async triggerProperties(basestation: ArloDevice, camera?: ArloDevice, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<Record<string, any>> {
-        return this.ignoreUnauthorized('trigger_properties', {}, async () => {
+        return this.ignoreUnauthorized('triggerProperties', {}, async () => {
             const deadline = timeout === undefined ? undefined : Date.now() + timeout;
             const resources = camera ? [`cameras/${camera.deviceId}`] : ['basestation'];
             if (camera && camera.deviceId === camera.parentId)
                 resources.push('basestation');
             const properties: Record<string, any> = {};
-            await this.subscribe();
             for (const resource of resources) {
-                await this.triggerAndWait(waitSignal => this.events.waitFor(resource, [['is', 'interfaceVersion']], event => {
+                const trigger = () => this.notify(basestation, { action: 'get', resource, publishResponse: false }, signal);
+                const callback = (event: ArloEvent) => {
                     if ('error' in event)
                         return undefined;
                     Object.assign(properties, event.properties ?? {});
                     return event.properties ?? {};
-                }, { fromId: basestation.deviceId, replay: false, timeout: deadline && Math.max(0, deadline - Date.now()), signal: waitSignal }),
-                () => this.notify(basestation, { action: 'get', resource, publishResponse: false }, signal), signal);
+                };
+                await this.triggerAndHandleEvents(resource, [['is', 'interfaceVersion']], trigger, callback, {
+                    fromId: basestation.deviceId,
+                    timeout: deadline && Math.max(0, deadline - Date.now()),
+                    signal,
+                });
             }
             return properties;
         });
     }
 
     async getLocations(): Promise<Record<string, string>> {
-        return this.ignoreUnauthorized('get_locations', {}, async () => {
-            const locations = await this.api.get(`https://${API_URL}/hmsdevicemanagement/users/${this.userId}/locations`);
-            const result: Record<string, string> = {};
-            for (const list of Object.values(locations ?? {}) as any[][])
-                list.forEach(location => result[location.locationId] = location.locationName);
-            return result;
+        return this.ignoreUnauthorized('getLocations', {}, async () => {
+            const locations: Record<string, any[]> = await this.request.get(`https://${this.arloApiUrl}/hmsdevicemanagement/users/${this.userId}/locations`);
+            return Object.fromEntries(Object.values(locations ?? {}).flat().map(location => [location.locationId, location.locationName]));
         });
     }
 
     async getModeAndRevision(): Promise<any> {
-        return this.ignoreUnauthorized('get_mode_and_revision', {}, () => this.api.get(`https://${API_URL}/hmsweb/automation/v3/activeMode?locationId=all`, {
+        return this.ignoreUnauthorized('getModeAndRevision', {}, () => this.request.get(`https://${this.arloApiUrl}/hmsweb/automation/v3/activeMode?locationId=all`, {
             headers: {
-                'Origin': `https://${ARLO_URL}`,
-                'Referer': `https://${ARLO_URL}/`,
+                'Origin': `https://${this.arloUrl}`,
+                'Referer': `https://${this.arloUrl}/`,
                 'x-user-device-id': this.userId,
                 'x-forwarded-user': this.userId,
             },
@@ -463,131 +481,59 @@ export class ArloClient {
     }
 
     async setMode(mode: string, location: string, nextRevision: string): Promise<void> {
-        await this.ignoreUnauthorized('set_mode', undefined, () => this.api.put(
-            `https://${API_URL}/hmsweb/automation/v3/activeMode?locationId=${location}&revision=${nextRevision}`, {
+        await this.ignoreUnauthorized('setMode', undefined, () => this.request.put(
+            `https://${this.arloApiUrl}/hmsweb/automation/v3/activeMode?locationId=${location}&revision=${nextRevision}`, {
                 params: { mode },
                 headers: {
-                    'Origin': `https://${ARLO_URL}`,
-                    'Referer': `https://${ARLO_URL}/`,
-                    'x-user-device-id': this.host.arloDeviceId,
+                    'Origin': `https://${this.arloUrl}`,
+                    'Referer': `https://${this.arloUrl}/`,
+                    'x-user-device-id': this.provider.arloDeviceId,
                     'x-forwarded-user': this.userId,
                 },
             }));
     }
 
-    async restartDevice(deviceId: string): Promise<void> {
-        await this.ignoreUnauthorized('restart_device', undefined, () => this.api.post(`https://${API_URL}/hmsweb/users/devices/restart`, {
-            params: { deviceId },
-            headers: this.deviceManagementHeaders(),
-        }));
-    }
-
-    async createCertificates(basestation: ArloDevice, publicKey: string): Promise<any> {
-        return this.ignoreUnauthorized('create_certificates', undefined, () => this.api.post(`https://${API_URL}/hmsweb/users/devices/v2/security/cert/create`, {
-            params: { uuid: this.host.arloDeviceId, publicKey, uniqueIds: [basestation.uniqueId] },
-            headers: this.deviceManagementHeaders(),
-        }));
-    }
-
-    private deviceManagementHeaders(): Record<string, string> {
-        return {
-            'Origin': `https://${API_URL}`,
-            'Referer': `https://${API_URL}/`,
-            'x-user-device-id': this.host.arloDeviceId,
-            'x-forwarded-user': this.userId,
-        };
-    }
-
-    async getLibrary(device: ArloDevice, from: Date, to: Date, noCache = false): Promise<any[]> {
-        return this.ignoreUnauthorized('get_library', [], async () => {
-            const dateFrom = formatDate(new Date(from.getTime() - 86_400_000));
-            const dateTo = formatDate(new Date(to.getTime() + 86_400_000));
-            const load = () => this.api.post(`https://${API_URL}/hmsweb/users/library`, { params: { dateFrom, dateTo } });
-            const results: any[] = noCache ? await load() : await this.libraryCache.get(`${dateFrom}|${dateTo}`, load);
-            return results.filter(result => {
-                const time = Number(result.name);
-                return result.deviceId === device.deviceId && time >= from.getTime() && time <= to.getTime();
-            });
-        });
-    }
-
-    private async triggerAndWait<T>(wait: (signal: AbortSignal) => Promise<T>, trigger: () => Promise<void>, signal?: AbortSignal): Promise<T> {
-        const controller = new AbortController();
-        const onAbort = () => controller.abort();
-        signal?.addEventListener('abort', onAbort, { once: true });
-        const waiting = wait(controller.signal);
-        waiting.catch(() => { });
-        try {
-            await trigger();
-            return await waiting;
-        }
-        finally {
-            controller.abort();
-            signal?.removeEventListener('abort', onAbort);
-        }
-    }
-
-    async subscribe(basestationCameraPairs: [ArloDevice, ArloDevice][] = [], { startHeartbeat = true }: { startHeartbeat?: boolean } = {}): Promise<void> {
+    async subscribe(basestationCameraTuples: [ArloDevice, ArloDevice][] = [], { startHeartbeat = true }: { startHeartbeat?: boolean } = {}): Promise<void> {
         await this.ignoreUnauthorized('subscribe', undefined, async () => {
             await this.errorManager.waitForAuthReady('event stream subscribe');
             let stream = this.eventStream;
             if (!stream || (!stream.initializing && !stream.connected)) {
-                stream = this.eventStream = new MQTTEventStream(this, this.events, this);
+                stream = this.eventStream = new MQTTEventStream(this);
                 await stream.start();
             }
             await stream.waitConnected(10_000);
             if (!stream.connected || this.eventStream !== stream)
                 throw new Error('Event stream failed to initialize or connect.');
-            if (!basestationCameraPairs.length)
+            if (!basestationCameraTuples.length)
                 return;
-            const devices = new Map<string, ArloDevice>();
-            basestationCameraPairs.forEach(([basestation, camera]) => {
-                devices.set(basestation.deviceId, basestation);
-                devices.set(camera.deviceId, camera);
-            });
-            this.heartbeatDevices = [...devices.values()].filter(device =>
-                HARDWIRED_MODELS.some(model => String(device.modelId ?? '').toLowerCase().startsWith(model)));
+            const hardwiredModels = [
+                'vmc3040', 'vmc3040s', 'vmc2060', 'vmc3060',
+                'vmc2040', 'abc1000', 'avd1001', 'flw2001',
+                'ac1001', 'ac2001',
+                'vmb3010', 'vmb3500', 'vmb4000', 'vmb4500',
+                'vmb4540', 'vmb5000', 'sh1001',
+            ];
+            const allDevices = new Map<string, ArloDevice>();
+            for (const [basestation, camera] of basestationCameraTuples) {
+                allDevices.set(basestation.deviceId, basestation);
+                allDevices.set(camera.deviceId, camera);
+            }
+            this.heartbeatDevices = [...allDevices.values()].filter(device =>
+                hardwiredModels.some(model => device.modelId?.toLowerCase().startsWith(model)));
             const topics = new Set<string>();
-            for (const [basestation, camera] of basestationCameraPairs) {
+            for (const [basestation, camera] of basestationCameraTuples) {
                 basestation.allowedMqttTopics?.forEach(topic => topics.add(topic));
                 camera.allowedMqttTopics?.forEach(topic => topics.add(topic));
             }
-            this.eventStream.subscribe([...topics]);
+            stream.subscribe([...topics]);
             if (startHeartbeat)
                 await this.startHeartbeat();
-            else if (this.host.setupInProgress)
+            else if (this.provider.setupInProgress)
                 await this.pingDevices(this.heartbeatDevices);
         });
     }
 
-    async unsubscribe(): Promise<void> {
-        const stream = this.eventStream;
-        this.eventStream = undefined;
-        try {
-            if (stream?.connected)
-                await this.api.get(`https://${API_URL}/hmsweb/client/unsubscribe`, { suppressRestartOn401: true });
-        }
-        catch (e) {
-            this.logger.debug(`Error unsubscribing from Arlo events: ${e}`);
-        }
-        finally {
-            await stream?.close();
-        }
-    }
-
-    waitForAuthReady(reason: string): Promise<void> {
-        return this.errorManager.waitForAuthReady(reason);
-    }
-
-    requestRestart(scope: 'event_stream'): void {
-        this.host.requestRestart(scope);
-    }
-
-    requestAuthRecovery(reason: string): void {
-        this.errorManager.requestAuthRecovery(reason);
-    }
-
-    async startHeartbeat(devices?: ArloDevice[]): Promise<void> {
+    async startHeartbeat(devices?: ArloDevice[], interval = 30_000): Promise<void> {
         if (devices)
             this.heartbeatDevices = devices;
         if (!this.heartbeatDevices.length)
@@ -602,18 +548,14 @@ export class ArloClient {
         const heartbeatDevices = [...this.heartbeatDevices];
         this.taskManager.createTask(async signal => {
             while (this.eventStream?.active) {
-                if (this.host.setupInProgress) {
+                if (this.provider.setupInProgress) {
                     await sleep(1_000, signal);
                     continue;
                 }
                 await this.pingDevices(heartbeatDevices, signal);
-                await sleep(HEARTBEAT_INTERVAL, signal);
+                await sleep(interval, signal);
             }
         }, { tag: 'heartbeat', owner: this });
-    }
-
-    async cancelHeartbeat(): Promise<void> {
-        await this.taskManager.cancelAndAwaitByTag('heartbeat', this);
     }
 
     private async pingDevices(devices: ArloDevice[], signal?: AbortSignal): Promise<void> {
@@ -634,7 +576,7 @@ export class ArloClient {
     }
 
     private async notify(basestation: ArloDevice, body: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        await this.api.post(`https://${API_URL}/hmsweb/users/devices/notify/${basestation.deviceId}`, {
+        await this.request.post(`https://${this.arloApiUrl}/hmsweb/users/devices/notify/${basestation.deviceId}`, {
             params: { ...body, transId: this.genTransId(), from: `${this.userId}_web`, to: basestation.deviceId },
             headers: { xcloudId: basestation.xCloudId ?? '' },
             signal,
@@ -643,6 +585,25 @@ export class ArloClient {
 
     private genTransId(type = 'web'): string {
         return `${type}!${float2hex(Math.random() * 2 ** 32).toLowerCase()}!${Date.now()}`;
+    }
+
+    async unsubscribe(): Promise<void> {
+        const stream = this.eventStream;
+        this.eventStream = undefined;
+        try {
+            if (stream?.connected)
+                await this.request.get(`https://${this.arloApiUrl}/hmsweb/client/unsubscribe`, { suppressRestartOn401: true });
+        }
+        catch (e) {
+            this.logger.debug(`Error unsubscribing from Arlo events: ${e}`);
+        }
+        finally {
+            await stream?.close();
+        }
+    }
+
+    async cancelHeartbeat(): Promise<void> {
+        await this.taskManager.cancelAndAwaitByTag('heartbeat', this);
     }
 
     subscribeToErrorEvents(camera: ArloDevice, callback: (code: unknown, message: unknown) => void): Unsubscribe {
@@ -654,31 +615,31 @@ export class ArloClient {
     }
 
     subscribeToMotionEvents(camera: ArloDevice, callback: (detected: boolean) => void, logger: Logger): Unsubscribe {
-        return this.subscribeToDetection(camera, callback, logger, 'motionDetected');
+        return this.subscribeToMotionOrAudioEvents(camera, callback, logger, 'motionDetected');
     }
 
     subscribeToAudioEvents(camera: ArloDevice, callback: (detected: boolean) => void, logger: Logger): Unsubscribe {
-        return this.subscribeToDetection(camera, callback, logger, 'audioDetected');
+        return this.subscribeToMotionOrAudioEvents(camera, callback, logger, 'audioDetected');
     }
 
-    private subscribeToDetection(camera: ArloDevice, callback: (detected: boolean) => void, logger: Logger, key: 'motionDetected' | 'audioDetected'): Unsubscribe {
-        let reset: NodeJS.Timeout | undefined;
+    private subscribeToMotionOrAudioEvents(camera: ArloDevice, callback: (detected: boolean) => void, logger: Logger, eventKey: 'motionDetected' | 'audioDetected'): Unsubscribe {
+        let resetTimer: NodeJS.Timeout | undefined;
         const resetAfter = (ms: number) => {
-            clearTimeout(reset);
-            reset = setTimeout(() => {
-                logger.debug(`${key}: false`);
-                reset = undefined;
+            clearTimeout(resetTimer);
+            resetTimer = setTimeout(() => {
+                logger.debug(`${eventKey}: false`);
+                resetTimer = undefined;
                 callback(false);
             }, ms);
         };
-        const stop = this.events.listen(`cameras/${camera.deviceId}`, [['is', key]], event => {
+        const unsubscribe = this.events.listen(`cameras/${camera.deviceId}`, [['is', eventKey]], event => {
             const properties = event.properties ?? {};
             const keys = Object.keys(properties);
-            if (keys.length !== 1 || keys[0] !== key)
+            if (keys.length !== 1 || keys[0] !== eventKey)
                 return;
-            const detected = properties[key];
-            logger.debug(`${key}: ${detected}`);
-            logger.debug(`${key}: ${detected ? 'will force reset after 60s' : 'will delay delivery by 10s'}`);
+            const detected = properties[eventKey];
+            logger.debug(`${eventKey}: ${detected}`);
+            logger.debug(`${eventKey}: ${detected ? 'will force reset after 60s' : 'will delay delivery by 10s'}`);
             if (detected) {
                 callback(detected);
                 resetAfter(60_000);
@@ -688,8 +649,8 @@ export class ArloClient {
             }
         });
         return () => {
-            stop();
-            clearTimeout(reset);
+            unsubscribe();
+            clearTimeout(resetTimer);
         };
     }
 
@@ -709,17 +670,17 @@ export class ArloClient {
     }
 
     subscribeToDoorbellEvents(doorbell: ArloDevice, callback: (pressed: boolean) => void): Unsubscribe {
-        let release: NodeJS.Timeout | undefined;
-        const stop = this.events.listen(`doorbells/${doorbell.deviceId}`, [['is', 'buttonPressed']], event => {
+        let releaseTimer: NodeJS.Timeout | undefined;
+        const unsubscribe = this.events.listen(`doorbells/${doorbell.deviceId}`, [['is', 'buttonPressed']], event => {
             if (!event.properties || !('buttonPressed' in event.properties))
                 return;
-            clearTimeout(release);
-            release = setTimeout(() => callback(false), 1_000);
+            clearTimeout(releaseTimer);
+            releaseTimer = setTimeout(() => callback(false), 1_000);
             callback(event.properties.buttonPressed);
         });
         return () => {
-            stop();
-            clearTimeout(release);
+            unsubscribe();
+            clearTimeout(releaseTimer);
         };
     }
 
@@ -732,13 +693,12 @@ export class ArloClient {
 
     subscribeToDeviceStateEvents(device: ArloDevice, callback: (state: 'available' | 'unavailable') => void): Unsubscribe {
         const deviceId = device.deviceId;
-        const wifi = deviceId === device.parentId;
-        const subscriptions = `subscriptions/${this.userId}_web`;
-        const resources = wifi ? [`cameras/${deviceId}`, 'basestation'] : ['basestation', subscriptions];
-        const handle = (event: ArloEvent) => {
+        const isWifiCamera = deviceId === device.parentId;
+        const resources = isWifiCamera ? [`cameras/${deviceId}`, 'basestation'] : ['basestation', `subscriptions/${this.userId}_web`];
+        const callbackWrapper = (event: ArloEvent) => {
             const properties = event.properties ?? {};
             const resource = event.resource ?? '';
-            if (wifi) {
+            if (isWifiCamera) {
                 if (resource.startsWith('cameras/') && properties.connectionState === 'unavailable')
                     callback('unavailable');
                 else if (resource === 'basestation' && properties.connectionState === 'available')
@@ -751,12 +711,13 @@ export class ArloClient {
                     callback('available');
             }
         };
-        const stops = resources.map(resource => {
-            const action: ActionSpec = resource === subscriptions ? 'is'
-                : resource !== 'basestation' || wifi ? ['is', 'connectionState'] : ['is', 'state'];
-            return this.events.listen(resource, [action], handle, { fromId: deviceId });
-        });
-        return () => stops.forEach(stop => stop());
+        const getAction = (resource: string): ActionSpec => {
+            if (resource.startsWith('subscriptions/'))
+                return 'is';
+            return resource !== 'basestation' || isWifiCamera ? ['is', 'connectionState'] : ['is', 'state'];
+        };
+        const unsubscribes = resources.map(resource => this.events.listen(resource, [getAction(resource)], callbackWrapper, { fromId: deviceId }));
+        return () => unsubscribes.forEach(unsubscribe => unsubscribe());
     }
 
     subscribeToActivityStateEvents(camera: ArloDevice, callback: (state: string) => void): Unsubscribe {
@@ -780,28 +741,17 @@ export class ArloClient {
         });
     }
 
-    subscribeToPushToTalkEvents(camera: ArloDevice, type: 'answerSdp' | 'answerCandidate', callback: (data: any) => void): Unsubscribe {
-        return this.events.listen(`cameras/${camera.deviceId}`, ['pushToTalk'], event => {
-            if (event.properties?.type === type)
-                callback(event.properties.data);
-        }, { replay: false });
-    }
-
     async triggerFullFrameSnapshot(camera: ArloDevice, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<string> {
+        const resource = `cameras/${camera.deviceId}`;
         const actions: ActionSpec[] = [];
         for (const action of ['fullFrameSnapshotAvailable', 'lastImageSnapshotAvailable', 'is'])
             for (const property of ['presignedFullFrameSnapshotUrl', 'presignedLastImageUrl'])
                 actions.push([action, property]);
-        await this.subscribe();
-        return this.triggerAndWait(waitSignal => this.events.waitFor(`cameras/${camera.deviceId}`, actions, event => {
-            if ('error' in event)
-                return undefined;
-            return event.properties?.presignedFullFrameSnapshotUrl || event.properties?.presignedLastImageUrl || undefined;
-        }, { replay: false, timeout, signal: waitSignal }), () => this.api.post(`https://${API_URL}/hmsweb/users/devices/fullFrameSnapshot`, {
+        const trigger = () => this.request.post(`https://${this.arloApiUrl}/hmsweb/users/devices/fullFrameSnapshot`, {
             params: {
                 to: camera.parentId,
                 from: `${this.userId}_web`,
-                resource: `cameras/${camera.deviceId}`,
+                resource,
                 action: 'set',
                 publishResponse: true,
                 transId: this.genTransId(),
@@ -809,17 +759,24 @@ export class ArloClient {
             },
             headers: { xcloudId: camera.xCloudId ?? '' },
             signal,
-        }), signal);
+        });
+        const callback = (event: ArloEvent) => {
+            if ('error' in event)
+                return undefined;
+            return event.properties?.presignedFullFrameSnapshotUrl || event.properties?.presignedLastImageUrl || undefined;
+        };
+        return this.triggerAndHandleEvents(resource, actions, trigger, callback, { timeout, signal });
     }
 
     async startStream(camera: ArloDevice, eager = true, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<CloudStream> {
+        const resource = `cameras/${camera.deviceId}`;
         const stream: CloudStream = { url: '' };
         const trigger = async () => {
-            const response = await this.api.post(`https://${API_URL}/hmsweb/users/devices/startStream`, {
+            const response = await this.request.post(`https://${this.arloApiUrl}/hmsweb/users/devices/startStream`, {
                 params: {
                     to: camera.parentId,
                     from: `${this.userId}_web`,
-                    resource: `cameras/${camera.deviceId}`,
+                    resource,
                     action: 'set',
                     responseUrl: '',
                     publishResponse: true,
@@ -839,36 +796,61 @@ export class ArloClient {
             await trigger();
             return stream;
         }
-        await this.subscribe();
-        return this.triggerAndWait(waitSignal => this.events.waitFor(`cameras/${camera.deviceId}`, [['is', 'activityState']], event => {
+        const callback = (event: ArloEvent) => {
             if ('error' in event)
                 return undefined;
             return event.properties?.activityState === 'userStreamActive' && stream.url ? stream : undefined;
-        }, { replay: false, timeout, signal: waitSignal }), trigger, signal);
+        };
+        return this.triggerAndHandleEvents(resource, [['is', 'activityState']], trigger, callback, { timeout, signal });
+    }
+
+    subscribeToPushToTalkEvents(camera: ArloDevice, type: 'answerSdp' | 'answerCandidate', callback: (data: any) => void): Unsubscribe {
+        return this.events.listen(`cameras/${camera.deviceId}`, ['pushToTalk'], event => {
+            if (event.properties?.type === type)
+                callback(event.properties.data);
+        }, { replay: false });
+    }
+
+    private async triggerAndHandleEvents<T>(resource: string, actions: ActionSpec[], trigger: () => Promise<unknown>, callback: (event: ArloEvent) => T | undefined,
+        { fromId, timeout, signal }: { fromId?: string, timeout?: number, signal?: AbortSignal } = {}): Promise<T> {
+        await this.subscribe();
+        const controller = new AbortController();
+        const onAbort = () => controller.abort();
+        signal?.addEventListener('abort', onAbort, { once: true });
+        const result = this.events.waitFor(resource, actions, callback, { fromId, replay: false, timeout, signal: controller.signal });
+        result.catch(() => { });
+        try {
+            await trigger();
+            return await result;
+        }
+        finally {
+            controller.abort();
+            signal?.removeEventListener('abort', onAbort);
+        }
     }
 
     async getSipInfoV2(camera: ArloDevice): Promise<any> {
-        const url = `https://${API_URL}/hmsweb/users/devices/sipInfo/v2?cameraId=${camera.deviceId}`
-            + `&modelId=${String(camera.modelId ?? '').toUpperCase()}&uniqueId=${camera.uniqueId}`;
-        return this.ignoreUnauthorized('get_sip_info_v2', undefined, () => this.api.get(url, {
+        const url = `https://${this.arloApiUrl}/hmsweb/users/devices/sipInfo/v2?cameraId=${camera.deviceId}`
+            + `&modelId=${camera.modelId.toUpperCase()}&uniqueId=${camera.uniqueId}`;
+        return this.ignoreUnauthorized('getSipInfoV2', undefined, () => this.request.get(url, {
             headers: { xcloudId: camera.xCloudId ?? '', cameraId: camera.deviceId },
         }));
     }
 
     async startPushToTalk(camera: ArloDevice): Promise<[sessionId: string, iceServers: any[]] | undefined> {
-        return this.ignoreUnauthorized('start_push_to_talk', undefined, async () => {
-            const response = await this.api.get(`https://${API_URL}/hmsweb/users/devices/${this.userId}_${camera.deviceId}/pushtotalk`);
+        return this.ignoreUnauthorized('startPushToTalk', undefined, async () => {
+            const response = await this.request.get(`https://${this.arloApiUrl}/hmsweb/users/devices/${this.userId}_${camera.deviceId}/pushtotalk`);
             return [response.uSessionId, response.data];
         });
     }
 
     async notifyPushToTalkOfferSdp(basestation: ArloDevice, camera: ArloDevice, sessionId: string, sdp: string): Promise<void> {
-        await this.ignoreUnauthorized('notify_push_to_talk_offer_sdp', undefined,
+        await this.ignoreUnauthorized('notifyPushToTalkOfferSdp', undefined,
             () => this.notifyPushToTalk(basestation, camera, sessionId, sdp, 'offerSdp', true));
     }
 
     async notifyPushToTalkOfferCandidate(basestation: ArloDevice, camera: ArloDevice, sessionId: string, candidate: string): Promise<void> {
-        await this.ignoreUnauthorized('notify_push_to_talk_offer_candidate', undefined,
+        await this.ignoreUnauthorized('notifyPushToTalkOfferCandidate', undefined,
             () => this.notifyPushToTalk(basestation, camera, sessionId, candidate, 'offerCandidate', false));
     }
 
@@ -882,7 +864,7 @@ export class ArloClient {
     }
 
     async setSiren(basestation: ArloDevice, camera: ArloDevice | undefined, on: boolean): Promise<void> {
-        await this.ignoreUnauthorized('set_siren', undefined, () => this.notify(basestation, {
+        await this.ignoreUnauthorized('setSiren', undefined, () => this.notify(basestation, {
             action: 'set',
             resource: camera ? `siren/${camera.deviceId}` : 'siren',
             publishResponse: true,
@@ -891,35 +873,71 @@ export class ArloClient {
     }
 
     async setSpotlight(basestation: ArloDevice, camera: ArloDevice, on: boolean): Promise<void> {
-        await this.setCameraProperties('set_spotlight', basestation, camera.deviceId, { spotlight: { enabled: on } });
+        await this.setChildDevice('setSpotlight', basestation, camera.deviceId, { spotlight: { enabled: on } });
     }
 
     async setFloodlight(basestation: ArloDevice, camera: ArloDevice, on: boolean): Promise<void> {
-        await this.setCameraProperties('set_floodlight', basestation, camera.deviceId, { floodlight: { on } });
+        await this.setChildDevice('setFloodlight', basestation, camera.deviceId, { floodlight: { on } });
     }
 
     async setNightlight(basestation: ArloDevice, on: boolean): Promise<void> {
-        await this.setCameraProperties('set_nightlight', basestation, basestation.deviceId, { nightLight: { enabled: on } });
+        await this.setChildDevice('setNightlight', basestation, basestation.deviceId, { nightLight: { enabled: on } });
     }
 
     async setChargeNotificationLed(basestation: ArloDevice, camera: ArloDevice, on: boolean): Promise<void> {
-        await this.setCameraProperties('set_charge_notification_led', basestation, camera.deviceId, { chargeNotificationLedEnable: on });
+        await this.setChildDevice('setChargeNotificationLed', basestation, camera.deviceId, { chargeNotificationLedEnable: on });
     }
 
     async setStatusLight(basestation: ArloDevice, camera: ArloDevice, on: boolean): Promise<void> {
-        await this.setCameraProperties('set_status_light', basestation, camera.deviceId, { idleLedEnable: on });
+        await this.setChildDevice('setStatusLight', basestation, camera.deviceId, { idleLedEnable: on });
     }
 
     async setBrightness(basestation: ArloDevice, camera: ArloDevice, brightness: number): Promise<void> {
-        await this.setCameraProperties('set_brightness', basestation, camera.deviceId, { brightness });
+        await this.setChildDevice('setBrightness', basestation, camera.deviceId, { brightness });
     }
 
-    private async setCameraProperties(name: string, basestation: ArloDevice, deviceId: string, properties: Record<string, unknown>): Promise<void> {
+    private async setChildDevice(name: string, basestation: ArloDevice, deviceId: string, properties: Record<string, unknown>): Promise<void> {
         await this.ignoreUnauthorized(name, undefined, () => this.notify(basestation, {
             action: 'set',
             resource: `cameras/${deviceId}`,
             publishResponse: true,
             properties,
         }));
+    }
+
+    async restartDevice(deviceId: string): Promise<void> {
+        await this.ignoreUnauthorized('restartDevice', undefined, () => this.request.post(`https://${this.arloApiUrl}/hmsweb/users/devices/restart`, {
+            params: { deviceId },
+            headers: this.deviceManagementHeaders(),
+        }));
+    }
+
+    async createCertificates(basestation: ArloDevice, publicKey: string): Promise<any> {
+        return this.ignoreUnauthorized('createCertificates', undefined, () => this.request.post(`https://${this.arloApiUrl}/hmsweb/users/devices/v2/security/cert/create`, {
+            params: { uuid: this.provider.arloDeviceId, publicKey, uniqueIds: [basestation.uniqueId] },
+            headers: this.deviceManagementHeaders(),
+        }));
+    }
+
+    private deviceManagementHeaders(): Record<string, string> {
+        return {
+            'Origin': `https://${this.arloApiUrl}`,
+            'Referer': `https://${this.arloApiUrl}/`,
+            'x-user-device-id': this.provider.arloDeviceId,
+            'x-forwarded-user': this.userId,
+        };
+    }
+
+    async getLibrary(device: ArloDevice, from: Date, to: Date, noCache = false): Promise<any[]> {
+        return this.ignoreUnauthorized('getLibrary', [], async () => {
+            const dateFrom = formatDate(new Date(from.getTime() - 86_400_000));
+            const dateTo = formatDate(new Date(to.getTime() + 86_400_000));
+            const getLibrary = () => this.request.post(`https://${this.arloApiUrl}/hmsweb/users/library`, { params: { dateFrom, dateTo } });
+            const results: any[] = noCache ? await getLibrary() : await this.libraryCache.get(`${dateFrom}|${dateTo}`, getLibrary);
+            return results.filter(result => {
+                const time = Number(result.name);
+                return result.deviceId === device.deviceId && time >= from.getTime() && time <= to.getTime();
+            });
+        });
     }
 }
