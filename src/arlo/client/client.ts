@@ -723,7 +723,9 @@ export class ArloClient {
     subscribeToActivityStateEvents(camera: ArloDevice, callback: (state: string) => void): Unsubscribe {
         const fromId = camera.deviceId === camera.parentId ? camera.deviceId : camera.parentId;
         return this.events.listen(`cameras/${camera.deviceId}`, [['is', 'activityState']], event => {
-            if (!('to' in event) && event.properties && 'activityState' in event.properties)
+            if ('to' in event && !String(event.to).startsWith('mediaserver:'))
+                return;
+            if (event.properties && 'activityState' in event.properties)
                 callback(event.properties.activityState);
         }, { fromId });
     }
