@@ -7,11 +7,11 @@ import { sleep } from './util';
 
 export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
-        provider: ArloProvider, readonly camera?: ArloDeviceBase) {
+        provider: ArloProvider, public camera?: ArloDeviceBase) {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
-    protected override async delayedInit(signal: AbortSignal): Promise<void> {
+    protected async delayedInit(signal: AbortSignal): Promise<void> {
         await super.delayedInit(signal);
         const on = this.reportedState(this.camera?.arloProperties ?? this.arloProperties ?? {});
         if (typeof on !== 'boolean')
@@ -26,11 +26,11 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
         }
     }
 
-    override getApplicableInterfaces(): string[] {
+    getApplicableInterfaces(): string[] {
         return [ScryptedInterface.OnOff];
     }
 
-    override getDeviceType(): string {
+    getDeviceType(): string {
         return ScryptedDeviceType.Light;
     }
 
@@ -48,7 +48,7 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
         this.on = on;
     }
 
-    protected abstract readonly lightName: string;
+    protected abstract lightName: string;
 
     protected abstract reportedState(properties: Record<string, any>): unknown;
 
@@ -56,31 +56,31 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
 }
 
 export class ArloSpotlight extends ArloBaseLight {
-    protected readonly lightName = 'spotlight';
+    protected lightName = 'spotlight';
 
     protected reportedState(properties: Record<string, any>): unknown {
         return properties.spotlight?.enabled;
     }
 
     protected async sendLightState(on: boolean): Promise<void> {
-        await this.provider.arlo!.setSpotlight(this.arloBasestation, this.arloDevice, on);
+        await this.provider.arlo.setSpotlight(this.arloBasestation, this.arloDevice, on);
     }
 }
 
 export class ArloFloodlight extends ArloBaseLight {
-    protected readonly lightName = 'floodlight';
+    protected lightName = 'floodlight';
 
     protected reportedState(properties: Record<string, any>): unknown {
         return properties.floodlight?.on;
     }
 
     protected async sendLightState(on: boolean): Promise<void> {
-        await this.provider.arlo!.setFloodlight(this.arloBasestation, this.arloDevice, on);
+        await this.provider.arlo.setFloodlight(this.arloBasestation, this.arloDevice, on);
     }
 }
 
 export class ArloNightlight extends ArloBaseLight {
-    protected readonly lightName = 'nightlight';
+    protected lightName = 'nightlight';
 
     protected reportedState(properties: Record<string, any>): unknown {
         return properties.nightLight?.enabled;
@@ -91,6 +91,6 @@ export class ArloNightlight extends ArloBaseLight {
     }
 
     protected async sendLightState(on: boolean): Promise<void> {
-        await this.provider.arlo!.setNightlight(this.arloDevice, on);
+        await this.provider.arlo.setNightlight(this.arloDevice, on);
     }
 }

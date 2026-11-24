@@ -79,11 +79,11 @@ function htmlToText(html: string): string {
 }
 
 export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, Settings, ArloClientHost {
-    readonly logger = new Logger('Arlo Provider', this.console);
-    readonly taskManager = new TaskManager(this.logger);
-    readonly errorManager: ErrorManager;
+    logger = new Logger('Arlo Provider', this.console);
+    taskManager = new TaskManager(this.logger);
+    errorManager: ErrorManager;
 
-    readonly storageSettings = new StorageSettings(this, {
+    storageSettings = new StorageSettings(this, {
         arlo_username: {
             group: 'General',
             title: 'Arlo Username',
@@ -203,10 +203,10 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     arloCameras = new Map<string, ArloDevice>();
     arloMvss = new Map<string, ModeVirtualSecuritySystemInfo>();
     allDeviceIds: string[] = [];
-    readonly scryptedDevices = new Map<string, ArloDeviceBase>();
+    scryptedDevices = new Map<string, ArloDeviceBase>();
     private building = true;
-    private readonly deviceWaiters = new Map<string, Deferred<ArloDeviceBase | undefined>>();
-    private readonly handedOut = new Map<string, ArloDeviceBase>();
+    private deviceWaiters = new Map<string, Deferred<ArloDeviceBase | undefined>>();
+    private handedOut = new Map<string, ArloDeviceBase>();
     setupInProgress = false;
     fullResetNeeded = false;
     private loginFailure?: 'temporary' | 'final';
@@ -215,11 +215,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     private eventStreamRestartAt = 0;
     private eventStreamBackoff = 0;
 
-    private readonly initializeLock = new AsyncLock();
-    private readonly restartLock = new AsyncLock();
-    private readonly periodicLock = new AsyncLock();
-    readonly deviceLock = new AsyncLock();
-    private readonly imapReady = new AsyncEvent();
+    private initializeLock = new AsyncLock();
+    private restartLock = new AsyncLock();
+    private periodicLock = new AsyncLock();
+    deviceLock = new AsyncLock();
+    private imapReady = new AsyncEvent();
     private activeLogin?: Deferred<boolean>;
     private lastLoginAttempt = 0;
     private manualMfaCode?: Deferred<string>;
@@ -316,13 +316,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     get arloPublicKey(): string {
         if (!this.storage.getItem('arlo_public_key'))
             this.generateArloKeypair();
-        return this.storage.getItem('arlo_public_key')!;
+        return this.storage.getItem('arlo_public_key');
     }
 
     get arloPrivateKey(): string {
         if (!this.storage.getItem('arlo_private_key'))
             this.generateArloKeypair();
-        return this.storage.getItem('arlo_private_key')!;
+        return this.storage.getItem('arlo_private_key');
     }
 
     generateArloKeypair(): void {
@@ -868,7 +868,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                     for (const device of previous)
                         await device.close().catch(e => this.logger.debug(`Error closing ${device.arloDevice.deviceName} before setup: ${e}`));
                 }, signal);
-                await this.arlo!.subscribe();
+                await this.arlo.subscribe();
                 await this.deviceLock.run(() => this.mdns(), signal);
                 await this.deviceHandler(false, signal);
             }, signal);
@@ -1001,7 +1001,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
         this.logger.info('Subscribing to Arlo event stream...');
         const pairs = [...this.arloCameras.values()]
-            .map(camera => [this.arloBasestations.get(camera.parentId)!, camera] as [ArloDevice, ArloDevice]);
+            .map(camera => [this.arloBasestations.get(camera.parentId), camera] as [ArloDevice, ArloDevice]);
         for (let attempt = 1; ; attempt++) {
             try {
                 await arlo.subscribe(pairs, { startHeartbeat: !this.setupInProgress });
@@ -1095,7 +1095,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 properties = deviceDict.properties ?? {};
                 if (!Object.keys(properties).length)
                     properties = parentId
-                        ? await this.getDeviceProperties(this.arloBasestations.get(parentId)!, deviceDict)
+                        ? await this.getDeviceProperties(this.arloBasestations.get(parentId), deviceDict)
                         : await this.getDeviceProperties(deviceDict);
             }
             device = this.getOrCreateDevice(nativeId, properties);
@@ -1171,7 +1171,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         const id = camera?.deviceId ?? basestation.deviceId;
         for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-                return await this.arlo!.triggerProperties(basestation, camera, { timeout: 5_000 });
+                return await this.arlo.triggerProperties(basestation, camera, { timeout: 5_000 });
             }
             catch (e) {
                 if (!(e instanceof TimeoutError)) {

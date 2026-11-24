@@ -15,14 +15,14 @@ import {
 const ANSWER_TIMEOUT = 10_000;
 
 export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel {
-    private readonly sessions = new Set<ArloIntercomSIPSignalingSession | ArloIntercomWebRTCSignalingSession>();
+    private sessions = new Set<ArloIntercomSIPSignalingSession | ArloIntercomWebRTCSignalingSession>();
 
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
-        provider: ArloProvider, readonly camera: ArloCamera) {
+        provider: ArloProvider, public camera: ArloCamera) {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
-    override async close(): Promise<void> {
+    async close(): Promise<void> {
         await this.endTalk();
         await super.close();
     }
@@ -34,11 +34,11 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             await session.close().catch(e => this.logger.debug(`Could not close a talk session: ${e}`));
     }
 
-    override getApplicableInterfaces(): string[] {
+    getApplicableInterfaces(): string[] {
         return [ScryptedInterface.RTCSignalingChannel];
     }
 
-    override getDeviceType(): string {
+    getDeviceType(): string {
         return ScryptedDeviceType.Speaker;
     }
 
@@ -73,7 +73,7 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             if (session instanceof ArloIntercomWebRTCSignalingSession) {
                 const offer = await this.createOffer(scryptedSession, setup, async candidate => {
                     try {
-                        await this.provider.arlo!.notifyPushToTalkOfferCandidate(this.arloBasestation, this.arloDevice, session.sessionId, candidate.candidate ?? '');
+                        await this.provider.arlo.notifyPushToTalkOfferCandidate(this.arloBasestation, this.arloDevice, session.sessionId, candidate.candidate ?? '');
                         this.logger.debug(`Sent ICE candidate: ${candidate.candidate}`);
                     }
                     catch (e) {
@@ -115,6 +115,6 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
     }
 
     speaker(): any {
-        return sdk.systemManager.getDeviceById(this.id!);
+        return sdk.systemManager.getDeviceById(this.id);
     }
 }

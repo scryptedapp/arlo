@@ -186,9 +186,9 @@ export class Request {
     private session: Session;
 
     private constructor(
-        private readonly impers: Impers,
-        private readonly errorManager: ErrorManager,
-        private readonly logger: Logger) {
+        private impers: Impers,
+        private errorManager: ErrorManager,
+        private logger: Logger) {
         this.session = this.newSession();
     }
 

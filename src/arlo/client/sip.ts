@@ -52,7 +52,7 @@ export class SIPMessage {
     statusCode?: number;
     reason?: string;
     uri?: string;
-    readonly headers = new Map<string, string[]>();
+    headers = new Map<string, string[]>();
     body = '';
 
     static parse(raw: string): SIPMessage {
@@ -114,7 +114,7 @@ export class SIPMessage {
 }
 
 export class AuthHeader {
-    constructor(readonly mode: string, readonly params: Record<string, string>) {
+    constructor(public mode: string, public params: Record<string, string>) {
     }
 
     static parse(header: string): AuthHeader {
@@ -177,12 +177,12 @@ const KEEPALIVE_INTERVAL = 30_000;
 export class SIPManager {
     onEnded?: (why: string) => void;
     talking = false;
-    private readonly randHost = randString(12) + '.invalid';
-    private readonly transactions = new AsyncLock();
+    private randHost = randString(12) + '.invalid';
+    private transactions = new AsyncLock();
     private closing = false;
     private ended = false;
     private ws?: WebSocket;
-    private readonly inbox: string[] = [];
+    private inbox: string[] = [];
     private inboxWaiter?: Deferred<void>;
     private inviteResponse?: SIPMessage;
     private callId = '';
@@ -192,7 +192,7 @@ export class SIPManager {
     private toTag?: string;
     private routeSet: string[] = [];
 
-    constructor(private readonly logger: Logger, private readonly config: SIPConfig, private readonly taskManager: TaskManager) {
+    constructor(private logger: Logger, private config: SIPConfig, private taskManager: TaskManager) {
     }
 
     private get callerUser(): string {
@@ -327,7 +327,7 @@ export class SIPManager {
     private async write(msg: SIPMessage): Promise<void> {
         const text = msg.build().replaceAll('WebRTC-UDP', '"WebRTC-UDP"');
         this.logger.debug(`Sending SIP message:\n${text}`);
-        await new Promise<void>((resolve, reject) => this.ws!.send(text, e => e ? reject(e) : resolve()));
+        await new Promise<void>((resolve, reject) => this.ws.send(text, e => e ? reject(e) : resolve()));
     }
 
     private async read(): Promise<SIPMessage> {
@@ -335,7 +335,7 @@ export class SIPManager {
             this.inboxWaiter = new Deferred();
             await withTimeout(this.inboxWaiter.promise, READ_TIMEOUT, 'Timed out waiting for a SIP response');
         }
-        const raw = this.inbox.shift()!;
+        const raw = this.inbox.shift();
         this.logger.debug(`Got SIP response:\n${raw}`);
         return SIPMessage.parse(raw);
     }
@@ -372,7 +372,7 @@ export class SIPManager {
                 throw new Error(`Did not receive 200 OK, got ${response.statusCode}`);
             const to = response.getHeader('To');
             if (to?.includes('tag='))
-                this.toTag = to.split('tag=').pop()!.split(';')[0];
+                this.toTag = to.split('tag=').pop().split(';')[0];
             this.routeSet = response.getHeaders('Record-Route').flatMap(splitHeaderList).reverse();
             await this.write(this.buildAck());
             this.inviteResponse = response;

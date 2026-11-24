@@ -15,16 +15,16 @@ export interface ManifestOptions {
 }
 
 export class ArloDeviceBase extends ScryptedDeviceBase {
-    readonly logger: Logger;
+    logger: Logger;
     arloCapabilities: any = {};
     arloSmartFeatures: any = {};
     stopSubscriptions = false;
-    private readonly subscriptions = new Map<string, Unsubscribe | 'pending'>();
-    private readonly ready = new AsyncEvent();
+    private subscriptions = new Map<string, Unsubscribe | 'pending'>();
+    private ready = new AsyncEvent();
     private closed = false;
 
-    constructor(nativeId: string, readonly arloDevice: ArloDevice, readonly arloBasestation: ArloDevice,
-        public arloProperties: Record<string, any>, readonly provider: ArloProvider, autoInit = true) {
+    constructor(nativeId: string, public arloDevice: ArloDevice, public arloBasestation: ArloDevice,
+        public arloProperties: Record<string, any>, public provider: ArloProvider, autoInit = true) {
         super(nativeId);
         this.logger = new Logger(arloDevice.deviceName, this.console);
         if (autoInit)
@@ -77,11 +77,11 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
     }
 
     private async loadDeviceCapabilitiesAndSmartFeatures(): Promise<void> {
-        if (this.nativeId!.endsWith('mvss'))
+        if (this.nativeId.endsWith('mvss'))
             return;
         try {
-            this.arloCapabilities = await this.provider.arlo!.getDeviceCapabilities(this.arloDevice);
-            this.arloSmartFeatures = await this.provider.arlo!.getDeviceSmartFeatures(this.arloDevice);
+            this.arloCapabilities = await this.provider.arlo.getDeviceCapabilities(this.arloDevice);
+            this.arloSmartFeatures = await this.provider.arlo.getDeviceSmartFeatures(this.arloDevice);
         }
         catch (e) {
             this.logger.warn(`Could not load device capabilities and smart features: ${e}`);
@@ -114,7 +114,7 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
         }
         const modelId = this.arloDevice.modelId ?? '';
         const hwVersion = String(this.arloProperties?.hwVersion ?? '').replaceAll(modelId, '').replaceAll('er', '').replaceAll('r', '');
-        const info = this.nativeId!.endsWith('mvss') ? infoOverrides : {
+        const info = this.nativeId.endsWith('mvss') ? infoOverrides : {
             model: `${modelId} ${hwVersion}`.trim(),
             manufacturer: 'Arlo',
             firmware: this.arloDevice.firmwareVersion,

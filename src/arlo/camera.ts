@@ -82,13 +82,13 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private lastSnapshotUrl = '';
     private intercomActive = false;
     private skipPrebufferOnFirstAutoSnapshot = true;
-    private readonly snapshotLock = new AsyncLock();
-    private readonly rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
+    private snapshotLock = new AsyncLock();
+    private rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
     streamSipInfo?: StreamSipInfo;
     private ownStream?: { kind: 'rtsp', id: string, confirmed: boolean, startedAt: number } | { kind: 'webrtc' };
-    private readonly connectionLock = new AsyncLock();
+    private connectionLock = new AsyncLock();
 
-    readonly storageSettings = new StorageSettings(this, {
+    storageSettings = new StorageSettings(this, {
         wired_to_power: {
             group: 'General',
             title: 'Plugged In to External Power',
@@ -156,7 +156,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
-    override async close(): Promise<void> {
+    async close(): Promise<void> {
         for (const session of this.rtcSessions)
             await session.close().catch(() => { });
         this.rtcSessions.clear();
@@ -168,7 +168,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await super.close();
     }
 
-    protected override async delayedInit(signal: AbortSignal): Promise<void> {
+    protected async delayedInit(signal: AbortSignal): Promise<void> {
         await super.delayedInit(signal);
         this.startEventSubscriptions();
         for (let attempt = 0; attempt < 100; attempt++) {
@@ -198,7 +198,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     }
 
     private startEventSubscriptions(): void {
-        const arlo = () => this.provider.arlo!;
+        const arlo = () => this.provider.arlo;
         this.createOrRegisterEventSubscription('error_subscription', () => arlo().subscribeToErrorEvents(this.arloDevice,
             (code, message) => this.logger.error(`Arlo returned error code ${code} with message: ${message}`)));
         this.createOrRegisterEventSubscription('device_state_subscription', () => arlo().subscribeToDeviceStateEvents(this.arloDevice,
@@ -277,7 +277,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             }
             if (!startupDelayDone) {
                 startupDelayDone = true;
-                const spread = [...this.nativeId!].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 90;
+                const spread = [...this.nativeId].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 90;
                 await sleep((30 + spread) * 1_000, signal);
             }
             if (!this.isTimeForNewSnapshot()) {
@@ -302,7 +302,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.startAutoSnapshot();
     }
 
-    override getApplicableInterfaces(): string[] {
+    getApplicableInterfaces(): string[] {
         const interfaces = new Set<string>([
             ScryptedInterface.VideoCamera,
             ScryptedInterface.Camera,
@@ -330,14 +330,14 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return [...interfaces];
     }
 
-    override getDeviceType(): string {
+    getDeviceType(): string {
         return ScryptedDeviceType.Camera;
     }
 
-    override getBuiltinChildDeviceManifests(): Device[] {
+    getBuiltinChildDeviceManifests(): Device[] {
         const manifests: Device[] = [];
         if (this.hasSpotlight || this.hasFloodlight || this.hasNightlight) {
-            const light = this.getLight()!;
+            const light = this.getLight();
             const kind = this.hasSpotlight ? 'Spotlight' : this.hasFloodlight ? 'Floodlight' : 'Nightlight';
             manifests.push(light.getDeviceManifest({
                 name: `${this.arloDevice.deviceName} ${kind}`,
@@ -370,7 +370,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return manifests;
     }
 
-    override async refreshDevice(): Promise<void> {
+    async refreshDevice(): Promise<void> {
         try {
             this.arloProperties = await this.provider.getDeviceProperties(this.arloBasestation, this.arloDevice);
             for (const child of [this.light, this.svss, this.svss?.siren, this.intercom])
@@ -522,7 +522,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         else if (key === 'restart_device') {
             if (this.activityState === 'idle') {
                 this.logger.debug('Restarting Device');
-                await this.provider.arlo!.restartDevice(this.arloDevice.deviceId);
+                await this.provider.arlo.restartDevice(this.arloDevice.deviceId);
             }
             else {
                 this.logger.warn('Device is not idle, cannot restart at this time.');
@@ -672,7 +672,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     private async getBufferFromPrebuffer(): Promise<Buffer> {
         this.logger.debug('Attempting to get Scrypted Device and Prebuffer ID');
-        const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id!) as any;
+        const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id) as any;
         if (!device)
             throw new Error('Scrypted Device not found');
         const options = await device.getVideoStreamOptions();
@@ -694,7 +694,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.lastSnapshotUrl = await this.connectionLock.run(async () => {
                 if (this.arloConnection)
                     throw new SourceUnavailable(`the camera is busy (${this.busyReason})`);
-                return this.withRequestTimeout(signal => this.provider.arlo!.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT, signal }));
+                return this.withRequestTimeout(signal => this.provider.arlo.triggerFullFrameSnapshot(this.arloDevice, { timeout: TIMEOUT, signal }));
             });
         }
         catch (e) {
@@ -803,9 +803,9 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
         this.logger.info('Requesting rtsp stream');
         if (!refresh)
-            this.ownStream = { kind: 'rtsp', id: option.id!, confirmed: false, startedAt: Date.now() };
+            this.ownStream = { kind: 'rtsp', id: option.id, confirmed: false, startedAt: Date.now() };
         try {
-            const stream = await this.withRequestTimeout(signal => this.provider.arlo!.startStream(this.arloDevice, !this.disableEagerStreams, { timeout: TIMEOUT, signal }));
+            const stream = await this.withRequestTimeout(signal => this.provider.arlo.startStream(this.arloDevice, !this.disableEagerStreams, { timeout: TIMEOUT, signal }));
             this.streamSipInfo = stream.sipInfo;
             this.logger.debug(`Got rtsp stream URL${stream.sipInfo ? ', with a SIP session for the intercom' : ''}`);
             return stream.url;
@@ -855,7 +855,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     private async findRecording(id: string, noCache = false): Promise<any> {
         const time = Number(id);
-        const library = await this.provider.arlo!.getLibrary(this.arloDevice, new Date(time - 10_000), new Date(time + 10_000), noCache);
+        const library = await this.provider.arlo.getLibrary(this.arloDevice, new Date(time - 10_000), new Date(time + 10_000), noCache);
         return library.find(recording => recording.name === id);
     }
 
@@ -871,7 +871,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.logger.info(`Getting video clips ${JSON.stringify(options)}`);
         const end = options?.endTime ?? Date.now();
         const start = options?.startTime ?? end - DAY;
-        const library = await this.provider.arlo!.getLibrary(this.arloDevice, new Date(start), new Date(end));
+        const library = await this.provider.arlo.getLibrary(this.arloDevice, new Date(start), new Date(end));
         const clips: VideoClip[] = library.map(recording => ({
             duration: recording.mediaDurationSecond * 1000,
             id: recording.name,
@@ -953,7 +953,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         const level = Math.trunc(brightness);
         if (!(level in SCRYPTED_TO_ARLO_BRIGHTNESS))
             throw new Error('Valid brightness levels are 0, 25, 50, 75, 100');
-        await this.provider.arlo!.setBrightness(this.arloBasestation, this.arloDevice, SCRYPTED_TO_ARLO_BRIGHTNESS[level]);
+        await this.provider.arlo.setBrightness(this.arloBasestation, this.arloDevice, SCRYPTED_TO_ARLO_BRIGHTNESS[level]);
     }
 
     async startRTCSignalingSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
@@ -964,7 +964,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     private async startViewerSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
         this.logger.debug('Serving a WebRTC viewer from Rebroadcast.');
-        const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id!) as any;
+        const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id) as any;
         if (!device)
             throw new Error('Scrypted Device not found');
         const media = await device.getVideoStream({ destination: 'local' });
@@ -1035,7 +1035,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     }
 
     private async setLed(on: boolean): Promise<void> {
-        const arlo = this.provider.arlo!;
+        const arlo = this.provider.arlo;
         const statusLight = this.hasStatusLight;
         try {
             if (statusLight)

@@ -15,9 +15,9 @@ export interface IceServer {
 }
 
 export abstract class BaseArloSignalingSession {
-    readonly logger: Logger;
-    readonly provider: ArloProvider;
-    readonly arloDevice: ArloDevice;
+    logger: Logger;
+    provider: ArloProvider;
+    arloDevice: ArloDevice;
     scryptedSession?: RTCSignalingSession;
     iceServers: IceServer[] = [];
 
@@ -90,7 +90,7 @@ export abstract class BaseArloSignalingSession {
 }
 
 export class BaseArloSessionControl implements RTCSessionControl {
-    constructor(readonly arloSession: BaseArloSignalingSession, private readonly onEnd?: () => void) {
+    constructor(public arloSession: BaseArloSignalingSession, private onEnd?: () => void) {
     }
 
     async getRefreshAt(): Promise<void> {
@@ -123,7 +123,7 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
 
     async delayedInit(): Promise<void> {
         this.logger.debug('Fetching SIP info for camera WebRTC session.');
-        this.sipInfo = await this.provider.arlo!.getSipInfoV2(this.arloDevice);
+        this.sipInfo = await this.provider.arlo.getSipInfoV2(this.arloDevice);
         if (!this.sipInfo?.sipCallInfo)
             throw new Error('Arlo did not return SIP details for this camera, so its WebRTC stream cannot start.');
         this.iceServers = this.formatIceServers(this.sipInfo.iceServers.data);
@@ -149,7 +149,7 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
 
     async createLocalDescription(): Promise<{ sdp: string, type: 'answer' }> {
         this.logger.debug('Creating local description (answer) for camera WebRTC session.');
-        const answer = this.cleanSdp(this.patchSdp(await this.arloSip!.start()));
+        const answer = this.cleanSdp(this.patchSdp(await this.arloSip.start()));
         return { sdp: answer, type: 'answer' };
     }
 
@@ -164,7 +164,7 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
 }
 
 export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
-    override async setPlayback(options: { audio: boolean, video: boolean }): Promise<void> {
+    async setPlayback(options: { audio: boolean, video: boolean }): Promise<void> {
         const sip = (this.arloSession as ArloCameraWebRTCSignalingSession).arloSip;
         if (!sip)
             return;
@@ -186,11 +186,11 @@ export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
 }
 
 export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession {
-    private readonly arloBasestation: ArloDevice;
+    private arloBasestation: ArloDevice;
     sessionId = '';
     answer?: { sdp: string, type: 'answer' };
     closed = false;
-    private readonly subscriptions: Unsubscribe[] = [];
+    private subscriptions: Unsubscribe[] = [];
 
     constructor(intercom: ArloIntercom) {
         super(intercom);
@@ -199,15 +199,15 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
 
     async delayedInit(): Promise<void> {
         this.logger.debug('Starting push-to-talk session for intercom WebRTC.');
-        const pushToTalk = await this.provider.arlo!.startPushToTalk(this.arloDevice);
+        const pushToTalk = await this.provider.arlo.startPushToTalk(this.arloDevice);
         if (!pushToTalk)
             throw new Error('Arlo did not start a push-to-talk session.');
         [this.sessionId] = pushToTalk;
         this.iceServers = this.formatIceServers(pushToTalk[1]);
-        this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerSdp', sdp => {
+        this.subscriptions.push(this.provider.arlo.subscribeToPushToTalkEvents(this.arloDevice, 'answerSdp', sdp => {
             this.answer = { sdp: this.patchSdp(sdp), type: 'answer' };
         }));
-        this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerCandidate', line => {
+        this.subscriptions.push(this.provider.arlo.subscribeToPushToTalkEvents(this.arloDevice, 'answerCandidate', line => {
             const candidate = String(line ?? '').trim().replace(/^a=/, '');
             if (!candidate)
                 return;
@@ -218,7 +218,7 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
     }
 
     async setRemoteDescription(offer: { sdp?: string }): Promise<void> {
-        await this.provider.arlo!.notifyPushToTalkOfferSdp(this.arloBasestation, this.arloDevice, this.sessionId, offer.sdp ?? '');
+        await this.provider.arlo.notifyPushToTalkOfferSdp(this.arloBasestation, this.arloDevice, this.sessionId, offer.sdp ?? '');
         this.logger.debug('Remote description set and push-to-talk offer notified.');
     }
 
@@ -237,7 +237,7 @@ export class ArloIntercomWebRTCSessionControl extends BaseArloSessionControl {
 export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
     private sipInfo: any;
-    private readonly camera: ArloCamera;
+    private camera: ArloCamera;
 
     constructor(intercom: ArloIntercom) {
         super(intercom);
@@ -271,7 +271,7 @@ export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
 
     async createLocalDescription(): Promise<{ sdp: string, type: 'answer' }> {
         this.logger.debug('Creating local description (answer) for intercom SIP session.');
-        const answer = this.cleanSdp(this.patchSdp(await this.arloSip!.start()));
+        const answer = this.cleanSdp(this.patchSdp(await this.arloSip.start()));
         return { sdp: answer, type: 'answer' };
     }
 

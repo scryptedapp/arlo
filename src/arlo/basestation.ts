@@ -10,7 +10,7 @@ import { sleep } from './util';
 import { ArloSirenVirtualSecuritySystem } from './vss';
 
 function pemCertificate(body: string): string {
-    return `-----BEGIN CERTIFICATE-----\n${body.match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----`;
+    return `-----BEGIN CERTIFICATE-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
 }
 
 export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, Settings {
@@ -18,7 +18,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
     private rebootTime?: number = Date.now();
     svss?: ArloSirenVirtualSecuritySystem;
 
-    readonly storageSettings = new StorageSettings(this, {
+    storageSettings = new StorageSettings(this, {
         ip: {
             group: 'General',
             title: 'IP Address',
@@ -61,7 +61,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
     constructor(nativeId: string, arloBasestation: ArloDevice, arloProperties: Record<string, any>, provider: ArloProvider) {
         super(nativeId, arloBasestation, arloBasestation, arloProperties, provider);
         this.createOrRegisterEventSubscription('device_state_subscription', () =>
-            this.provider.arlo!.subscribeToDeviceStateEvents(this.arloDevice, state => {
+            this.provider.arlo.subscribeToDeviceStateEvents(this.arloDevice, state => {
                 if (state === 'available' && this.rebootTime && Date.now() - this.rebootTime < 30_000)
                     return;
                 this.deviceState = state;
@@ -70,7 +70,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
             }));
     }
 
-    protected override async delayedInit(signal: AbortSignal): Promise<void> {
+    protected async delayedInit(signal: AbortSignal): Promise<void> {
         await super.delayedInit(signal);
         for (let attempt = 0; attempt < 100; attempt++) {
             if (this.stopSubscriptions)
@@ -147,7 +147,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
 
     private certificateMatchesKey(): boolean {
         try {
-            return new crypto.X509Certificate(this.peerCert!).checkPrivateKey(crypto.createPrivateKey(this.provider.arloPrivateKey));
+            return new crypto.X509Certificate(this.peerCert).checkPrivateKey(crypto.createPrivateKey(this.provider.arloPrivateKey));
         }
         catch (e) {
             this.logger.warn(`Error checking peer certificate and private key match: ${e}`);
@@ -157,7 +157,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
 
     private async createCertificates(): Promise<void> {
         const publicKey = this.provider.arloPublicKey.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s+/g, '');
-        const certificates = await this.provider.arlo!.createCertificates(this.arloBasestation, publicKey);
+        const certificates = await this.provider.arlo.createCertificates(this.arloBasestation, publicKey);
         if (!certificates) {
             this.logger.error('Failed to create Certificates with Arlo');
             return;
@@ -192,15 +192,15 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         }
     }
 
-    override getApplicableInterfaces(): string[] {
+    getApplicableInterfaces(): string[] {
         return [ScryptedInterface.DeviceProvider, ScryptedInterface.Settings];
     }
 
-    override getDeviceType(): string {
+    getDeviceType(): string {
         return ScryptedDeviceType.DeviceProvider;
     }
 
-    override getBuiltinChildDeviceManifests(): Device[] {
+    getBuiltinChildDeviceManifests(): Device[] {
         if (!this.hasSiren)
             return [];
         const svss = this.getSvss();
@@ -216,7 +216,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         ];
     }
 
-    override async refreshDevice(): Promise<void> {
+    async refreshDevice(): Promise<void> {
         try {
             this.arloProperties = await this.provider.getDeviceProperties(this.arloDevice);
             if (this.hasSiren) {
@@ -236,7 +236,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
     }
 
     async getDevice(nativeId: string): Promise<any> {
-        if (!nativeId.startsWith(this.nativeId!))
+        if (!nativeId.startsWith(this.nativeId))
             return this.provider.getDevice(nativeId);
         return nativeId.endsWith('svss') ? this.getSvss() : undefined;
     }
@@ -249,7 +249,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         return this.svss;
     }
 
-    override async close(): Promise<void> {
+    async close(): Promise<void> {
         await this.svss?.close();
         await super.close();
     }
@@ -271,7 +271,7 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         else if (key === 'restart_device') {
             this.logger.debug('Restarting Device');
             this.rebootTime = Date.now();
-            await this.provider.arlo!.restartDevice(this.arloDevice.deviceId);
+            await this.provider.arlo.restartDevice(this.arloDevice.deviceId);
         }
         else {
             await this.storageSettings.putSetting(key, value);

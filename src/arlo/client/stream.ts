@@ -44,15 +44,15 @@ interface Listener {
 }
 
 export interface DispatcherHost {
-    readonly setupInProgress: boolean;
+    setupInProgress: boolean;
 }
 
 export class EventDispatcher {
-    private readonly listeners = new Set<Listener>();
+    private listeners = new Set<Listener>();
     private recent: { event: ArloEvent, expires: number }[] = [];
     private held: ArloEvent[] = [];
 
-    constructor(private readonly host: DispatcherHost, private readonly logger: Logger) {
+    constructor(private host: DispatcherHost, private logger: Logger) {
     }
 
     listen(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => void,
@@ -122,7 +122,7 @@ export class EventDispatcher {
 }
 
 export interface StreamHost {
-    readonly logger: Logger;
+    logger: Logger;
     waitForAuthReady(reason: string): Promise<void>;
     requestRestart(scope: 'event_stream'): void;
 }
@@ -134,7 +134,7 @@ export abstract class Stream {
     private connectWait?: Deferred<void>;
     private cancelRefresh?: () => void;
 
-    constructor(protected readonly host: StreamHost, protected readonly dispatcher: EventDispatcher, readonly name: string) {
+    constructor(protected host: StreamHost, protected dispatcher: EventDispatcher, public name: string) {
     }
 
     protected get logger(): Logger {
@@ -172,7 +172,7 @@ export abstract class Stream {
             return;
         if (!this.connectWait)
             this.beginConnectWait();
-        await withTimeout(this.connectWait!.promise, timeout, `${this.name} did not connect within ${timeout / 1000} seconds`);
+        await withTimeout(this.connectWait.promise, timeout, `${this.name} did not connect within ${timeout / 1000} seconds`);
     }
 
     setRefreshInterval(minutes: number): void {

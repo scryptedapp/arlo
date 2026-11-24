@@ -17,7 +17,7 @@ export function extraDebug(): boolean {
 }
 
 export class Logger {
-    constructor(private readonly name: string, private readonly console: Console) {
+    constructor(private name: string, private console: Console) {
     }
 
     debug(message: string, ...details: unknown[]): void {

@@ -60,21 +60,21 @@ export interface CloudStream {
 }
 
 export interface ArloClientHost extends DispatcherHost {
-    readonly console: Console;
-    readonly storage: Storage;
-    readonly taskManager: TaskManager;
-    readonly errorManager: ErrorManager;
-    readonly arloUsername: string;
-    readonly arloPassword: string;
-    readonly arloDeviceId: string;
-    readonly mvssEnabled: boolean;
+    console: Console;
+    storage: Storage;
+    taskManager: TaskManager;
+    errorManager: ErrorManager;
+    arloUsername: string;
+    arloPassword: string;
+    arloDeviceId: string;
+    mvssEnabled: boolean;
     requestRestart(scope: 'event_stream'): void;
 }
 
 class TtlCache<T> {
-    private readonly entries = new Map<string, { time: number, value: Promise<T> }>();
+    private entries = new Map<string, { time: number, value: Promise<T> }>();
 
-    constructor(private readonly ttl: number) {
+    constructor(private ttl: number) {
     }
 
     get(key: string, load: () => Promise<T>): Promise<T> {
@@ -109,8 +109,8 @@ function formatDate(date: Date): string {
 }
 
 export class ArloClient {
-    readonly logger: Logger;
-    readonly events: EventDispatcher;
+    logger: Logger;
+    events: EventDispatcher;
     private request?: Request;
     private cookies?: string;
     private token?: string;
@@ -124,17 +124,17 @@ export class ArloClient {
     eventStream?: MQTTEventStream;
     private heartbeatDevices: ArloDevice[] = [];
     private heartbeatGeneration = 0;
-    private readonly devicesCache = new TtlCache<ArloDevice[]>(60_000);
-    private readonly capabilitiesCache = new TtlCache<any>(60_000);
-    private readonly smartFeaturesCache = new TtlCache<any>(60_000);
-    private readonly libraryCache = new TtlCache<any[]>(10_000);
+    private devicesCache = new TtlCache<ArloDevice[]>(60_000);
+    private capabilitiesCache = new TtlCache<any>(60_000);
+    private smartFeaturesCache = new TtlCache<any>(60_000);
+    private libraryCache = new TtlCache<any[]>(10_000);
 
     mfaState?: Deferred<string>;
     browserAuthenticated?: Deferred<boolean>;
     mfaLoop?: Deferred<void>;
     mfaCode?: Deferred<string>;
 
-    constructor(private readonly host: ArloClientHost) {
+    constructor(private host: ArloClientHost) {
         this.logger = new Logger('Arlo Client', host.console);
         this.events = new EventDispatcher(host, this.logger);
         this.userId = host.storage.getItem('arlo_user_id') ?? '';

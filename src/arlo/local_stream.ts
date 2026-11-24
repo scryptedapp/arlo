@@ -18,7 +18,7 @@ function normalizeHeader(name: string): string {
 
 class RTSPMessage {
     firstLine = '';
-    readonly headers: [string, string][] = [];
+    headers: [string, string][] = [];
     body: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
     constructor(raw: Buffer) {
@@ -61,9 +61,9 @@ export class ArloLocalStreamProxy {
     private server?: net.Server;
     private port = 0;
     private nonce = 0;
-    private readonly logger: Logger;
+    private logger: Logger;
 
-    constructor(private readonly privateKey: string, private readonly basestation: ArloBasestation, camera: ArloCamera) {
+    constructor(private privateKey: string, private basestation: ArloBasestation, camera: ArloCamera) {
         this.logger = camera.logger;
     }
 
@@ -161,10 +161,10 @@ export class ArloLocalStreamProxy {
         }
         const local = `localhost:${this.port}`;
         if (message.firstLine.includes('rtsp://'))
-            message.firstLine = message.firstLine.replace(local, this.basestation.hostName!);
+            message.firstLine = message.firstLine.replace(local, this.basestation.hostName);
         for (const [key, value] of [...message.headers]) {
             if (value.includes('rtsp://'))
-                message.setHeader(key, value.replace(local, this.basestation.hostName!));
+                message.setHeader(key, value.replace(local, this.basestation.hostName));
         }
     }
 
@@ -179,10 +179,10 @@ export class ArloLocalStreamProxy {
         }
         const local = `localhost:${this.port}`;
         if (message.firstLine.includes('rtsp://'))
-            message.firstLine = message.firstLine.replace(this.basestation.hostName!, local);
+            message.firstLine = message.firstLine.replace(this.basestation.hostName, local);
         for (const [key, value] of [...message.headers]) {
             if (value.includes('rtsp://'))
-                message.setHeader(key, value.replace(this.basestation.hostName!, local));
+                message.setHeader(key, value.replace(this.basestation.hostName, local));
         }
     }
 }

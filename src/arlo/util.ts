@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Logger } from './logging';
 
 export class CancelledError extends Error {
-    override name = 'CancelledError';
+    name = 'CancelledError';
 
     constructor(message = 'Cancelled') {
         super(message);
@@ -11,7 +11,7 @@ export class CancelledError extends Error {
 }
 
 export class TimeoutError extends Error {
-    override name = 'TimeoutError';
+    name = 'TimeoutError';
 }
 
 const MAX_TIMER = 2 ** 31 - 1;
@@ -66,9 +66,9 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message?: string
 }
 
 export class Deferred<T> {
-    readonly promise: Promise<T>;
+    promise: Promise<T>;
     done = false;
-    private settle!: { resolve: (value: T) => void, reject: (error: unknown) => void };
+    private settle: { resolve: (value: T) => void, reject: (error: unknown) => void };
 
     constructor() {
         this.promise = new Promise<T>((resolve, reject) => this.settle = { resolve, reject });
@@ -129,7 +129,7 @@ export class AsyncLock {
     async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
         this.holders++;
         const previous = this.tail;
-        let release!: () => void;
+        let release: () => void;
         this.tail = new Promise(resolve => release = resolve);
         let acquired = false;
         try {
@@ -153,11 +153,11 @@ export interface TaskOptions {
 }
 
 export class Task<T = unknown> {
-    readonly controller = new AbortController();
-    promise!: Promise<T>;
+    controller = new AbortController();
+    promise: Promise<T>;
     done = false;
 
-    constructor(readonly tag: string, readonly owner: object) {
+    constructor(public tag: string, public owner: object) {
     }
 
     get signal(): AbortSignal {
@@ -168,9 +168,9 @@ export class Task<T = unknown> {
 const currentTask = new AsyncLocalStorage<Task>();
 
 export class TaskManager {
-    private readonly tasks = new Set<Task>();
+    private tasks = new Set<Task>();
 
-    constructor(private readonly logger: Logger) {
+    constructor(private logger: Logger) {
     }
 
     createTask<T>(fn: (signal: AbortSignal) => Promise<T>, { tag, owner }: TaskOptions): Task<T> {
@@ -256,8 +256,8 @@ export class BadRequestError extends RequestError { }
 const MINUTE = 60_000;
 
 export class RateLimitPause {
-    static readonly delay = 65 * MINUTE;
-    static readonly noticeInterval = 5 * MINUTE;
+    static delay = 65 * MINUTE;
+    static noticeInterval = 5 * MINUTE;
 
     private nextNotice = 0;
 
@@ -313,9 +313,9 @@ const AUTH_FLOW_MARKERS = [
 const AUTH_WAIT = 75_000;
 
 export interface ErrorManagerHost {
-    readonly storage: Storage;
-    readonly logger: Logger;
-    readonly taskManager: TaskManager;
+    storage: Storage;
+    logger: Logger;
+    taskManager: TaskManager;
 }
 
 export interface ErrorManagerOptions {
@@ -328,8 +328,8 @@ export interface RequestOptions {
 }
 
 export class ErrorManager {
-    private readonly rateLimit = new RateLimitPause();
-    private readonly authReady = new AsyncEvent(true);
+    private rateLimit = new RateLimitPause();
+    private authReady = new AsyncEvent(true);
     private authRecovery?: Task;
     private authDepth = 0;
     private authReason = '';
@@ -337,7 +337,7 @@ export class ErrorManager {
     private authSucceeded = false;
     private lastAuthSuccessAt = 0;
 
-    constructor(private readonly host: ErrorManagerHost, private readonly options: ErrorManagerOptions) {
+    constructor(private host: ErrorManagerHost, private options: ErrorManagerOptions) {
     }
 
     private get logger(): Logger {

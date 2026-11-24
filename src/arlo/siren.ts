@@ -8,15 +8,15 @@ import type { ArloSirenVirtualSecuritySystem } from './vss';
 
 export class ArloSiren extends ArloDeviceBase implements OnOff {
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
-        provider: ArloProvider, readonly svss: ArloSirenVirtualSecuritySystem) {
+        provider: ArloProvider, public svss: ArloSirenVirtualSecuritySystem) {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
-    override getApplicableInterfaces(): string[] {
+    getApplicableInterfaces(): string[] {
         return [ScryptedInterface.OnOff];
     }
 
-    override getDeviceType(): string {
+    getDeviceType(): string {
         return ScryptedDeviceType.Siren;
     }
 
@@ -35,7 +35,7 @@ export class ArloSiren extends ArloDeviceBase implements OnOff {
                 this.svss.securitySystemState = { ...state, triggered: false };
                 return;
             }
-            await this.provider.arlo!.setSiren(this.arloBasestation, this.sirenCamera(), true);
+            await this.provider.arlo.setSiren(this.arloBasestation, this.sirenCamera(), true);
             this.on = true;
             this.svss.securitySystemState = { ...state, triggered: true };
         }
@@ -47,9 +47,9 @@ export class ArloSiren extends ArloDeviceBase implements OnOff {
     async turnOff(): Promise<void> {
         try {
             this.logger.info('Turning off');
-            await this.provider.arlo!.setSiren(this.arloBasestation, this.sirenCamera(), false);
+            await this.provider.arlo.setSiren(this.arloBasestation, this.sirenCamera(), false);
             this.on = false;
-            this.svss.securitySystemState = { ...this.svss.securitySystemState!, triggered: false };
+            this.svss.securitySystemState = { ...this.svss.securitySystemState, triggered: false };
         }
         catch (e) {
             this.logger.error(`Error turning off siren: ${e}`);

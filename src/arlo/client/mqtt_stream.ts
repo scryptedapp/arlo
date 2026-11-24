@@ -8,12 +8,12 @@ const CONNECT_TIMEOUT = 10_000;
 const MAX_ATTEMPTS = 4;
 
 export interface MQTTClientInfo {
-    readonly userId: string;
-    readonly authorization: string;
-    readonly mqttUrl: string;
-    readonly mqttPort: number;
-    readonly mqttTransport: 'tcp' | 'websockets';
-    readonly mvssEnabled: boolean;
+    userId: string;
+    authorization: string;
+    mqttUrl: string;
+    mqttPort: number;
+    mqttTransport: 'tcp' | 'websockets';
+    mvssEnabled: boolean;
 }
 
 export interface MQTTStreamHost extends StreamHost {
@@ -22,9 +22,9 @@ export interface MQTTStreamHost extends StreamHost {
 
 export class MQTTEventStream extends Stream {
     private client?: MqttClient;
-    private readonly topics = new Set<string>();
+    private topics = new Set<string>();
 
-    constructor(host: MQTTStreamHost, dispatcher: EventDispatcher, private readonly info: MQTTClientInfo) {
+    constructor(host: MQTTStreamHost, dispatcher: EventDispatcher, private info: MQTTClientInfo) {
         super(host, dispatcher, 'MQTT Event Stream');
     }
 
