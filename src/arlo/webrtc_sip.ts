@@ -72,8 +72,17 @@ export abstract class BaseArloSignalingSession {
                 const c = section.findIndex(line => line.startsWith('c='));
                 section.splice(c >= 0 ? c + 1 : 1, 0, `a=mid:${index}`);
             }
-            if (section[0].split(' ')[1] !== '0')
-                return section;
+            if (section[0].split(' ')[1] !== '0') {
+                // The media line lists the formats an answer accepts. Arlo's
+                // push-to-talk answer also maps formats it did not accept, and
+                // werift takes every mapping as a codec, so it sent PCMU to a
+                // doorbell that accepted only Opus.
+                const formats = new Set(section[0].trim().split(/\s+/).slice(3));
+                return section.filter(line => {
+                    const format = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)\b/.exec(line)?.[1];
+                    return !format || formats.has(format);
+                });
+            }
             return [
                 section[0],
                 ...section.filter(line => line.startsWith('c=')).slice(0, 1),
