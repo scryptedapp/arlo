@@ -189,7 +189,7 @@ export class SIPManager {
     // Called once if the call ends from the far side: the camera's BYE, or the
     // websocket closing when close() was not asked for. Says why.
     onEnded?: (why: string) => void;
-    // Whether talk was switched on with startTalk and not yet off.
+    // Whether startTalk was sent and stopTalk not yet.
     talking = false;
     private readonly randHost = randString(12) + '.invalid';
     private readonly transactions = new AsyncLock();
@@ -435,8 +435,9 @@ export class SIPManager {
     // call for talk alone needs neither.
     async startTalk(): Promise<void> {
         await this.taskManager.cancelAndAwaitByTag('sip_keepalive', this);
-        await this.talk('startTalk');
+        // Set first, so a startTalk whose reply never came is still stopped.
         this.talking = true;
+        await this.talk('startTalk');
         this.taskManager.createTask(signal => this.keepaliveLoop(signal), { tag: 'sip_keepalive', owner: this });
     }
 

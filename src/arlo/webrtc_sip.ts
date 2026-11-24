@@ -162,10 +162,14 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
         return { sdp: answer, type: 'answer' };
     }
 
+    // The WebRTC plugin can end a session more than once.
     async close(): Promise<void> {
-        this.logger.debug('Closing camera WebRTC SIP session.');
-        await this.arloSip?.close();
+        const sip = this.arloSip;
+        if (!sip)
+            return;
         this.arloSip = undefined;
+        this.logger.debug('Closing camera WebRTC SIP session.');
+        await sip.close();
     }
 }
 
@@ -179,11 +183,11 @@ export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
                 await sip.startTalk();
                 this.arloSession.logger.info('Talk started in the video call.');
             }
-            else {
-                const talking = sip.talking;
+            // The WebRTC plugin switches talk off before each start and again
+            // when the viewer leaves; only talk that is on is stopped.
+            else if (sip.talking) {
                 await sip.stopTalk();
-                if (talking)
-                    this.arloSession.logger.info('Talk stopped in the video call.');
+                this.arloSession.logger.info('Talk stopped in the video call.');
             }
         }
         catch (e) {
@@ -235,6 +239,8 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
     }
 
     async close(): Promise<void> {
+        if (this.closed)
+            return;
         this.closed = true;
         this.subscriptions.splice(0).forEach(unsubscribe => unsubscribe());
         this.logger.debug('Intercom WebRTC session closed.');
@@ -287,10 +293,14 @@ export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
         return { sdp: answer, type: 'answer' };
     }
 
+    // Closed at stop, and again when the WebRTC plugin ends the session.
     async close(): Promise<void> {
-        this.logger.debug('Closing intercom SIP session.');
-        await this.arloSip?.close();
+        const sip = this.arloSip;
+        if (!sip)
+            return;
         this.arloSip = undefined;
+        this.logger.debug('Closing intercom SIP session.');
+        await sip.close();
     }
 }
 
