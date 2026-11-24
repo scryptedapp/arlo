@@ -126,8 +126,8 @@ export class BaseArloSessionControl implements RTCSessionControl {
 // Live video over SIP (SIPStreaming), with talk switched on inside the call.
 export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
-    // Called if the camera ends the call.
-    onEnded?: () => void;
+    // Called if the camera ends the call, with why.
+    onEnded?: (why: string) => void;
     private sipInfo: any;
 
     async delayedInit(): Promise<void> {
@@ -152,7 +152,7 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
             WebsocketHeaders: { 'User-Agent': USER_AGENTS.firefox },
             SDP: this.cleanSdp(offer.sdp ?? ''),
         }, this.provider.taskManager);
-        this.arloSip.onEnded = () => this.onEnded?.();
+        this.arloSip.onEnded = why => this.onEnded?.(why);
         this.logger.debug('SIPManager initialized for camera session.');
     }
 
@@ -172,11 +172,19 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
 export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
     override async setPlayback(options: { audio: boolean, video: boolean }): Promise<void> {
         const sip = (this.arloSession as ArloCameraWebRTCSignalingSession).arloSip;
+        if (!sip)
+            return;
         try {
-            if (options.audio)
-                await sip?.startTalk();
-            else
-                await sip?.stopTalk();
+            if (options.audio) {
+                await sip.startTalk();
+                this.arloSession.logger.info('Talk started in the video call.');
+            }
+            else {
+                const talking = sip.talking;
+                await sip.stopTalk();
+                if (talking)
+                    this.arloSession.logger.info('Talk stopped in the video call.');
+            }
         }
         catch (e) {
             this.arloSession.logger.error('Error in setPlayback:', e);
@@ -269,6 +277,7 @@ export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
             WebsocketHeaders: { 'User-Agent': USER_AGENTS.linux },
             SDP: this.cleanSdp(offer.sdp ?? ''),
         }, this.provider.taskManager);
+        this.arloSip.onEnded = why => this.camera.logger.info(`Talk ended: ${why}.`);
         this.logger.debug('SIPManager initialized for intercom SIP session.');
     }
 

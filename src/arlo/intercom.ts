@@ -28,10 +28,17 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
     }
 
     override async close(): Promise<void> {
-        for (const session of this.sessions)
-            await session.close().catch(() => { });
-        this.sessions.clear();
+        await this.endTalk();
         await super.close();
+    }
+
+    // Ends every talk session this intercom has open: a SIP talk call is hung
+    // up.
+    async endTalk(): Promise<void> {
+        const sessions = [...this.sessions];
+        this.sessions.clear();
+        for (const session of sessions)
+            await session.close().catch(e => this.logger.debug(`Could not close a talk session: ${e}`));
     }
 
     override getApplicableInterfaces(): string[] {
@@ -57,6 +64,7 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
     }
 
     async startRTCSignalingSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
+        const started = Date.now();
         const sip = this.camera.usesSipPushToTalk;
         const sessionType = sip ? 'SIP' : 'WebRTC';
         this.logger.debug(`Using ${sessionType} for intercom session.`);
@@ -96,6 +104,7 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
                 this.logger.debug(`Setting remote description with answer: ${session.answer.sdp}`);
                 await scryptedSession.setRemoteDescription(session.answer, setup);
                 this.logger.debug('WebRTC signaling session established.');
+                this.camera.logger.info(`Talk started over push-to-talk; Arlo answered in ${Date.now() - started} ms.`);
                 return new ArloIntercomWebRTCSessionControl(session, onEnd);
             }
             const offer = await this.createOffer(scryptedSession, setup);
@@ -108,6 +117,7 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             // stream does.
             await scryptedSession.setRemoteDescription(answer, setup);
             this.logger.debug('SIP signaling session established.');
+            this.camera.logger.info(`Talk started over SIP; Arlo answered in ${Date.now() - started} ms.`);
             return new ArloIntercomSIPSessionControl(session, onEnd);
         }
         catch (e) {

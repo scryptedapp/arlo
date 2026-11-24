@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 
 import type { Logger } from '../logging';
-import { AsyncLock, Deferred, TaskManager, withTimeout } from '../util';
+import { AsyncLock, Deferred, sleep, TaskManager, withTimeout } from '../util';
 
 function randString(n: number, chars = 'abcdefghijklmnopqrstuvwxyz0123456789'): string {
     let result = '';
@@ -36,6 +36,14 @@ function splitHeaderList(value: string): string[] {
     }
     entries.push(value.slice(start).trim());
     return entries.filter(Boolean);
+}
+
+// Why Arlo hung up, from the Reason headers of its BYE, such as
+// Reason: SIP;cause=804;text="MEDIA_TIMEOUT".
+function hangUpReason(bye: SIPMessage): string {
+    const reasons = bye.getHeaders('Reason').flatMap(splitHeaderList)
+        .map(reason => /text="([^"]*)"/.exec(reason)?.[1] || reason);
+    return reasons.length ? `Arlo hung up (reason: ${reasons.join(', ')})` : 'Arlo hung up';
 }
 
 function md5(...parts: string[]): string {
@@ -170,14 +178,19 @@ export interface SIPConfig {
 
 const READ_TIMEOUT = 5_000;
 const CONNECT_TIMEOUT = 10_000;
+// Talk inside a call that also carries video goes quiet after about 30
+// seconds unless it is refreshed.
+const KEEPALIVE_INTERVAL = 30_000;
 
 // Places a SIP call to an Arlo camera over a WebSocket to get its SDP answer,
 // and starts and stops talk with SIP MESSAGEs, one request and its reply at a
 // time.
 export class SIPManager {
     // Called once if the call ends from the far side: the camera's BYE, or the
-    // websocket closing when close() was not asked for.
-    onEnded?: () => void;
+    // websocket closing when close() was not asked for. Says why.
+    onEnded?: (why: string) => void;
+    // Whether talk was switched on with startTalk and not yet off.
+    talking = false;
     private readonly randHost = randString(12) + '.invalid';
     private readonly transactions = new AsyncLock();
     private closing = false;
@@ -212,7 +225,7 @@ export class SIPManager {
                 this.logger.debug(`Got SIP BYE:\n${text}`);
                 // The call is over; no BYE goes back.
                 this.inviteResponse = undefined;
-                this.farEnd('The camera ended the SIP call.');
+                this.farEnd(hangUpReason(SIPMessage.parse(text)));
                 return;
             }
             this.inbox.push(text);
@@ -221,7 +234,7 @@ export class SIPManager {
         ws.on('error', e => this.logger.debug(`SIP websocket error: ${e}`));
         ws.on('close', () => {
             this.inboxWaiter?.reject(new Error('SIP websocket closed'));
-            this.farEnd('The SIP websocket closed.');
+            this.farEnd("the connection to Arlo's SIP server closed");
         });
         try {
             await withTimeout(new Promise<void>((resolve, reject) => {
@@ -239,14 +252,14 @@ export class SIPManager {
         this.logger.debug('SIP websocket connected.');
     }
 
-    private farEnd(reason: string): void {
+    private farEnd(why: string): void {
         if (this.closing || this.ended)
             return;
         this.ended = true;
-        this.logger.debug(reason);
+        this.logger.debug(`The SIP call ended: ${why}.`);
         this.taskManager.cancelAndAwaitByOwner(this).catch(() => { });
         this.ws?.close();
-        this.onEnded?.();
+        this.onEnded?.(why);
     }
 
     // Sends a request and reads its reply, after any request already waiting
@@ -402,6 +415,7 @@ export class SIPManager {
     async close(): Promise<void> {
         this.logger.debug('Closing SIPManager session.');
         this.closing = true;
+        this.talking = false;
         await this.taskManager.cancelAndAwaitByOwner(this);
         if (this.inviteResponse && this.ws?.readyState === WebSocket.OPEN) {
             try {
@@ -416,12 +430,37 @@ export class SIPManager {
         this.ws = undefined;
     }
 
+    // Switches talk on inside a call that also carries video, and keeps it on
+    // with keepAlive every 30 seconds until stopTalk or the end of the call. A
+    // call for talk alone needs neither.
     async startTalk(): Promise<void> {
+        await this.taskManager.cancelAndAwaitByTag('sip_keepalive', this);
         await this.talk('startTalk');
+        this.talking = true;
+        this.taskManager.createTask(signal => this.keepaliveLoop(signal), { tag: 'sip_keepalive', owner: this });
     }
 
     async stopTalk(): Promise<void> {
+        await this.taskManager.cancelAndAwaitByTag('sip_keepalive', this);
+        this.talking = false;
         await this.talk('stopTalk');
+    }
+
+    private async keepaliveLoop(signal: AbortSignal): Promise<void> {
+        try {
+            while (true) {
+                await sleep(KEEPALIVE_INTERVAL, signal);
+                const response = await this.transaction(this.buildMessage('keepAlive'));
+                if (response.statusCode !== 200 && response.statusCode !== 202) {
+                    this.logger.warn(`Did not receive 200 OK or 202 Accepted for keepAlive, got ${response.statusCode}`);
+                    return;
+                }
+            }
+        }
+        catch (e) {
+            if (!signal.aborted)
+                this.logger.warn(`Talk keepAlive stopped: ${e instanceof Error ? e.message : e}`);
+        }
     }
 
     private async talk(action: 'startTalk' | 'stopTalk'): Promise<void> {

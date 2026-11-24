@@ -894,25 +894,31 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
         catch (e) {
             this.intercomActive = false;
-            this.logger.error('Error in startIntercom:', e);
+            this.logger.error(`Talk failed: ${e instanceof Error ? e.message : e}`);
+            this.logger.debug('Error in startIntercom:', e);
             throw e;
         }
     }
 
     async stopIntercom(): Promise<void> {
+        if (!this.intercomActive) {
+            this.logger.debug('Intercom is not active, nothing to stop.');
+            return;
+        }
+        this.intercomActive = false;
         try {
-            if (!this.intercomActive) {
-                this.logger.debug('Intercom is not active, nothing to stop.');
-                return;
-            }
             this.speaker ??= this.getIntercom().speaker();
-            await this.speaker.stopIntercom();
+            // Scrypted's WebRTC plugin keeps nothing to stop an Arlo speaker's
+            // talk with, and answers "webrtc session not connected". So the
+            // plugin also ends its own side: a SIP talk call is hung up, while
+            // push-to-talk has nothing to hang up and ends with its audio.
+            await this.speaker.stopIntercom().catch((e: unknown) =>
+                this.logger.debug(`Scrypted's WebRTC plugin did not stop the talk: ${e instanceof Error ? e.message : e}`));
+            await this.getIntercom().endTalk();
+            this.logger.info('Talk stopped.');
         }
         catch (e) {
             this.logger.error('Error in stopIntercom:', e);
-        }
-        finally {
-            this.intercomActive = false;
         }
     }
 
@@ -1090,8 +1096,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             };
             // The camera can end the call before the WebRTC plugin ends the
             // session, or the WebRTC plugin can go without ending it.
-            established.onEnded = () => {
-                this.logger.debug('The camera ended its WebRTC call.');
+            established.onEnded = why => {
+                this.logger.debug(`The camera ended its WebRTC call: ${why}.`);
+                if (established.arloSip?.talking)
+                    this.logger.info(`Talk ended: ${why}.`);
                 ended();
             };
             return new ArloCameraWebRTCSessionControl(established, ended);
