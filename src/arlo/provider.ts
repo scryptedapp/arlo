@@ -7,7 +7,7 @@ import { ImapFlow, MessageStructureObject } from 'imapflow';
 import { ArloDeviceBase } from './base';
 import { ArloBasestation } from './basestation';
 import { ArloCamera } from './camera';
-import { ArloClient, ArloDevice, browseArloServices, initImpers } from './client';
+import { ArloClient, ArloDevice, ArloService, browseArloServices, initImpers } from './client';
 import { ArloDoorbell } from './doorbell';
 import { LOG_LEVELS, Logger, setLogLevel } from './logging';
 import {
@@ -36,34 +36,27 @@ const DEVICE_TYPE_ARLOQS = 'arloqs';
 const DEVICE_TYPE_DOORBELL = 'doorbell';
 
 const MFA_STRATEGIES = ['Manual', 'IMAP'];
-const LOGIN_COOLDOWN = 60_000;
-const BUILD_WAIT = 60_000;
-const LOGIN_RETRY_DELAYS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
-const LOGIN_AGAIN = 'The plugin does not try again after this; once the cause is fixed, restart the plugin or turn on Force Re-Authentication.';
-const EVENT_STREAM_STABLE = 60_000;
-const MANUAL_MFA_TIMEOUT = 278_000;
-const HARD_LOGIN_INTERVAL = 14 * 24 * 60 * 60_000;
 
-export type RestartScope = 'plugin' | 'restart' | 'relogin' | 'refresh_login_loop' | 'event_stream';
+type RestartScope = 'plugin' | 'restart' | 'relogin' | 'refresh_login_loop' | 'event_stream';
 
-export interface ModeVirtualSecuritySystemInfo {
-    location_name: string;
+interface ModeVirtualSecuritySystemInfo extends Partial<ArloDevice> {
+    locationName: string;
     deviceName: string;
 }
 
-function byName<T extends { deviceName: string }>(a: T, b: T): number {
-    return String(a.deviceName).toLowerCase().localeCompare(String(b.deviceName).toLowerCase());
+function compareNames(a: string, b: string): number {
+    return a.toLowerCase().localeCompare(b.toLowerCase());
 }
 
-function sortedMap<T>(map: Map<string, T>, key: (value: T) => string): Map<string, T> {
-    return new Map([...map].sort(([, a], [, b]) => key(a).toLowerCase().localeCompare(key(b).toLowerCase())));
+function sortedMap<T>(map: Map<string, T>, name: (value: T) => string): Map<string, T> {
+    return new Map([...map].sort(([, a], [, b]) => compareNames(name(a), name(b))));
 }
 
 function minuteFloor(time: number): number {
     return Math.floor(time / 60_000) * 60_000;
 }
 
-function extractMfaCode(text: string): string | undefined {
+function extractMfaCodeFromText(text: string): string | undefined {
     return /\b(\d{6})\b/.exec(text)?.[1];
 }
 
@@ -205,7 +198,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     scryptedDevices = new Map<string, ArloDeviceBase>();
     private building = true;
     private deviceWaiters = new Map<string, Deferred<ArloDeviceBase | undefined>>();
-    private handedOut = new Map<string, ArloDeviceBase>();
+    private loadedDevices = new Map<string, ArloDeviceBase>();
     setupInProgress = false;
     fullResetNeeded = false;
     private loginFailure?: 'temporary' | 'final';
@@ -213,7 +206,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     private eventStreamRestartPending = false;
     private eventStreamRestartAt = 0;
     private eventStreamBackoff = 0;
-
     private initializeLock = new AsyncLock();
     private restartLock = new AsyncLock();
     private periodicLock = new AsyncLock();
@@ -222,10 +214,10 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     private activeLogin?: Deferred<boolean>;
     private lastLoginAttempt = 0;
     private manualMfaCode?: Deferred<string>;
-    private mfaState?: Deferred<string>;
+    private mfaStateFuture?: Deferred<string>;
     private browserAuthenticated?: Deferred<boolean>;
-    private mfaLoop?: Deferred<void>;
-    private mfaCode?: Deferred<string>;
+    private mfaLoopFuture?: Deferred<void>;
+    private mfaCodeFuture?: Deferred<string>;
 
     constructor(nativeId?: string) {
         super(nativeId);
@@ -245,93 +237,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         };
         this.propagateLogLevel();
         this.taskManager.createTask(() => initImpers(this.logger), { tag: 'impers', owner: this });
-        this.taskManager.createTask(signal => this.initializePlugin(signal), { tag: 'initialize_plugin', owner: this });
-    }
-
-    get arloUsername(): string {
-        return this.storageSettings.values.arlo_username ?? '';
-    }
-
-    get arloPassword(): string {
-        return this.storageSettings.values.arlo_password ?? '';
-    }
-
-    get arloDeviceId(): string {
-        let deviceId = this.storage.getItem('arlo_device_id');
-        if (!deviceId) {
-            deviceId = crypto.randomUUID();
-            this.storage.setItem('arlo_device_id', deviceId);
-        }
-        return deviceId;
-    }
-
-    get mvssEnabled(): boolean {
-        return !!this.storageSettings.values.mvss_enabled;
-    }
-
-    get autoSnapshotGeneration(): boolean {
-        return !!this.storageSettings.values.auto_snapshot_generation;
-    }
-
-    get oneLocation(): boolean {
-        return this.storage.getItem('one_location') === 'true';
-    }
-
-    get mdnsServices(): Record<string, { server: string, address: string, deviceId: string }> {
-        try {
-            return JSON.parse(this.storage.getItem('mdns_services') ?? '{}');
-        }
-        catch {
-            return {};
-        }
-    }
-
-    get hiddenDeviceIds(): string[] {
-        return (this.storageSettings.values.hidden_devices as string[] ?? [])
-            .map(entry => /.*\((.*)\)$/.exec(entry)?.[1])
-            .filter((id): id is string => !!id);
-    }
-
-    private get mfaStrategy(): string {
-        return this.storageSettings.values.mfa_strategy;
-    }
-
-    private get disablePlugin(): boolean {
-        return !!this.storageSettings.values.disable_plugin;
-    }
-
-    private get eventStreamRefreshInterval(): number {
-        return this.storageSettings.values.event_stream_refresh_interval;
-    }
-
-    private get deviceDiscoveryInterval(): number {
-        return this.storageSettings.values.device_discovery_interval;
-    }
-
-    private get deviceRefreshInterval(): number {
-        return this.storageSettings.values.device_refresh_interval;
-    }
-
-    get arloPublicKey(): string {
-        if (!this.storage.getItem('arlo_public_key'))
-            this.generateArloKeypair();
-        return this.storage.getItem('arlo_public_key');
-    }
-
-    get arloPrivateKey(): string {
-        if (!this.storage.getItem('arlo_private_key'))
-            this.generateArloKeypair();
-        return this.storage.getItem('arlo_private_key');
-    }
-
-    generateArloKeypair(): void {
-        const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-            modulusLength: 2048,
-            publicKeyEncoding: { type: 'spki', format: 'pem' },
-            privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-        });
-        this.storage.setItem('arlo_public_key', publicKey);
-        this.storage.setItem('arlo_private_key', privateKey);
+        this.taskManager.createTask(signal => this.initializePlugin(false, signal), { tag: 'initialize_plugin', owner: this });
     }
 
     private propagateLogLevel(): void {
@@ -344,7 +250,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.onDeviceEvent(ScryptedInterface.Settings, undefined).catch(() => { });
     }
 
-    private async initializePlugin(signal?: AbortSignal, { awaitLogin = false }: { awaitLogin?: boolean } = {}): Promise<void> {
+    private async initializePlugin(awaitLogin = false, signal?: AbortSignal): Promise<void> {
         if (this.initializeLock.locked) {
             this.logger.debug('Plugin initialization already in progress, waiting for it to complete.');
             return;
@@ -446,20 +352,145 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
+    private async recoverAuth(reason: string, signal: AbortSignal): Promise<void> {
+        try {
+            if (this.errorManager.rateLimitRemaining() > 0)
+                return;
+            if (this.loginFailure) {
+                this.logger.debug(`Not logging in again after an auth error, since the last login failed: ${reason}`);
+                return;
+            }
+            if (!this.arlo) {
+                this.fullResetNeeded = true;
+                await this.login(signal);
+                return;
+            }
+            this.logger.info(`Attempting Arlo soft relogin after auth error: ${reason}`);
+            const arlo = this.arlo;
+            await this.restartLock.run(() => this.periodicLock.run(() => this.deviceLock.run(() =>
+                this.errorManager.authTransition(`auth recovery cleanup: ${reason}`, async () => {
+                    await arlo.unsubscribe().catch(e => this.logger.debug(`Error stopping event stream during auth recovery: ${e}`));
+                    await arlo.cancelHeartbeat().catch(e => this.logger.debug(`Error stopping heartbeat during auth recovery: ${e}`));
+                    if (this.errorManager.rateLimitRemaining() > 0)
+                        return;
+                    this.arlo?.resetSession();
+                    this.fullResetNeeded = false;
+                }), signal), signal), signal);
+            await this.login(signal);
+            await this.resubscribeAfterRelogin(signal);
+        }
+        catch (e) {
+            if (signal.aborted)
+                throw e;
+            if (e instanceof RateLimitedError)
+                this.logger.warn(`Auth recovery paused by Arlo rate limit for ${Math.floor((e.retryAfter ?? this.errorManager.rateLimitRemaining()) / 1000)} seconds.`);
+            else if (e instanceof TransientRequestError)
+                this.logger.warn(`Auth recovery hit a temporary Arlo error and will retry later: ${e.message}`);
+            else
+                this.logger.error('Auth recovery failed:', e);
+        }
+    }
+
+    get arloDeviceId(): string {
+        let deviceId = this.storage.getItem('arlo_device_id');
+        if (!deviceId) {
+            deviceId = crypto.randomUUID();
+            this.storage.setItem('arlo_device_id', deviceId);
+        }
+        return deviceId;
+    }
+
+    get arloPassword(): string {
+        return this.storageSettings.values.arlo_password ?? '';
+    }
+
+    get arloUsername(): string {
+        return this.storageSettings.values.arlo_username ?? '';
+    }
+
+    get eventStreamRefreshInterval(): number {
+        return this.storageSettings.values.event_stream_refresh_interval;
+    }
+
+    get hiddenDeviceIds(): string[] {
+        return (this.storageSettings.values.hidden_devices as string[] ?? [])
+            .map(entry => /.*\((.*)\)$/.exec(entry)?.[1])
+            .filter((id): id is string => !!id);
+    }
+
+    get mfaStrategy(): string {
+        return this.storageSettings.values.mfa_strategy;
+    }
+
+    get mvssEnabled(): boolean {
+        return !!this.storageSettings.values.mvss_enabled;
+    }
+
+    get autoSnapshotGeneration(): boolean {
+        return !!this.storageSettings.values.auto_snapshot_generation;
+    }
+
+    get oneLocation(): boolean {
+        return this.storage.getItem('one_location') === 'true';
+    }
+
+    get deviceDiscoveryInterval(): number {
+        return this.storageSettings.values.device_discovery_interval;
+    }
+
+    get deviceRefreshInterval(): number {
+        return this.storageSettings.values.device_refresh_interval;
+    }
+
+    get disablePlugin(): boolean {
+        return !!this.storageSettings.values.disable_plugin;
+    }
+
+    get mdnsServices(): Record<string, ArloService> {
+        try {
+            return JSON.parse(this.storage.getItem('mdns_services') ?? '{}');
+        }
+        catch {
+            return {};
+        }
+    }
+
+    get arloPublicKey(): string {
+        if (!this.storage.getItem('arlo_public_key'))
+            this.generateArloKeypair();
+        return this.storage.getItem('arlo_public_key');
+    }
+
+    get arloPrivateKey(): string {
+        if (!this.storage.getItem('arlo_private_key'))
+            this.generateArloKeypair();
+        return this.storage.getItem('arlo_private_key');
+    }
+
+    generateArloKeypair(): void {
+        const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+            modulusLength: 2048,
+            publicKeyEncoding: { type: 'spki', format: 'pem' },
+            privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        });
+        this.storage.setItem('arlo_public_key', publicKey);
+        this.storage.setItem('arlo_private_key', privateKey);
+    }
+
     private async login(signal?: AbortSignal): Promise<void> {
         if (this.activeLogin && !this.activeLogin.done) {
             this.logger.debug('Login already in progress, waiting for it to complete.');
             await abortable(this.activeLogin.promise, signal);
             return;
         }
-        const result = new Deferred<boolean>();
-        this.activeLogin = result;
+        const loginFuture = new Deferred<boolean>();
+        this.activeLogin = loginFuture;
         this.loginFailure = undefined;
         this.errorManager.beginAuthTransition('Arlo Cloud login');
         let transitionOpen = true;
         let loginTask: Task<void> | undefined;
         try {
-            const cooldown = LOGIN_COOLDOWN - (Date.now() - this.lastLoginAttempt);
+            const cooldown = 60_000 - (Date.now() - this.lastLoginAttempt);
             if (cooldown > 0) {
                 this.logger.info(`Login attempt delayed: waiting ${Math.floor(cooldown / 1000)} seconds due to cooldown.`);
                 await sleep(cooldown, signal);
@@ -473,13 +504,14 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             else {
                 arlo = this.arlo ?? new ArloClient(this);
             }
-            this.mfaState = arlo.mfaStateFuture = new Deferred();
-            this.browserAuthenticated = arlo.browserAuthenticated = new Deferred();
-            this.mfaLoop = arlo.mfaLoopFuture = new Deferred();
-            this.mfaCode = arlo.mfaCodeFuture = new Deferred();
+            this.setLoginFutures();
+            arlo.browserAuthenticated = this.browserAuthenticated;
+            arlo.mfaStateFuture = this.mfaStateFuture;
+            arlo.mfaLoopFuture = this.mfaLoopFuture;
+            arlo.mfaCodeFuture = this.mfaCodeFuture;
             this.logger.debug('Setup ArloClient and MFA futures.');
             let failure: unknown;
-            const task = loginTask = this.taskManager.createTask(async loginSignal => {
+            loginTask = this.taskManager.createTask(async loginSignal => {
                 try {
                     await arlo.login(loginSignal);
                 }
@@ -488,26 +520,26 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 }
             }, { tag: 'login-arlo', owner: this });
 
-            const loginStep = async <T>(step: Deferred<T>, description: string): Promise<T> => {
-                const ended = task.promise.then(() => false, () => false);
-                const reached = step.promise.then(() => true);
-                if (!await abortable(Promise.race([reached, ended]), signal) && !step.done) {
-                    await task.promise;
+            const waitForLoginSignal = async <T>(future: Deferred<T>, description: string): Promise<T> => {
+                const loginEnded = loginTask.promise.then(() => false, () => false);
+                const signalled = future.promise.then(() => true);
+                if (!await abortable(Promise.race([signalled, loginEnded]), signal) && !future.done) {
+                    await loginTask.promise;
                     if (failure)
                         throw failure;
                     throw new Error(`Arlo Cloud login ended before ${description} was available.`);
                 }
-                return step.promise;
+                return future.promise;
             };
 
             this.logger.debug('Waiting for MFA state from Arlo Cloud...');
-            const mfaState = await loginStep(this.mfaState, 'MFA state');
+            const mfaState = await waitForLoginSignal(this.mfaStateFuture, 'MFA state');
             const browserAuthenticated = mfaState === 'ENABLED'
-                ? await loginStep(this.browserAuthenticated, 'browser authentication state')
+                ? await waitForLoginSignal(this.browserAuthenticated, 'browser authentication state')
                 : true;
             if (mfaState === 'ENABLED' && !browserAuthenticated) {
                 const mfaStartTime = Date.now();
-                await loginStep(this.mfaLoop, 'MFA challenge');
+                await waitForLoginSignal(this.mfaLoopFuture, 'MFA challenge');
                 if (this.mfaStrategy === 'IMAP') {
                     this.logger.debug('Using IMAP strategy for MFA code retrieval.');
                     this.taskManager.createTask(mfaSignal => this.imapMfaLoop(arlo, mfaStartTime, mfaSignal), { tag: 'mfa', owner: this });
@@ -517,19 +549,16 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                     this.taskManager.createTask(mfaSignal => this.manualMfaLoop(mfaSignal), { tag: 'mfa', owner: this });
                 }
             }
-            await abortable(task.promise, signal);
+            await abortable(loginTask.promise, signal);
             if (failure)
                 throw failure;
-            if (arlo.loggedIn) {
-                this.errorManager.endAuthTransition(true);
-                transitionOpen = false;
-                this.loginRetries = 0;
-                await this.onLoginSuccess(arlo, signal);
-                result.resolve(true);
-                return;
-            }
-            this.loginFailure = 'final';
-            this.logger.error(`Arlo Cloud login failed. ${LOGIN_AGAIN}`);
+            if (!arlo.loggedIn)
+                throw new Error('Arlo Cloud did not complete the login.');
+            this.errorManager.endAuthTransition(true);
+            transitionOpen = false;
+            this.loginRetries = 0;
+            await this.onLoginSuccess(arlo, signal);
+            loginFuture.resolve(true);
         }
         catch (e) {
             if (e instanceof CancelledError || signal?.aborted) {
@@ -545,16 +574,16 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             else if (e instanceof TransientRequestError) {
                 this.loginFailure = 'temporary';
-                const delay = this.scheduleLoginRetry();
-                this.logger.error(`Arlo Cloud login failed with a temporary error: ${e.message}. Trying again in ${delay / 60_000} minutes.`);
+                this.scheduleLoginRetry(e.message);
             }
             else {
                 this.loginFailure = 'final';
-                this.logger.error(`Arlo Cloud login failed. ${LOGIN_AGAIN}`, e);
+                this.logger.error('Arlo Cloud login failed. The plugin does not try again after this; '
+                    + 'once the cause is fixed, restart the plugin or turn on Force Re-Authentication.', e);
             }
         }
         finally {
-            result.resolve(false);
+            loginFuture.resolve(false);
             if (transitionOpen)
                 this.errorManager.endAuthTransition(false);
             if (!this.arlo?.loggedIn)
@@ -562,9 +591,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
-    private scheduleLoginRetry(): number {
-        const delay = LOGIN_RETRY_DELAYS[Math.min(this.loginRetries, LOGIN_RETRY_DELAYS.length - 1)];
+    private scheduleLoginRetry(reason: string): void {
+        const delays = [5 * 60_000, 15 * 60_000, 60 * 60_000];
+        const delay = delays[Math.min(this.loginRetries, delays.length - 1)];
         this.loginRetries++;
+        this.logger.error(`Arlo Cloud login failed with a temporary error: ${reason}. Trying again in ${delay / 60_000} minutes.`);
         const relogin = !this.fullResetNeeded;
         this.taskManager.cancelAndAwaitByTag('login_retry', this).catch(() => { });
         this.taskManager.createTask(async signal => {
@@ -574,7 +605,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             if (relogin)
                 await this.resubscribeAfterRelogin(signal);
         }, { tag: 'login_retry', owner: this });
-        return delay;
     }
 
     private async resubscribeAfterRelogin(signal: AbortSignal): Promise<void> {
@@ -601,6 +631,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
+    private setLoginFutures(): void {
+        this.mfaStateFuture = new Deferred();
+        this.browserAuthenticated = new Deferred();
+        this.mfaLoopFuture = new Deferred();
+        this.mfaCodeFuture = new Deferred();
+    }
+
     private async cleanUpLoginTasks(): Promise<void> {
         this.logger.debug('Cleaning up login and MFA tasks.');
         await this.taskManager.cancelAndAwaitByTag('mfa', this);
@@ -608,25 +645,106 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         await this.taskManager.cancelAndAwaitByTag('login', this);
     }
 
+    private async imapMfaLoop(arlo: ArloClient, mfaStartTime: number, signal: AbortSignal): Promise<void> {
+        if (!this.imapSettingsReady()) {
+            this.logger.info('IMAP MFA settings not ready, waiting for user input.');
+            await this.imapReady.wait(signal);
+        }
+        this.logger.debug('IMAP MFA Loop started.');
+        const code = await this.pollImapForMfaCode(mfaStartTime, signal);
+        if (code) {
+            this.mfaCodeFuture?.resolve(code);
+            this.logger.debug('IMAP MFA code sent to Arlo client.');
+            return;
+        }
+        if (!arlo.loggedIn && !signal.aborted)
+            this.mfaCodeFuture?.reject(new Error('The MFA code was not found by IMAP; check the IMAP settings.'));
+    }
+
     private async manualMfaLoop(signal: AbortSignal): Promise<void> {
         this.manualMfaCode = new Deferred();
         this.logger.info('Waiting for manual MFA code input.');
         try {
-            const code = await withTimeout(abortable(this.manualMfaCode.promise, signal), MANUAL_MFA_TIMEOUT);
+            const code = await withTimeout(abortable(this.manualMfaCode.promise, signal), 278_000);
             if (code) {
-                this.mfaCode?.resolve(code);
+                this.mfaCodeFuture?.resolve(code);
                 this.logger.debug('Manual MFA code sent to Arlo client.');
                 return;
             }
-            this.mfaCode?.reject(new Error('An empty MFA code was entered.'));
+            this.mfaCodeFuture?.reject(new Error('An empty MFA code was entered.'));
         }
         catch (e) {
             if (!(e instanceof TimeoutError))
                 throw e;
-            this.mfaCode?.reject(new Error('No MFA code was entered within 5 minutes.'));
+            this.mfaCodeFuture?.reject(new Error('No MFA code was entered within 5 minutes.'));
         }
         finally {
             this.manualMfaCode = undefined;
+        }
+    }
+
+    private async onLoginSuccess(arlo: ArloClient, signal?: AbortSignal): Promise<void> {
+        this.arlo = arlo;
+        if (!this.fullResetNeeded)
+            return;
+        await this.taskManager.cancelAndAwaitByTag('refresh', this);
+        this.taskManager.createTask(refreshSignal => this.refreshLoginLoop(refreshSignal), { tag: 'refresh', owner: this });
+        await this.doArloSetup(signal);
+        this.fullResetNeeded = false;
+    }
+
+    private async refreshLoginLoop(signal: AbortSignal): Promise<void> {
+        const hardInterval = 14 * 24 * 60 * 60_000;
+        let elapsed = 0;
+        while (true) {
+            const minutes = this.eventStreamRefreshInterval > 0 ? this.eventStreamRefreshInterval : 90;
+            const interval = Math.max(60_000, minutes * 60_000 + Math.round((Math.random() * 600 - 300) * 1000));
+            const wait = Math.min(interval, hardInterval - elapsed);
+            await sleep(wait, signal);
+            elapsed += wait;
+            try {
+                if (elapsed >= hardInterval) {
+                    this.logger.debug('Hard MFA refresh interval reached, refreshing Arlo login.');
+                    await this.periodicLock.run(() => this.deviceLock.run(() =>
+                        this.errorManager.authTransition('hard MFA refresh cleanup', async () => {
+                            await this.arlo?.unsubscribe();
+                            await this.arlo?.cancelHeartbeat();
+                            this.fullResetNeeded = true;
+                        }), signal), signal);
+                    await this.login(signal);
+                    return;
+                }
+                this.logger.debug('Session refresh interval reached, re-logging in.');
+                await this.periodicLock.run(() => this.deviceLock.run(() =>
+                    this.errorManager.authTransition('scheduled session refresh cleanup', async () => {
+                        await this.arlo?.unsubscribe();
+                        await this.arlo?.cancelHeartbeat();
+                        this.arlo?.resetSession();
+                    }), signal), signal);
+                await this.login(signal);
+                if (this.loginFailure === 'final') {
+                    this.logger.info('Session refreshes stop until the next login.');
+                    return;
+                }
+                await this.resubscribeAfterRelogin(signal);
+            }
+            catch (e) {
+                if (signal.aborted)
+                    throw e;
+                if (e instanceof RateLimitedError) {
+                    const remaining = e.retryAfter ?? this.errorManager.rateLimitRemaining();
+                    this.logger.warn(`Session refresh paused by rate limit for ${Math.floor(remaining / 1000)} seconds.`);
+                    await sleep(Math.max(60_000, remaining), signal);
+                }
+                else if (e instanceof TransientRequestError) {
+                    this.logger.warn(`Session refresh hit a temporary Arlo error: ${e.message}`);
+                    if (elapsed >= hardInterval)
+                        elapsed = Math.max(0, elapsed - interval);
+                }
+                else {
+                    this.logger.error('Session refresh failed; trying again at the next refresh:', e);
+                }
+            }
         }
     }
 
@@ -638,22 +756,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         else
             this.imapReady.clear();
         return ready;
-    }
-
-    private async imapMfaLoop(arlo: ArloClient, mfaStartTime: number, signal: AbortSignal): Promise<void> {
-        if (!this.imapSettingsReady()) {
-            this.logger.info('IMAP MFA settings not ready, waiting for user input.');
-            await this.imapReady.wait(signal);
-        }
-        this.logger.debug('IMAP MFA Loop started.');
-        const code = await this.pollImapForMfaCode(mfaStartTime, signal);
-        if (code) {
-            this.mfaCode?.resolve(code);
-            this.logger.debug('IMAP MFA code sent to Arlo client.');
-            return;
-        }
-        if (!arlo.loggedIn && !signal.aborted)
-            this.mfaCode?.reject(new Error('The MFA code was not found by IMAP; check the IMAP settings.'));
     }
 
     private async pollImapForMfaCode(mfaStartTime: number, signal: AbortSignal): Promise<string | undefined> {
@@ -742,113 +844,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             chunks.push(chunk as Buffer);
         const text = Buffer.concat(chunks).toString('utf8');
         if (type === 'text/plain')
-            return extractMfaCode(text);
+            return extractMfaCodeFromText(text);
         for (const line of htmlToText(text).split(/\r?\n/)) {
-            const code = extractMfaCode(line);
+            const code = extractMfaCodeFromText(line);
             if (code)
                 return code;
         }
         return undefined;
-    }
-
-    private async onLoginSuccess(arlo: ArloClient, signal?: AbortSignal): Promise<void> {
-        this.arlo = arlo;
-        if (!this.fullResetNeeded)
-            return;
-        await this.taskManager.cancelAndAwaitByTag('refresh', this);
-        this.taskManager.createTask(refreshSignal => this.refreshLoginLoop(refreshSignal), { tag: 'refresh', owner: this });
-        await this.doArloSetup(signal);
-        this.fullResetNeeded = false;
-    }
-
-    private async refreshLoginLoop(signal: AbortSignal): Promise<void> {
-        let elapsed = 0;
-        while (true) {
-            const minutes = this.eventStreamRefreshInterval > 0 ? this.eventStreamRefreshInterval : 90;
-            const interval = Math.max(60_000, minutes * 60_000 + Math.round((Math.random() * 600 - 300) * 1000));
-            const wait = Math.min(interval, HARD_LOGIN_INTERVAL - elapsed);
-            await sleep(wait, signal);
-            elapsed += wait;
-            try {
-                if (elapsed >= HARD_LOGIN_INTERVAL) {
-                    this.logger.debug('Hard MFA refresh interval reached, refreshing Arlo login.');
-                    await this.periodicLock.run(() => this.deviceLock.run(() => this.errorManager.authTransition('hard MFA refresh cleanup', async () => {
-                        await this.arlo?.unsubscribe();
-                        await this.arlo?.cancelHeartbeat();
-                        this.fullResetNeeded = true;
-                    }), signal), signal);
-                    await this.login(signal);
-                    return;
-                }
-                this.logger.debug('Session refresh interval reached, re-logging in.');
-                await this.periodicLock.run(() => this.deviceLock.run(() => this.errorManager.authTransition('scheduled session refresh cleanup', async () => {
-                    await this.arlo?.unsubscribe();
-                    await this.arlo?.cancelHeartbeat();
-                    this.arlo?.resetSession();
-                }), signal), signal);
-                await this.login(signal);
-                if (this.loginFailure === 'final') {
-                    this.logger.info('Session refreshes stop until the next login.');
-                    return;
-                }
-                await this.resubscribeAfterRelogin(signal);
-            }
-            catch (e) {
-                if (signal.aborted)
-                    throw e;
-                if (e instanceof RateLimitedError) {
-                    const remaining = e.retryAfter ?? this.errorManager.rateLimitRemaining();
-                    this.logger.warn(`Session refresh paused by rate limit for ${Math.floor(remaining / 1000)} seconds.`);
-                    await sleep(Math.max(60_000, remaining), signal);
-                }
-                else if (e instanceof TransientRequestError) {
-                    this.logger.warn(`Session refresh hit a temporary Arlo error: ${e.message}`);
-                    if (elapsed >= HARD_LOGIN_INTERVAL)
-                        elapsed = Math.max(0, elapsed - interval);
-                }
-                else {
-                    this.logger.error('Session refresh failed; trying again at the next refresh:', e);
-                }
-            }
-        }
-    }
-
-    private async recoverAuth(reason: string, signal: AbortSignal): Promise<void> {
-        try {
-            if (this.errorManager.rateLimitRemaining() > 0)
-                return;
-            if (this.loginFailure) {
-                this.logger.debug(`Not logging in again after an auth error, since the last login failed: ${reason}`);
-                return;
-            }
-            if (!this.arlo) {
-                this.fullResetNeeded = true;
-                await this.login(signal);
-                return;
-            }
-            this.logger.info(`Attempting Arlo soft relogin after auth error: ${reason}`);
-            const arlo = this.arlo;
-            await this.restartLock.run(() => this.periodicLock.run(() => this.deviceLock.run(() => this.errorManager.authTransition(`auth recovery cleanup: ${reason}`, async () => {
-                await arlo.unsubscribe().catch(e => this.logger.debug(`Error stopping event stream during auth recovery: ${e}`));
-                await arlo.cancelHeartbeat().catch(e => this.logger.debug(`Error stopping heartbeat during auth recovery: ${e}`));
-                if (this.errorManager.rateLimitRemaining() > 0)
-                    return;
-                this.arlo?.resetSession();
-                this.fullResetNeeded = false;
-            }), signal), signal), signal);
-            await this.login(signal);
-            await this.resubscribeAfterRelogin(signal);
-        }
-        catch (e) {
-            if (signal.aborted)
-                throw e;
-            if (e instanceof RateLimitedError)
-                this.logger.warn(`Auth recovery paused by Arlo rate limit for ${Math.floor((e.retryAfter ?? this.errorManager.rateLimitRemaining()) / 1000)} seconds.`);
-            else if (e instanceof TransientRequestError)
-                this.logger.warn(`Auth recovery hit a temporary Arlo error and will retry later: ${e.message}`);
-            else
-                this.logger.error('Auth recovery failed:', e);
-        }
     }
 
     private async doArloSetup(signal?: AbortSignal): Promise<void> {
@@ -862,9 +864,9 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.arloMvss = new Map();
                 this.allDeviceIds = [];
                 await this.deviceLock.run(async () => {
-                    const previous = [...this.scryptedDevices.values()];
+                    const existingDevices = [...this.scryptedDevices.values()];
                     this.scryptedDevices.clear();
-                    for (const device of previous)
+                    for (const device of existingDevices)
                         await device.close().catch(e => this.logger.debug(`Error closing ${device.arloDevice.deviceName} before setup: ${e}`));
                 }, signal);
                 await this.arlo.subscribe();
@@ -903,341 +905,23 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
-    private async mdns(): Promise<void> {
-        this.logger.debug('Initializing mDNS Discovery for basestation(s).');
-        try {
-            const services = await browseArloServices(this.logger);
-            this.storage.setItem('mdns_services', JSON.stringify(services));
-            if (Object.keys(services).length)
-                this.logger.debug('Basestation(s) found in mDNS.');
-        }
-        catch (e) {
-            this.logger.error('Basestation(s) not found in mDNS, manual input needed under basestation(s) settings.');
-        }
-    }
-
-    private async deviceHandler(periodicDiscovery = false, signal?: AbortSignal): Promise<void> {
-        await this.errorManager.waitForAuthReady('device discovery', { signal });
-        await this.deviceLock.run(async () => {
-            await this.discoverDevices();
-            await this.subscribeToEventStream(periodicDiscovery);
-            await this.createDevices();
-        }, signal);
-    }
-
-    private async discoverDevices(): Promise<void> {
-        const arlo = this.arlo;
-        if (!arlo?.loggedIn)
-            throw new Error('Arlo client not connected, cannot discover devices');
-        this.logger.info('Discovering devices...');
-        const basestationEntries: string[] = [];
-        const cameraEntries: string[] = [];
-        const mvssEntries: string[] = [];
-        const seen = new Set<string>();
-        const addEntry = (list: string[], entry: string) => {
-            if (!seen.has(entry)) {
-                seen.add(entry);
-                list.push(entry);
-            }
-        };
-
-        const basestations = await arlo.getDevices([DEVICE_TYPE_BASESTATION, DEVICE_TYPE_SIREN], true);
-        for (const basestation of [...basestations].sort(byName)) {
-            addEntry(basestationEntries, `${basestation.deviceName} (${basestation.deviceId})`);
-            this.logger.debug(`Found basestation ${basestation.deviceName}`);
-            if (!this.arloBasestations.has(basestation.deviceId))
-                this.arloBasestations.set(basestation.deviceId, basestation);
-        }
-        this.arloBasestations = sortedMap(this.arloBasestations, device => device.deviceName);
-        const basestationCount = this.arloBasestations.size;
-        this.logger.debug(`Found ${basestationCount} basestation${basestationCount === 1 ? '' : 's'}.`);
-
-        const cameras = await arlo.getDevices([DEVICE_TYPE_CAMERA, DEVICE_TYPE_ARLOQ, DEVICE_TYPE_ARLOQS, DEVICE_TYPE_DOORBELL], true);
-        for (const camera of [...cameras].sort(byName)) {
-            addEntry(cameraEntries, `${camera.deviceName} (${camera.deviceId})`);
-            this.logger.debug(`Found camera ${camera.deviceName}`);
-            if (camera.deviceId !== camera.parentId && !this.arloBasestations.has(camera.parentId)) {
-                this.logger.debug(`Skipping camera ${camera.deviceName} because its basestation was not found.`);
-                continue;
-            }
-            if (this.arloCameras.has(camera.deviceId))
-                continue;
-            if (camera.deviceId === camera.parentId)
-                this.arloBasestations.set(camera.deviceId, camera);
-            this.arloCameras.set(camera.deviceId, camera);
-        }
-        this.arloBasestations = sortedMap(this.arloBasestations, device => device.deviceName);
-        this.arloCameras = sortedMap(this.arloCameras, device => device.deviceName);
-        const cameraCount = this.arloCameras.size;
-        this.logger.debug(`Found ${cameraCount} camera${cameraCount === 1 ? '' : 's'}.`);
-
-        if (this.mvssEnabled) {
-            const locations = await arlo.getLocations();
-            this.storage.setItem('one_location', String(Object.keys(locations).length <= 1));
-            const sorted = Object.entries(locations).sort(([, a], [, b]) => a.toLowerCase().localeCompare(b.toLowerCase()));
-            for (const [location, name] of sorted) {
-                const nativeId = `${location}.mvss`;
-                const deviceName = `Arlo Mode Virtual Security System ${name}`;
-                addEntry(mvssEntries, `${deviceName} (${nativeId})`);
-                this.logger.debug(`Found mode virtual security system ${deviceName}`);
-                if (!this.arloMvss.has(nativeId))
-                    this.arloMvss.set(nativeId, { location_name: name, deviceName });
-            }
-            this.arloMvss = sortedMap(this.arloMvss, info => info.location_name);
-            this.logger.debug(`Found ${this.arloMvss.size} mode virtual security system${this.arloMvss.size === 1 ? '' : 's'}.`);
-        }
-
-        const sortEntries = (list: string[]) => [...list].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-        this.allDeviceIds = [...sortEntries(basestationEntries), ...sortEntries(cameraEntries), ...sortEntries(mvssEntries)];
-        this.logger.info('Done discovering devices.');
-    }
-
-    private async subscribeToEventStream(periodicDiscovery = false): Promise<void> {
-        const arlo = this.arlo;
-        if (!arlo?.loggedIn) {
-            this.logger.warn('Arlo client not logged in, cannot subscribe to event stream.');
-            return;
-        }
-        this.logger.info('Subscribing to Arlo event stream...');
-        const pairs = [...this.arloCameras.values()]
-            .map(camera => [this.arloBasestations.get(camera.parentId), camera] as [ArloDevice, ArloDevice]);
-        for (let attempt = 1; ; attempt++) {
-            try {
-                await arlo.subscribe(pairs, { startHeartbeat: !this.setupInProgress });
-                break;
-            }
-            catch (e) {
-                const retryable = e instanceof TransientRequestError || e instanceof TimeoutError
-                    || (e instanceof Error && e.constructor === Error);
-                if (!retryable || attempt === 2) {
-                    if (retryable)
-                        this.logger.error('Stream still failed to connect after retry.');
-                    throw e;
-                }
-                this.logger.warn(`Event stream failed to connect: ${e}`);
-                this.logger.debug('Retrying stream setup after short delay...');
-                await sleep(5_000);
-            }
-        }
-        if (arlo.eventStream && !periodicDiscovery)
-            arlo.eventStream.setRefreshInterval(this.eventStreamRefreshInterval);
-        this.logger.info('Subscribed to Arlo event stream successfully.');
-    }
-
-    private async createDevices(): Promise<void> {
-        if (!this.arlo?.loggedIn)
-            throw new Error('Arlo client not connected, cannot create devices');
-        this.logger.info('Creating devices...');
-        const manifests = new Map<string | undefined, Device[]>();
-        let basestations = 0;
-        for (const [nativeId, basestation] of this.arloBasestations) {
-            if (this.arloCameras.has(nativeId))
-                continue;
-            try {
-                if (await this.registerDevice(nativeId, basestation, manifests))
-                    basestations++;
-            }
-            catch (e) {
-                this.logger.error(`Exception registering basestation ${basestation.deviceName}:`, e);
-            }
-        }
-        this.logCreationMismatch('basestations', [...this.arloBasestations.keys()].filter(id => !this.arloCameras.has(id)).length, basestations);
-        let cameras = 0;
-        for (const [nativeId, camera] of this.arloCameras) {
-            try {
-                if (await this.registerDevice(nativeId, camera, manifests, camera.parentId))
-                    cameras++;
-            }
-            catch (e) {
-                this.logger.error(`Exception registering camera ${camera.deviceName}:`, e);
-            }
-        }
-        this.logCreationMismatch('cameras', this.arloCameras.size, cameras);
-        if (this.mvssEnabled) {
-            let mvss = 0;
-            for (const [nativeId, info] of this.arloMvss) {
-                try {
-                    if (await this.registerDevice(nativeId, info as unknown as ArloDevice, manifests, undefined, info.location_name))
-                        mvss++;
-                }
-                catch (e) {
-                    this.logger.error(`Exception registering mvss ${info.deviceName}:`, e);
-                }
-            }
-            this.logCreationMismatch('mode virtual security systems', this.arloMvss.size, mvss);
-        }
-        for (const list of [...manifests.values()]) {
-            for (const manifest of list) {
-                if (manifest.interfaces.includes(ScryptedInterface.DeviceProvider) && !manifests.has(manifest.nativeId))
-                    manifests.set(manifest.nativeId, []);
-            }
-        }
-        this.endBuild();
-        await this.sendDevicesToScrypted(manifests);
-        this.logger.info('Done creating devices.');
-        this.settingsChanged();
-    }
-
-    private async registerDevice(nativeId: string, deviceDict: ArloDevice, manifests: Map<string | undefined, Device[]>,
-        parentId?: string, locationName?: string): Promise<boolean> {
-        if (this.hiddenDeviceIds.includes(nativeId)) {
-            this.logger.debug(`Skipping ${deviceDict.deviceName} as it is hidden.`);
-            return false;
-        }
-        let device = this.scryptedDevices.get(nativeId);
-        if (device) {
-            this.logger.debug(`Device ${deviceDict.deviceName} already exists, skipping re-registration.`);
-        }
-        else {
-            let properties: Record<string, any> = {};
-            if (!nativeId.endsWith('mvss')) {
-                properties = deviceDict.properties ?? {};
-                if (!Object.keys(properties).length)
-                    properties = parentId
-                        ? await this.getDeviceProperties(this.arloBasestations.get(parentId), deviceDict)
-                        : await this.getDeviceProperties(deviceDict);
-            }
-            device = this.getOrCreateDevice(nativeId, properties);
-            if (!device) {
-                this.logger.warn(`Failed to create device for ${deviceDict.deviceName}, skipping registration.`);
-                return false;
-            }
-            try {
-                await withTimeout(device.waitForReady(), 15_000);
-            }
-            catch {
-                this.logger.warn(`Timed out waiting for ${deviceDict.deviceName} to finish startup initialization; continuing device registration.`);
-            }
-        }
-        this.deviceReady(nativeId, device);
-        if (device instanceof ArloModeVirtualSecuritySystem)
-            device.completeInit();
-        const manifest = nativeId.endsWith('mvss') && locationName
-            ? device.getDeviceManifest({
-                name: `Arlo Mode Virtual Security System ${locationName}`,
-                infoOverrides: { model: 'Arlo Mode Virtual Security System', manufacturer: 'Arlo', firmware: '1.0', serialNumber: '000' },
-                nativeId,
-            })
-            : device.getDeviceManifest();
-        this.logger.debug(`Interfaces for ${deviceDict.deviceName}: ${JSON.stringify(device.getApplicableInterfaces())}`);
-        const provider = !parentId || this.hiddenDeviceIds.includes(parentId) || nativeId === parentId ? undefined : parentId;
-        this.appendManifest(manifests, provider, manifest);
-        const given = this.handedOut.get(nativeId);
-        const refresh = !!given && given !== device;
-        if (refresh)
-            this.logger.debug(`Asking Scrypted to fetch the rebuilt ${deviceDict.deviceName} and its children again.`);
-        await sdk.deviceManager.onDeviceDiscovered(refresh ? { ...manifest, refresh } : manifest);
-        for (const child of device.getBuiltinChildDeviceManifests()) {
-            await sdk.deviceManager.onDeviceDiscovered(refresh ? { ...child, refresh } : child);
-            this.appendManifest(manifests, child.providerNativeId, child);
-        }
-        return true;
-    }
-
-    private appendManifest(manifests: Map<string | undefined, Device[]>, provider: string | undefined, manifest: Device): void {
-        const list = manifests.get(provider) ?? [];
-        if (!list.some(entry => entry.nativeId === manifest.nativeId))
-            list.push(manifest);
-        manifests.set(provider, list);
-    }
-
-    private logCreationMismatch(kind: string, total: number, shown: number): void {
-        const singular = kind.slice(0, -1);
-        if (total === shown) {
-            this.logger.info(`Created ${shown} ${shown === 1 ? singular : kind}.`);
-            return;
-        }
-        const wifi = singular === 'camera' ? ' or is a Wi-Fi Camera' : '';
-        this.logger.info(`Created ${total} ${total === 1 ? singular : kind}, but${shown === 0 ? ' ' : ' only '}${shown} ${shown === 1 ? 'is' : 'are'} shown.`);
-        this.logger.info(`This could be because a ${singular} is hidden${wifi}.`);
-        this.logger.info(`If a ${singular} is not hidden${wifi} but is still missing, ensure all ${kind} are added correctly in the Arlo App.`);
-    }
-
-    private async sendDevicesToScrypted(manifests: Map<string | undefined, Device[]>): Promise<void> {
-        for (const [provider, devices] of manifests) {
-            if (provider === undefined)
-                continue;
-            const name = this.arloBasestations.get(provider)?.deviceName ?? this.arloCameras.get(provider)?.deviceName ?? provider;
-            this.logger.debug(`Sending ${name} and children to scrypted server`);
-            await sdk.deviceManager.onDevicesChanged({ devices, providerNativeId: provider });
-        }
-        const root = manifests.get(undefined) ?? [];
-        if (root.length || this.allDeviceIds.length)
-            await sdk.deviceManager.onDevicesChanged({ devices: root });
-    }
-
-    async getDeviceProperties(basestation: ArloDevice, camera?: ArloDevice): Promise<Record<string, any>> {
-        const id = camera?.deviceId ?? basestation.deviceId;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-                return await this.arlo.triggerProperties(basestation, camera, { timeout: 5_000 });
-            }
-            catch (e) {
-                if (!(e instanceof TimeoutError)) {
-                    this.logger.error(`Error while fetching properties for ${id}: ${e}`);
-                    return {};
-                }
-            }
-        }
-        this.logger.error(`Timeout while fetching properties for ${id}`);
-        return {};
-    }
-
-    private getOrCreateDevice(nativeId: string, properties: Record<string, any>): ArloDeviceBase | undefined {
-        let device = this.scryptedDevices.get(nativeId);
-        if (device)
-            return device;
-        this.logger.debug(`Device ${nativeId} not found, creating new device.`);
-        device = this.createDevice(nativeId, properties);
-        if (device)
-            this.scryptedDevices.set(nativeId, device);
-        return device;
-    }
-
-    private createDevice(nativeId: string, properties: Record<string, any>): ArloDeviceBase | undefined {
-        if (nativeId.endsWith('mvss')) {
-            const info = this.arloMvss.get(nativeId);
-            if (!info)
-                return undefined;
-            const device = info as unknown as ArloDevice;
-            return new ArloModeVirtualSecuritySystem(nativeId, device, device, properties, this);
-        }
-        const camera = this.arloCameras.get(nativeId);
-        if (!camera) {
-            const basestation = this.arloBasestations.get(nativeId);
-            if (!basestation) {
-                this.logger.warn(`Device ${nativeId} not created, it has not been discovered yet.`);
-                return undefined;
-            }
-            return new ArloBasestation(nativeId, basestation, properties, this);
-        }
-        const basestation = this.arloBasestations.get(camera.parentId);
-        if (!basestation) {
-            this.logger.warn(`Cannot create camera with nativeId ${nativeId} when ${camera.parentId} is not a valid basestation`);
-            return undefined;
-        }
-        return camera.deviceType === DEVICE_TYPE_DOORBELL
-            ? new ArloDoorbell(nativeId, camera, basestation, properties, this)
-            : new ArloCamera(nativeId, camera, basestation, properties, this);
-    }
-
     requestRestart(scope: RestartScope): void {
         if (scope === 'event_stream') {
             this.requestEventStreamRestart();
             return;
         }
-        const run = scope === 'plugin'
+        const restart = scope === 'plugin'
             ? this.requestPluginRestart(false)
             : this.handleRestart(scope);
-        run.catch(e => this.logger.error(`Failed to request restart for scope ${scope}:`, e));
+        restart.catch(e => this.logger.error(`Failed to request restart for scope ${scope}:`, e));
     }
 
     private requestEventStreamRestart(): void {
         if (this.eventStreamRestartPending)
             return;
         this.eventStreamRestartPending = true;
-        const quick = Date.now() - this.eventStreamRestartAt < EVENT_STREAM_STABLE;
-        this.eventStreamBackoff = quick ? Math.min(Math.max(this.eventStreamBackoff * 2, 5_000), 60_000) : 0;
+        const restartedRecently = Date.now() - this.eventStreamRestartAt < 60_000;
+        this.eventStreamBackoff = restartedRecently ? Math.min(Math.max(this.eventStreamBackoff * 2, 5_000), 60_000) : 0;
         if (this.eventStreamBackoff)
             this.logger.info(`The event stream dropped again within a minute of its last restart; restarting it in ${this.eventStreamBackoff / 1000} seconds.`);
         this.taskManager.createTask(async signal => {
@@ -1279,13 +963,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 await this.periodicLock.run(async () => {
                     await this.taskManager.cancelAndAwaitByTag('refresh', this);
                     if (this.arlo?.loggedIn)
-                        this.taskManager.createTask(signal => this.refreshLoginLoop(signal), { tag: 'refresh', owner: this });
+                        this.taskManager.createTask(refreshSignal => this.refreshLoginLoop(refreshSignal), { tag: 'refresh', owner: this });
                 });
             }
             else if (scope === 'restart' || scope === 'relogin') {
                 this.logger.info(scope === 'relogin' ? 'Forcing account relogin.' : 'Forcing full restart.');
                 await this.periodicLock.run(() => this.deviceLock.run(() => this.shutdownLocked(scope === 'restart')));
-                await this.initializePlugin(undefined, { awaitLogin: true });
+                await this.initializePlugin(true);
             }
             else if (scope === 'event_stream') {
                 await this.errorManager.waitForAuthReady('event stream restart', { signal });
@@ -1316,6 +1000,15 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.logger.info('Provider shutdown finished');
     }
 
+    private async deviceHandler(periodicDiscovery = false, signal?: AbortSignal): Promise<void> {
+        await this.errorManager.waitForAuthReady('device discovery', { signal });
+        await this.deviceLock.run(async () => {
+            await this.discoverDevices();
+            await this.subscribeToEventStream(periodicDiscovery);
+            await this.createDevices();
+        }, signal);
+    }
+
     async getSettings(): Promise<Setting[]> {
         return this.storageSettings.getSettings();
     }
@@ -1325,13 +1018,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.settingsChanged();
             return;
         }
-        const values = this.storageSettings.values;
         switch (key) {
             case 'arlo_username':
             case 'arlo_password': {
-                const previous = [this.arloUsername, this.arloPassword];
+                const prevUser = this.arloUsername;
+                const prevPass = this.arloPassword;
                 await this.storageSettings.putSetting(key, value);
-                if (this.arloUsername && this.arloPassword && (this.arloUsername !== previous[0] || this.arloPassword !== previous[1]))
+                if (this.arloUsername && this.arloPassword && (this.arloUsername !== prevUser || this.arloPassword !== prevPass))
                     this.requestRestart('restart');
                 break;
             }
@@ -1354,12 +1047,12 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 await this.storageSettings.putSetting(key, value);
                 this.requestRestart('refresh_login_loop');
                 if (value === 'Manual' && previous !== 'Manual')
-                    this.clearImapSettings();
+                    this.clearImapDefaults();
                 break;
             }
             case 'event_stream_refresh_interval':
                 await this.storageSettings.putSetting(key, value);
-                this.arlo?.eventStream?.setRefreshInterval(values.event_stream_refresh_interval);
+                this.arlo?.eventStream?.setRefreshInterval(this.eventStreamRefreshInterval);
                 break;
             case 'imap_mfa_host':
             case 'imap_mfa_port':
@@ -1377,15 +1070,13 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                     this.requestRestart('relogin');
                 break;
             case 'device_refresh_interval':
-            case 'device_discovery_interval': {
                 await this.storageSettings.putSetting(key, value);
-                const [tag, loop] = key === 'device_refresh_interval'
-                    ? ['periodic_refresh', (signal: AbortSignal) => this.periodicRefresh(signal)] as const
-                    : ['periodic_discovery', (signal: AbortSignal) => this.periodicDiscovery(signal)] as const;
-                await this.taskManager.cancelAndAwaitByTag(tag, this);
-                this.taskManager.createTask(loop, { tag, owner: this });
+                await this.restartPeriodicTask('periodic_refresh', signal => this.periodicRefresh(signal));
                 break;
-            }
+            case 'device_discovery_interval':
+                await this.storageSettings.putSetting(key, value);
+                await this.restartPeriodicTask('periodic_discovery', signal => this.periodicDiscovery(signal));
+                break;
             case 'auto_snapshot_generation':
                 await this.storageSettings.putSetting(key, value);
                 for (const device of this.scryptedDevices.values()) {
@@ -1424,14 +1115,293 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         return true;
     }
 
-    private clearImapSettings(): void {
+    private clearImapDefaults(): void {
         for (const key of ['imap_mfa_host', 'imap_mfa_username', 'imap_mfa_password', 'imap_mfa_sender', 'imap_mfa_port'])
             this.storage.removeItem(key);
     }
 
-    async getDevice(nativeId: string): Promise<any> {
+    private async restartPeriodicTask(tag: string, fn: (signal: AbortSignal) => Promise<void>): Promise<void> {
+        await this.taskManager.cancelAndAwaitByTag(tag, this);
+        this.taskManager.createTask(fn, { tag, owner: this });
+    }
+
+    async mdns(): Promise<void> {
+        this.logger.debug('Initializing mDNS Discovery for basestation(s).');
+        try {
+            const services = await browseArloServices(this.logger);
+            this.storage.setItem('mdns_services', JSON.stringify(services));
+            if (Object.keys(services).length)
+                this.logger.debug('Basestation(s) found in mDNS.');
+        }
+        catch (e) {
+            this.logger.error('Basestation(s) not found in mDNS, manual input needed under basestation(s) settings.');
+        }
+    }
+
+    private async discoverDevices(): Promise<void> {
+        const arlo = this.arlo;
+        if (!arlo?.loggedIn)
+            throw new Error('Arlo client not connected, cannot discover devices');
+        this.logger.info('Discovering devices...');
+        const basestationEntries: string[] = [];
+        const cameraEntries: string[] = [];
+        const mvssEntries: string[] = [];
+        const seen = new Set<string>();
+        const addEntry = (list: string[], entry: string) => {
+            if (!seen.has(entry)) {
+                seen.add(entry);
+                list.push(entry);
+            }
+        };
+
+        const basestations = await arlo.getDevices([DEVICE_TYPE_BASESTATION, DEVICE_TYPE_SIREN], true);
+        for (const basestation of [...basestations].sort((a, b) => compareNames(a.deviceName, b.deviceName))) {
+            addEntry(basestationEntries, `${basestation.deviceName} (${basestation.deviceId})`);
+            this.logger.debug(`Found basestation ${basestation.deviceName}`);
+            if (!this.arloBasestations.has(basestation.deviceId))
+                this.arloBasestations.set(basestation.deviceId, basestation);
+        }
+        this.arloBasestations = sortedMap(this.arloBasestations, device => device.deviceName);
+        const basestationCount = this.arloBasestations.size;
+        this.logger.debug(`Found ${basestationCount} basestation${basestationCount === 1 ? '' : 's'}.`);
+
+        const cameras = await arlo.getDevices([DEVICE_TYPE_CAMERA, DEVICE_TYPE_ARLOQ, DEVICE_TYPE_ARLOQS, DEVICE_TYPE_DOORBELL], true);
+        for (const camera of [...cameras].sort((a, b) => compareNames(a.deviceName, b.deviceName))) {
+            addEntry(cameraEntries, `${camera.deviceName} (${camera.deviceId})`);
+            this.logger.debug(`Found camera ${camera.deviceName}`);
+            if (camera.deviceId !== camera.parentId && !this.arloBasestations.has(camera.parentId)) {
+                this.logger.debug(`Skipping camera ${camera.deviceName} because its basestation was not found.`);
+                continue;
+            }
+            if (this.arloCameras.has(camera.deviceId))
+                continue;
+            if (camera.deviceId === camera.parentId)
+                this.arloBasestations.set(camera.deviceId, camera);
+            this.arloCameras.set(camera.deviceId, camera);
+        }
+        this.arloBasestations = sortedMap(this.arloBasestations, device => device.deviceName);
+        this.arloCameras = sortedMap(this.arloCameras, device => device.deviceName);
+        const cameraCount = this.arloCameras.size;
+        this.logger.debug(`Found ${cameraCount} camera${cameraCount === 1 ? '' : 's'}.`);
+
+        if (this.mvssEnabled) {
+            const locations = await arlo.getLocations();
+            this.storage.setItem('one_location', String(Object.keys(locations).length <= 1));
+            for (const [location, name] of Object.entries(locations).sort(([, a], [, b]) => compareNames(a, b))) {
+                const nativeId = `${location}.mvss`;
+                const deviceName = `Arlo Mode Virtual Security System ${name}`;
+                addEntry(mvssEntries, `${deviceName} (${nativeId})`);
+                this.logger.debug(`Found mode virtual security system ${deviceName}`);
+                if (!this.arloMvss.has(nativeId))
+                    this.arloMvss.set(nativeId, { locationName: name, deviceName });
+            }
+            this.arloMvss = sortedMap(this.arloMvss, mvss => mvss.locationName);
+            this.logger.debug(`Found ${this.arloMvss.size} mode virtual security system${this.arloMvss.size === 1 ? '' : 's'}.`);
+        }
+
+        this.allDeviceIds = [basestationEntries, cameraEntries, mvssEntries].flatMap(entries => [...entries].sort(compareNames));
+        this.logger.info('Done discovering devices.');
+    }
+
+    private async subscribeToEventStream(periodicDiscovery = false): Promise<void> {
+        const arlo = this.arlo;
+        if (!arlo?.loggedIn) {
+            this.logger.warn('Arlo client not logged in, cannot subscribe to event stream.');
+            return;
+        }
+        this.logger.info('Subscribing to Arlo event stream...');
+        const subscribeArgs: [ArloDevice, ArloDevice][] = [...this.arloCameras.values()]
+            .map(camera => [this.arloBasestations.get(camera.parentId), camera]);
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                await arlo.subscribe(subscribeArgs, { startHeartbeat: !this.setupInProgress });
+                break;
+            }
+            catch (e) {
+                if (!(e instanceof TransientRequestError || e instanceof TimeoutError || e?.constructor === Error))
+                    throw e;
+                if (attempt === 0) {
+                    this.logger.warn(`Event stream failed to connect: ${e}`);
+                    this.logger.debug('Retrying stream setup after short delay...');
+                    await sleep(5_000);
+                }
+                else {
+                    this.logger.error('Stream still failed to connect after retry.');
+                    throw e;
+                }
+            }
+        }
+        if (arlo.eventStream && !periodicDiscovery)
+            arlo.eventStream.setRefreshInterval(this.eventStreamRefreshInterval);
+        this.logger.info('Subscribed to Arlo event stream successfully.');
+    }
+
+    private async createDevices(): Promise<void> {
+        if (!this.arlo?.loggedIn)
+            throw new Error('Arlo client not connected, cannot create devices');
+        this.logger.info('Creating devices...');
+        const providerToDeviceMap = new Map<string | undefined, Device[]>();
+        let basestationCount = 0;
+        for (const [nativeId, basestation] of this.arloBasestations) {
+            if (this.arloCameras.has(nativeId))
+                continue;
+            try {
+                if (await this.registerDevice(nativeId, basestation, providerToDeviceMap))
+                    basestationCount++;
+            }
+            catch (e) {
+                this.logger.error(`Exception registering basestation ${basestation.deviceName}:`, e);
+            }
+        }
+        this.logCreationMismatch('basestations', [...this.arloBasestations.keys()].filter(id => !this.arloCameras.has(id)).length, basestationCount);
+        let cameraCount = 0;
+        for (const [nativeId, camera] of this.arloCameras) {
+            try {
+                if (await this.registerDevice(nativeId, camera, providerToDeviceMap, camera.parentId))
+                    cameraCount++;
+            }
+            catch (e) {
+                this.logger.error(`Exception registering camera ${camera.deviceName}:`, e);
+            }
+        }
+        this.logCreationMismatch('cameras', this.arloCameras.size, cameraCount);
+        if (this.mvssEnabled) {
+            let mvssCount = 0;
+            for (const [nativeId, mvss] of this.arloMvss) {
+                try {
+                    if (await this.registerDevice(nativeId, mvss as ArloDevice, providerToDeviceMap, undefined, mvss.locationName))
+                        mvssCount++;
+                }
+                catch (e) {
+                    this.logger.error(`Exception registering mvss ${mvss.deviceName}:`, e);
+                }
+            }
+            this.logCreationMismatch('mode virtual security systems', this.arloMvss.size, mvssCount);
+        }
+        for (const devices of [...providerToDeviceMap.values()]) {
+            for (const device of devices) {
+                if (device.interfaces.includes(ScryptedInterface.DeviceProvider) && !providerToDeviceMap.has(device.nativeId))
+                    providerToDeviceMap.set(device.nativeId, []);
+            }
+        }
+        this.endBuild();
+        await this.sendDevicesToScrypted(providerToDeviceMap);
+        this.logger.info('Done creating devices.');
+        this.settingsChanged();
+    }
+
+    private async registerDevice(nativeId: string, arloDevice: ArloDevice, providerToDeviceMap: Map<string | undefined, Device[]>,
+        parentId?: string, locationName?: string): Promise<boolean> {
+        if (this.hiddenDeviceIds.includes(nativeId)) {
+            this.logger.debug(`Skipping ${arloDevice.deviceName} as it is hidden.`);
+            return false;
+        }
+        let device = this.scryptedDevices.get(nativeId);
+        if (device) {
+            this.logger.debug(`Device ${arloDevice.deviceName} already exists, skipping re-registration.`);
+        }
+        else {
+            let properties: Record<string, any> = {};
+            if (!nativeId.endsWith('mvss')) {
+                properties = arloDevice.properties ?? {};
+                if (!Object.keys(properties).length)
+                    properties = parentId
+                        ? await this.getDeviceProperties(this.arloBasestations.get(parentId), arloDevice)
+                        : await this.getDeviceProperties(arloDevice);
+            }
+            this.logger.debug(`Device ${nativeId} not found, creating new device.`);
+            device = this.createDevice(nativeId, properties);
+            if (!device) {
+                this.logger.warn(`Failed to create device for ${arloDevice.deviceName}, skipping registration.`);
+                return false;
+            }
+            this.scryptedDevices.set(nativeId, device);
+            try {
+                await withTimeout(device.waitForReady(), 15_000);
+            }
+            catch {
+                this.logger.warn(`Timed out waiting for ${arloDevice.deviceName} to finish startup initialization; continuing device registration.`);
+            }
+        }
+        this.deviceWaiters.get(nativeId)?.resolve(device);
+        this.deviceWaiters.delete(nativeId);
+        if (device instanceof ArloModeVirtualSecuritySystem)
+            device.completeInit();
+        const manifest = nativeId.endsWith('mvss') && locationName
+            ? device.getDeviceManifest({
+                name: `Arlo Mode Virtual Security System ${locationName}`,
+                infoOverrides: { model: 'Arlo Mode Virtual Security System', manufacturer: 'Arlo', firmware: '1.0', serialNumber: '000' },
+                nativeId,
+            })
+            : device.getDeviceManifest();
+        this.logger.debug(`Interfaces for ${arloDevice.deviceName}: ${JSON.stringify(device.getApplicableInterfaces())}`);
+        const providerNativeId = !parentId || this.hiddenDeviceIds.includes(parentId) || nativeId === parentId ? undefined : parentId;
+        this.appendUnique(providerToDeviceMap, providerNativeId, manifest);
+        const loaded = this.loadedDevices.get(nativeId);
+        const refresh = !!loaded && loaded !== device;
+        if (refresh)
+            this.logger.debug(`Asking Scrypted to fetch the rebuilt ${arloDevice.deviceName} and its children again.`);
+        await sdk.deviceManager.onDeviceDiscovered({ ...manifest, refresh });
+        for (const child of device.getBuiltinChildDeviceManifests()) {
+            await sdk.deviceManager.onDeviceDiscovered({ ...child, refresh });
+            this.appendUnique(providerToDeviceMap, child.providerNativeId, child);
+        }
+        return true;
+    }
+
+    private logCreationMismatch(kind: string, total: number, shown: number): void {
+        const singular = kind.slice(0, -1);
+        if (total === shown) {
+            this.logger.info(`Created ${shown} ${shown === 1 ? singular : kind}.`);
+            return;
+        }
+        const wifi = singular === 'camera' ? ' or is a Wi-Fi Camera' : '';
+        this.logger.info(`Created ${total} ${total === 1 ? singular : kind}, but${shown === 0 ? ' ' : ' only '}${shown} ${shown === 1 ? 'is' : 'are'} shown.`);
+        this.logger.info(`This could be because a ${singular} is hidden${wifi}.`);
+        this.logger.info(`If a ${singular} is not hidden${wifi} but is still missing, ensure all ${kind} are added correctly in the Arlo App.`);
+    }
+
+    private async sendDevicesToScrypted(providerToDeviceMap: Map<string | undefined, Device[]>): Promise<void> {
+        for (const [providerNativeId, devices] of providerToDeviceMap) {
+            if (providerNativeId === undefined)
+                continue;
+            const name = this.arloBasestations.get(providerNativeId)?.deviceName ?? this.arloCameras.get(providerNativeId)?.deviceName ?? providerNativeId;
+            this.logger.debug(`Sending ${name} and children to scrypted server`);
+            await sdk.deviceManager.onDevicesChanged({ devices, providerNativeId });
+        }
+        const rootDevices = providerToDeviceMap.get(undefined) ?? [];
+        if (rootDevices.length || this.allDeviceIds.length)
+            await sdk.deviceManager.onDevicesChanged({ devices: rootDevices });
+    }
+
+    async getDeviceProperties(basestation: ArloDevice, camera?: ArloDevice): Promise<Record<string, any>> {
+        const id = camera?.deviceId ?? basestation.deviceId;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return await this.arlo.triggerProperties(basestation, camera, { timeout: 5_000 });
+            }
+            catch (e) {
+                if (!(e instanceof TimeoutError)) {
+                    this.logger.error(`Error while fetching properties for ${id}: ${e}`);
+                    return {};
+                }
+            }
+        }
+        this.logger.error(`Timeout while fetching properties for ${id}`);
+        return {};
+    }
+
+    private appendUnique(providerToDeviceMap: Map<string | undefined, Device[]>, providerNativeId: string | undefined, manifest: Device): void {
+        const devices = providerToDeviceMap.get(providerNativeId) ?? [];
+        if (!devices.some(device => device.nativeId === manifest.nativeId))
+            devices.push(manifest);
+        providerToDeviceMap.set(providerNativeId, devices);
+    }
+
+    async getDevice(nativeId: string): Promise<ArloDeviceBase | undefined> {
         if (!this.disablePlugin) {
-            const name = this.arloBasestations.get(nativeId)?.deviceName ?? this.arloCameras.get(nativeId)?.deviceName ?? this.arloMvss.get(nativeId)?.deviceName ?? nativeId;
+            const name = this.arloBasestations.get(nativeId)?.deviceName ?? this.arloCameras.get(nativeId)?.deviceName
+                ?? this.arloMvss.get(nativeId)?.deviceName ?? nativeId;
             this.logger.debug(`Scrypted requested to load device ${name}`);
         }
         let device = this.scryptedDevices.get(nativeId);
@@ -1441,23 +1411,18 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 waiter = new Deferred();
                 this.deviceWaiters.set(nativeId, waiter);
             }
-            device = await withTimeout(waiter.promise, BUILD_WAIT).catch(() => undefined);
+            device = await withTimeout(waiter.promise, 60_000).catch(() => undefined);
         }
         if (device)
-            this.handedOut.set(nativeId, device);
+            this.loadedDevices.set(nativeId, device);
         return device;
     }
 
     async releaseDevice(id: string, nativeId: string): Promise<void> {
         const device = this.scryptedDevices.get(nativeId);
         this.scryptedDevices.delete(nativeId);
-        this.handedOut.delete(nativeId);
+        this.loadedDevices.delete(nativeId);
         await device?.close();
-    }
-
-    private deviceReady(nativeId: string, device: ArloDeviceBase): void {
-        this.deviceWaiters.get(nativeId)?.resolve(device);
-        this.deviceWaiters.delete(nativeId);
     }
 
     private endBuild(): void {
@@ -1467,5 +1432,31 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         for (const waiter of this.deviceWaiters.values())
             waiter.resolve(undefined);
         this.deviceWaiters.clear();
+    }
+
+    private createDevice(nativeId: string, properties: Record<string, any>): ArloDeviceBase | undefined {
+        if (nativeId.endsWith('mvss')) {
+            const mvss = this.arloMvss.get(nativeId) as ArloDevice;
+            if (!mvss)
+                return undefined;
+            return new ArloModeVirtualSecuritySystem(nativeId, mvss, mvss, properties, this);
+        }
+        const camera = this.arloCameras.get(nativeId);
+        if (!camera) {
+            const basestation = this.arloBasestations.get(nativeId);
+            if (!basestation) {
+                this.logger.warn(`Device ${nativeId} not created, it has not been discovered yet.`);
+                return undefined;
+            }
+            return new ArloBasestation(nativeId, basestation, properties, this);
+        }
+        const basestation = this.arloBasestations.get(camera.parentId);
+        if (!basestation) {
+            this.logger.warn(`Cannot create camera with nativeId ${nativeId} when ${camera.parentId} is not a valid basestation`);
+            return undefined;
+        }
+        return camera.deviceType === DEVICE_TYPE_DOORBELL
+            ? new ArloDoorbell(nativeId, camera, basestation, properties, this)
+            : new ArloCamera(nativeId, camera, basestation, properties, this);
     }
 }
