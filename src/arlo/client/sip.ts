@@ -405,7 +405,14 @@ export class SIPManager {
         await this.taskManager.cancelAndAwaitByOwner(this);
         if (this.inviteResp && this.ws?.readyState === WebSocket.OPEN) {
             try {
-                await this.writeWebsocket(this.buildBye());
+                await this.transactionLock.run(async () => {
+                    await this.writeWebsocket(this.buildBye());
+                    let response = await this.readWebsocket();
+                    while (!response.getHeader('CSeq')?.endsWith('BYE'))
+                        response = await this.readWebsocket();
+                    if (response.statusCode !== 200)
+                        this.logger.warn(`Arlo answered BYE with ${response.statusCode} ${response.reason}`);
+                });
             }
             catch (e) {
                 this.logger.warn(`Exception sending BYE: ${e}`);
