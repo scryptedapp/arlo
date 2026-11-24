@@ -1,15 +1,3 @@
-// Keeps impers' two native parts, which the plugin does not bundle, matched
-// to the impers that is:
-// - koffi, which Scrypted installs on the server, at the version package.json
-//   pins under optionalDependencies. It must be the koffi impers uses here.
-// - libcurl-impersonate, which impers downloads from GitHub when the plugin
-//   first starts. The plugin loads it only if its SHA-256 matches the one in
-//   src/arlo/client/libcurl-sha256.json for the platform. Each platform's hash
-//   is taken by running impers' own loader as if on that platform, so it is of
-//   the file impers picks and unpacks there.
-//
-//   node scripts/impers.mjs           record the hashes (npm run update-impers runs this)
-//   node scripts/impers.mjs --check   fail unless the koffi pin and the hashes match (the builds run this)
 
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -38,7 +26,6 @@ const loaderUrl = pathToFileURL(path.join(path.dirname(require.resolve('impers')
 const [mode, ...args] = process.argv.slice(2);
 
 if (mode === '--target') {
-    // A child process standing in for one platform.
     const [platform, arch, libc, cache] = args;
     Object.defineProperty(process, 'platform', { value: platform });
     Object.defineProperty(process, 'arch', { value: arch });
@@ -63,7 +50,6 @@ if (mode === '--target') {
 const { LIBCURL_IMPERSONATE_VERSION: release } = await import(loaderUrl);
 
 if (mode === '--check') {
-    // The koffi impers resolves from its own folder.
     let dir = path.dirname(require.resolve('koffi', { paths: [path.dirname(require.resolve('impers'))] }));
     while (!fs.existsSync(path.join(dir, 'package.json')))
         dir = path.dirname(dir);
@@ -82,8 +68,6 @@ if (mode === '--check') {
     process.exit(0);
 }
 
-// Runs one target and returns its result as soon as it is printed. A child
-// now and then stays alive after printing it, so it is then ended.
 function runTarget(platform, arch, libc, cache) {
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [import.meta.filename, '--target', platform, arch, libc ?? '', cache], { stdio: ['ignore', 'pipe', 'inherit'] });

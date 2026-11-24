@@ -6,7 +6,6 @@ import { sleep } from '../util';
 const SERVICE = '_arlo-video._tcp.local';
 
 export interface ArloService {
-    // The basestation's mDNS host name, such as VMB5000.local.
     server: string;
     address: string;
     deviceId: string;
@@ -23,15 +22,12 @@ function txtValue(data: unknown, key: string): string | undefined {
     return undefined;
 }
 
-// Browses the local network for Arlo basestations, which advertise
-// _arlo-video._tcp with their device ID, and returns them by device ID.
 export async function browseArloServices(logger: Logger, duration = 2_000): Promise<Record<string, ArloService>> {
     const mdns = makeMdns();
     const instances = new Set<string>();
     const targets = new Map<string, string>();
     const deviceIds = new Map<string, string>();
     const addresses = new Map<string, string>();
-    // Without these, a socket error would end the plugin.
     mdns.on('error', e => logger.debug(`mDNS error: ${e}`));
     mdns.on('warning', e => logger.debug(`mDNS warning: ${e}`));
     try {

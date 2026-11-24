@@ -7,7 +7,6 @@ const FALLBACK_HOST = 'mqtt-cluster-z1-1.arloxcld.com';
 const CONNECT_TIMEOUT = 10_000;
 const MAX_ATTEMPTS = 4;
 
-// What the MQTT stream needs from the client.
 export interface MQTTClientInfo {
     readonly userId: string;
     readonly authorization: string;
@@ -21,9 +20,6 @@ export interface MQTTStreamHost extends StreamHost {
     requestAuthRecovery(reason: string): void;
 }
 
-// Arlo's event stream over MQTT: TLS on port 443, or a WebSocket when the
-// session names another port. A dropped connection restarts the whole event
-// stream, which reconnects with the current session.
 export class MQTTEventStream extends Stream {
     private client?: MqttClient;
     private readonly topics = new Set<string>();
@@ -57,8 +53,6 @@ export class MQTTEventStream extends Stream {
             }
         }
         if (!this.connected) {
-            // Finished trying, so the client builds a new stream next time
-            // instead of waiting on this one.
             this.initializing = false;
             this.logger.error(`${this.name} start failed: could not establish connection after ${MAX_ATTEMPTS - 1} retries.`);
             throw new TransientRequestError(`${this.name} start failed after retries.`);
@@ -158,8 +152,6 @@ export class MQTTEventStream extends Stream {
         this.dispatcher.dispatch(event);
     }
 
-    // A refused login (code 5) means the session is no longer valid; anything
-    // else restarts the event stream.
     private onTransportError(context: string, code?: number): void {
         if (code === 5) {
             this.logger.error(`${context}; MQTT reports authorization failure. Requesting relogin.`);

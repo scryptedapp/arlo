@@ -109,8 +109,6 @@ export abstract class ArloBaseVirtualSecuritySystem extends ArloDeviceBase imple
     }
 }
 
-// Guards a siren with arm and disarm: the siren only sounds while this is
-// armed. It changes nothing in the Arlo account.
 export class ArloSirenVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem implements DeviceProvider {
     siren?: ArloSiren;
 
@@ -203,7 +201,6 @@ const ARLO_TO_SCRYPTED: Record<string, SecuritySystemMode> = {
 
 const SCRYPTED_TO_ARLO: Record<string, string> = Object.fromEntries(Object.entries(ARLO_TO_SCRYPTED).map(([arlo, scrypted]) => [scrypted, arlo]));
 
-// Mirrors and sets the Arlo App's security mode for one location.
 export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem {
     private initCompleted = false;
     private unsubscribeActiveMode?: Unsubscribe;
@@ -213,7 +210,6 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
         this.markReady();
     }
 
-    // Started once the device is registered, since it needs its device state.
     completeInit(): void {
         if (!this.initCompleted)
             this.taskManager.createTask(signal => this.delayedInit(signal), { tag: `delayed_init:${this.nativeId}`, owner: this });
@@ -290,7 +286,6 @@ export class ArloModeVirtualSecuritySystem extends ArloBaseVirtualSecuritySystem
         this.updateState(mode);
     }
 
-    // Changes the security mode in the Arlo account, then here.
     private async changeArloMode(mode: SecuritySystemMode): Promise<void> {
         this.logger.info(`Setting Arlo Security Mode to ${mode}`);
         await this.provider.arlo!.setMode(SCRYPTED_TO_ARLO[mode] ?? mode, this.location, this.storage.getItem('next_revision') ?? '');

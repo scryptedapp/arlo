@@ -24,7 +24,7 @@ import {
     TaskManager,
     TimeoutError,
     TransientRequestError,
-    UnauthorizedError,
+    UnauthorizedRestartException,
     withTimeout,
 } from './util';
 import { ArloModeVirtualSecuritySystem } from './vss';
@@ -38,20 +38,11 @@ const DEVICE_TYPE_DOORBELL = 'doorbell';
 
 const MFA_STRATEGIES = ['Manual', 'IMAP'];
 const LOGIN_COOLDOWN = 60_000;
-// The longest Scrypted's request for a device waits while the plugin builds
-// its devices after loading.
 const BUILD_WAIT = 60_000;
-// A login that failed on a network or server error is tried again after 5
-// and 15 minutes, then hourly. Any other failure, such as a rejected
-// password or a missed MFA code, is not, so that Arlo and Cloudflare see no
-// repeated attempts; nor is anything tried during a 429 pause.
 const LOGIN_RETRY_DELAYS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
 const LOGIN_AGAIN = 'The plugin does not try again after this; once the cause is fixed, restart the plugin or turn on Force Re-Authentication.';
-// An event stream that drops again within this long of its last restart
-// waits before the next: 5 seconds, doubling up to a minute.
 const EVENT_STREAM_STABLE = 60_000;
 const MANUAL_MFA_TIMEOUT = 278_000;
-// Browser authentication is refreshed every 14 days to avoid MFA churn.
 const HARD_LOGIN_INTERVAL = 14 * 24 * 60 * 60_000;
 
 export type RestartScope = 'plugin' | 'restart' | 'relogin' | 'refresh_login_loop' | 'event_stream';
@@ -87,9 +78,6 @@ function htmlToText(html: string): string {
         .replace(/&amp;/gi, '&');
 }
 
-// The plugin itself: settings, Arlo Cloud login with multi-factor
-// authentication, device discovery, and the periodic and on-demand restarts
-// that keep the session and event stream fresh.
 export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, Settings, ArloClientHost {
     readonly logger = new Logger('Arlo Provider', this.console);
     readonly taskManager = new TaskManager(this.logger);
@@ -216,21 +204,11 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     arloMvss = new Map<string, ModeVirtualSecuritySystemInfo>();
     allDeviceIds: string[] = [];
     readonly scryptedDevices = new Map<string, ArloDeviceBase>();
-    // Scrypted asks for every device it knows as soon as the plugin loads,
-    // before login, discovery and creation. Until that first build ends, a
-    // request waits for its device instead of finding none, which would leave
-    // the device and its children unavailable.
     private building = true;
     private readonly deviceWaiters = new Map<string, Deferred<ArloDeviceBase | undefined>>();
-    // The object Scrypted was last given for each device. Scrypted keeps using
-    // it until told to fetch the device again, so a device rebuilt after an
-    // internal restart is reported with refresh.
     private readonly handedOut = new Map<string, ArloDeviceBase>();
     setupInProgress = false;
     fullResetNeeded = false;
-    // Why the last login failed: temporary ones are tried again on a
-    // schedule, final ones wait for the owner. Either way nothing else logs in
-    // meanwhile.
     private loginFailure?: 'temporary' | 'final';
     private loginRetries = 0;
     private eventStreamRestartPending = false;
@@ -270,8 +248,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.taskManager.createTask(() => initImpers(this.logger), { tag: 'impers', owner: this });
         this.taskManager.createTask(signal => this.initializePlugin(signal), { tag: 'initialize_plugin', owner: this });
     }
-
-    // Settings the client and devices read.
 
     get arloUsername(): string {
         return this.storageSettings.values.arlo_username ?? '';
@@ -337,7 +313,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         return this.storageSettings.values.device_refresh_interval;
     }
 
-    // The RSA key pair basestations issue local streaming certificates for.
     get arloPublicKey(): string {
         if (!this.storage.getItem('arlo_public_key'))
             this.generateArloKeypair();
@@ -369,8 +344,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
     private settingsChanged(): void {
         this.onDeviceEvent(ScryptedInterface.Settings, undefined).catch(() => { });
     }
-
-    // Startup.
 
     private async initializePlugin(signal?: AbortSignal, { awaitLogin = false }: { awaitLogin?: boolean } = {}): Promise<void> {
         if (this.initializeLock.locked) {
@@ -474,8 +447,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
-    // Login.
-
     private async login(signal?: AbortSignal): Promise<void> {
         if (this.activeLogin && !this.activeLogin.done) {
             this.logger.debug('Login already in progress, waiting for it to complete.');
@@ -508,7 +479,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.mfaLoop = arlo.mfaLoop = new Deferred();
             this.mfaCode = arlo.mfaCode = new Deferred();
             this.logger.debug('Setup ArloClient and MFA futures.');
-            // The failure is reported below, once, not as a failed task too.
             let failure: unknown;
             const task = loginTask = this.taskManager.createTask(async loginSignal => {
                 try {
@@ -519,7 +489,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 }
             }, { tag: 'login-arlo', owner: this });
 
-            // Waits for a step of the login, failing if the login ends first.
             const loginStep = async <T>(step: Deferred<T>, description: string): Promise<T> => {
                 const ended = task.promise.then(() => false, () => false);
                 const reached = step.promise.then(() => true);
@@ -594,13 +563,9 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
-    // Tries the login again after the next delay in LOGIN_RETRY_DELAYS.
-    // Returns the delay.
     private scheduleLoginRetry(): number {
         const delay = LOGIN_RETRY_DELAYS[Math.min(this.loginRetries, LOGIN_RETRY_DELAYS.length - 1)];
         this.loginRetries++;
-        // A relogin that kept the devices subscribes again afterwards; a full
-        // login sets everything up itself.
         const relogin = !this.fullResetNeeded;
         this.taskManager.cancelAndAwaitByTag('login_retry', this).catch(() => { });
         this.taskManager.createTask(async signal => {
@@ -659,7 +624,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         catch (e) {
             if (!(e instanceof TimeoutError))
                 throw e;
-            // Arlo's code is good for 5 minutes.
             this.mfaCode?.reject(new Error('No MFA code was entered within 5 minutes.'));
         }
         finally {
@@ -693,9 +657,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.mfaCode?.reject(new Error('The MFA code was not found by IMAP; check the IMAP settings.'));
     }
 
-    // Looks for the Arlo code in mail from the configured sender received since
-    // the code was requested, for about four and a half minutes. Mailboxes
-    // whose server-side search finds nothing are searched message by message.
     private async pollImapForMfaCode(mfaStartTime: number, signal: AbortSignal): Promise<string | undefined> {
         const values = this.storageSettings.values;
         const sender = String(values.imap_mfa_sender).toLowerCase();
@@ -801,8 +762,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.fullResetNeeded = false;
     }
 
-    // Logs in again every event-stream refresh interval (90 minutes by
-    // default, give or take five), and from scratch every 14 days.
     private async refreshLoginLoop(signal: AbortSignal): Promise<void> {
         let elapsed = 0;
         while (true) {
@@ -849,16 +808,12 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                         elapsed = Math.max(0, elapsed - interval);
                 }
                 else {
-                    // Any other failure ends this refresh, not the schedule.
                     this.logger.error('Session refresh failed; trying again at the next refresh:', e);
                 }
             }
         }
     }
 
-    // A 401 outside a login: log in again without rebuilding the devices.
-    // Not after a failed login, which is retried on its own schedule or not
-    // at all.
     private async recoverAuth(reason: string, signal: AbortSignal): Promise<void> {
         try {
             if (this.errorManager.rateLimitRemaining() > 0)
@@ -897,8 +852,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         }
     }
 
-    // Device setup after a full login.
-
     private async doArloSetup(signal?: AbortSignal): Promise<void> {
         this.setupInProgress = true;
         let cancelled = false;
@@ -909,8 +862,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 this.arloBasestations = new Map();
                 this.arloMvss = new Map();
                 this.allDeviceIds = [];
-                // A rebuild without a shutdown first (the 14-day login) still
-                // has the previous devices running.
                 await this.deviceLock.run(async () => {
                     const previous = [...this.scryptedDevices.values()];
                     this.scryptedDevices.clear();
@@ -927,7 +878,7 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
                 cancelled = true;
                 throw e;
             }
-            if (e instanceof UnauthorizedError) {
+            if (e instanceof UnauthorizedRestartException) {
                 this.logger.warn(`Arlo setup saw an expired session and queued auth recovery: ${e.message}`);
                 this.errorManager.requestAuthRecovery(e.message);
             }
@@ -1012,7 +963,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             if (this.arloCameras.has(camera.deviceId))
                 continue;
-            // A camera on its own (Wi-Fi) is also its own basestation.
             if (camera.deviceId === camera.parentId)
                 this.arloBasestations.set(camera.deviceId, camera);
             this.arloCameras.set(camera.deviceId, camera);
@@ -1075,7 +1025,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.logger.info('Subscribed to Arlo event stream successfully.');
     }
 
-    // Registers the discovered devices and their children with Scrypted.
     private async createDevices(): Promise<void> {
         if (!this.arlo?.loggedIn)
             throw new Error('Arlo client not connected, cannot create devices');
@@ -1118,24 +1067,18 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             }
             this.logCreationMismatch('mode virtual security systems', this.arloMvss.size, mvss);
         }
-        // A provider whose children are all hidden or gone gets an empty list,
-        // so they are removed.
         for (const list of [...manifests.values()]) {
             for (const manifest of list) {
                 if (manifest.interfaces.includes(ScryptedInterface.DeviceProvider) && !manifests.has(manifest.nativeId))
                     manifests.set(manifest.nativeId, []);
             }
         }
-        // Every device this setup builds exists now, so a request still held
-        // is for one that is not coming; sending can remove such a device.
         this.endBuild();
         await this.sendDevicesToScrypted(manifests);
         this.logger.info('Done creating devices.');
         this.settingsChanged();
     }
 
-    // Creates the device if it is new and adds its manifest, and its
-    // children's, to manifests by provider. Returns false for hidden devices.
     private async registerDevice(nativeId: string, deviceDict: ArloDevice, manifests: Map<string | undefined, Device[]>,
         parentId?: string, locationName?: string): Promise<boolean> {
         if (this.hiddenDeviceIds.includes(nativeId)) {
@@ -1180,7 +1123,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.logger.debug(`Interfaces for ${deviceDict.deviceName}: ${JSON.stringify(device.getApplicableInterfaces())}`);
         const provider = !parentId || this.hiddenDeviceIds.includes(parentId) || nativeId === parentId ? undefined : parentId;
         this.appendManifest(manifests, provider, manifest);
-        // A device rebuilt after an internal restart, and its children with it.
         const given = this.handedOut.get(nativeId);
         const refresh = !!given && given !== device;
         if (refresh)
@@ -1212,10 +1154,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.logger.info(`If a ${singular} is not hidden${wifi} but is still missing, ensure all ${kind} are added correctly in the Arlo App.`);
     }
 
-    // Each provider's list is complete, so Scrypted removes the devices left
-    // out of it, such as newly hidden ones. The plugin's own list is sent
-    // empty only when discovery found devices and all are hidden, never after
-    // a discovery that found none.
     private async sendDevicesToScrypted(manifests: Map<string | undefined, Device[]>): Promise<void> {
         for (const [provider, devices] of manifests) {
             if (provider === undefined)
@@ -1229,7 +1167,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             await sdk.deviceManager.onDevicesChanged({ devices: root });
     }
 
-    // Asks for a device's properties, trying a second time after 5 seconds.
     async getDeviceProperties(basestation: ArloDevice, camera?: ArloDevice): Promise<Record<string, any>> {
         const id = camera?.deviceId ?? basestation.deviceId;
         for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1285,8 +1222,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             : new ArloCamera(nativeId, camera, basestation, properties, this);
     }
 
-    // Restarts.
-
     requestRestart(scope: RestartScope): void {
         if (scope === 'event_stream') {
             this.requestEventStreamRestart();
@@ -1298,8 +1233,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         run.catch(e => this.logger.error(`Failed to request restart for scope ${scope}:`, e));
     }
 
-    // Restarts the event stream, after a wait if it dropped again within a
-    // minute of its last restart. Requests during the wait are the same one.
     private requestEventStreamRestart(): void {
         if (this.eventStreamRestartPending)
             return;
@@ -1383,8 +1316,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         await this.resetArloClient();
         this.logger.info('Provider shutdown finished');
     }
-
-    // Settings.
 
     async getSettings(): Promise<Setting[]> {
         return this.storageSettings.getSettings();
@@ -1499,8 +1430,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
             this.storage.removeItem(key);
     }
 
-    // Scrypted asks for devices it already knows, including at startup before
-    // discovery has created them; those are returned once discovery runs.
     async getDevice(nativeId: string): Promise<any> {
         if (!this.disablePlugin) {
             const name = this.arloBasestations.get(nativeId)?.deviceName ?? this.arloCameras.get(nativeId)?.deviceName ?? this.arloMvss.get(nativeId)?.deviceName ?? nativeId;
@@ -1520,7 +1449,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         return device;
     }
 
-    // A device removed in Scrypted stops its work here.
     async releaseDevice(id: string, nativeId: string): Promise<void> {
         const device = this.scryptedDevices.get(nativeId);
         this.scryptedDevices.delete(nativeId);
@@ -1533,8 +1461,6 @@ export class ArloProvider extends ScryptedDeviceBase implements DeviceProvider, 
         this.deviceWaiters.delete(nativeId);
     }
 
-    // The first build is over, or will not happen; any device still waited
-    // for is not coming.
     private endBuild(): void {
         if (!this.building)
             return;

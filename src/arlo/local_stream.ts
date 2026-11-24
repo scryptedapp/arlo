@@ -57,10 +57,6 @@ class RTSPMessage {
     }
 }
 
-// Serves one local RTSP connection on localhost and relays it to the
-// basestation over TLS, signing in with the plugin's certificate. The
-// basestation's host name in RTSP URLs is swapped for the local address and
-// back, and the Nonce the basestation sets is carried on each request.
 export class ArloLocalStreamProxy {
     private server?: net.Server;
     private port = 0;
@@ -71,7 +67,6 @@ export class ArloLocalStreamProxy {
         this.logger = camera.logger;
     }
 
-    // Closes itself if nothing connects within 30 seconds.
     async start(): Promise<number> {
         let unused: NodeJS.Timeout | undefined;
         const server = this.server = net.createServer(socket => {
@@ -125,7 +120,6 @@ export class ArloLocalStreamProxy {
         }
     }
 
-    // Writes to destination, pausing source while destination's buffer is full.
     private relay(data: Buffer, source: net.Socket, destination: net.Socket, fromRebroadcast: boolean): void {
         const write = (chunk: Buffer) => {
             if (!destination.write(chunk)) {

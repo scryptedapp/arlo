@@ -62,7 +62,6 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         super(nativeId, arloBasestation, arloBasestation, arloProperties, provider);
         this.createOrRegisterEventSubscription('device_state_subscription', () =>
             this.provider.arlo!.subscribeToDeviceStateEvents(this.arloDevice, state => {
-                // Ignore the available report that follows a restart for 30 seconds.
                 if (state === 'available' && this.rebootTime && Date.now() - this.rebootTime < 30_000)
                     return;
                 this.deviceState = state;
@@ -130,8 +129,6 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         return this.storage.getItem('ica_cert') || undefined;
     }
 
-    // Local streaming signs in to the basestation with a certificate Arlo
-    // issues for the plugin's key pair.
     private async checkCertificates(): Promise<void> {
         this.logger.debug('Checking if Certificates are created with Arlo');
         if (!this.peerCert || !this.deviceCert || !this.icaCert) {
@@ -181,8 +178,6 @@ export class ArloBasestation extends ArloDeviceBase implements DeviceProvider, S
         this.logger.debug('Certificates have been stored with Scrypted');
     }
 
-    // Takes the address from mDNS when the basestation advertises itself there;
-    // otherwise keeps what was entered by hand.
     private mdns(): void {
         this.logger.debug('Checking if Basestation is found in mDNS.');
         const service = this.provider.mdnsServices[this.arloDevice.deviceId];

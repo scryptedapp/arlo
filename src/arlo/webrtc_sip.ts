@@ -27,7 +27,6 @@ export abstract class BaseArloSignalingSession {
         this.arloDevice = device.arloDevice;
     }
 
-    // Keeps only IPv4 candidates that are not mDNS names.
     protected cleanSdp(sdp: string): string {
         this.logger.debug('Cleaning SDP.');
         const lines = sdp.split('\n').map(line => line.trim()).filter(line => {
@@ -54,8 +53,6 @@ export abstract class BaseArloSignalingSession {
         });
     }
 
-    // Gives every media section an a=mid, and reduces rejected sections (port
-    // 0) to inactive stubs.
     protected patchSdp(sdp: string): string {
         const header: string[] = [];
         const sections: string[][] = [];
@@ -73,10 +70,6 @@ export abstract class BaseArloSignalingSession {
                 section.splice(c >= 0 ? c + 1 : 1, 0, `a=mid:${index}`);
             }
             if (section[0].split(' ')[1] !== '0') {
-                // The media line lists the formats an answer accepts. Arlo's
-                // push-to-talk answer also maps formats it did not accept, and
-                // werift takes every mapping as a codec, so it sent PCMU to a
-                // doorbell that accepted only Opus.
                 const formats = new Set(section[0].trim().split(/\s+/).slice(3));
                 return section.filter(line => {
                     const format = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)\b/.exec(line)?.[1];
@@ -123,10 +116,8 @@ export class BaseArloSessionControl implements RTCSessionControl {
     }
 }
 
-// Live video over SIP (SIPStreaming), with talk switched on inside the call.
 export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
-    // Called if the camera ends the call, with why.
     onEnded?: (why: string) => void;
     private sipInfo: any;
 
@@ -162,7 +153,6 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
         return { sdp: answer, type: 'answer' };
     }
 
-    // The WebRTC plugin can end a session more than once.
     async close(): Promise<void> {
         const sip = this.arloSip;
         if (!sip)
@@ -183,8 +173,6 @@ export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
                 await sip.startTalk();
                 this.arloSession.logger.info('Talk started in the video call.');
             }
-            // The WebRTC plugin switches talk off before each start and again
-            // when the viewer leaves; only talk that is on is stopped.
             else if (sip.talking) {
                 await sip.stopTalk();
                 this.arloSession.logger.info('Talk stopped in the video call.');
@@ -197,8 +185,6 @@ export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
     }
 }
 
-// The older push-to-talk: WebRTC with the offer and answer exchanged as Arlo
-// device messages.
 export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession {
     private readonly arloBasestation: ArloDevice;
     sessionId = '';
@@ -221,8 +207,6 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
         this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerSdp', sdp => {
             this.answer = { sdp: this.patchSdp(sdp), type: 'answer' };
         }));
-        // Arlo sends each candidate as an SDP line, with the a= prefix and
-        // a line ending, where WebRTC expects the bare candidate.
         this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerCandidate', line => {
             const candidate = String(line ?? '').trim().replace(/^a=/, '');
             if (!candidate)
@@ -250,8 +234,6 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
 export class ArloIntercomWebRTCSessionControl extends BaseArloSessionControl {
 }
 
-// Push-to-talk over a SIP call of its own. Its SIP session is the one Arlo
-// handed out with the camera's current cloud stream.
 export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
     private sipInfo: any;
@@ -293,7 +275,6 @@ export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
         return { sdp: answer, type: 'answer' };
     }
 
-    // Closed at stop, and again when the WebRTC plugin ends the session.
     async close(): Promise<void> {
         const sip = this.arloSip;
         if (!sip)

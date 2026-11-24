@@ -1,7 +1,6 @@
 import type { Logger } from '../logging';
 import { abortable, CancelledError, Deferred, setLongTimeout, withTimeout } from '../util';
 
-// An Arlo event as it arrives on the event stream.
 export interface ArloEvent {
     resource?: string;
     action?: string;
@@ -12,9 +11,6 @@ export interface ArloEvent {
     [key: string]: any;
 }
 
-// Which events a listener wants: an action (null for events without one), or
-// an action with a property the event's properties must contain. The action
-// 'error' matches any event that carries an error.
 export type ActionSpec = string | null | [action: string, property: string];
 
 const REPLAY_WINDOW = 5_000;
@@ -34,8 +30,6 @@ function matches(event: ArloEvent, resource: string, actions: ActionSpec[], from
     });
 }
 
-// A property response answers the plugin's own property requests, which
-// device discovery waits for, so it is never held back.
 function isPropertyResponse(event: ArloEvent): boolean {
     const properties = event.properties;
     return event.action === 'is' && !!properties && typeof properties === 'object'
@@ -53,12 +47,6 @@ export interface DispatcherHost {
     readonly setupInProgress: boolean;
 }
 
-// Delivers events from whichever event stream is running to the listeners
-// registered with the client, so listeners survive stream restarts. Events
-// stay replayable for five seconds, for listeners that register just after
-// the event they wait for; a listener waiting for the answer to its own
-// request turns replay off, so another request's answer cannot pass for it. While device setup runs, events other than property
-// responses are held and delivered when it finishes.
 export class EventDispatcher {
     private readonly listeners = new Set<Listener>();
     private recent: { event: ArloEvent, expires: number }[] = [];
@@ -67,9 +55,6 @@ export class EventDispatcher {
     constructor(private readonly host: DispatcherHost, private readonly logger: Logger) {
     }
 
-    // Calls callback for each matching event until the returned function is
-    // called. Matching events from the last five seconds are replayed first,
-    // unless replay is false.
     listen(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => void,
         { fromId, replay = true }: { fromId?: string, replay?: boolean } = {}): () => void {
         const listener: Listener = { resource, actions, fromId, callback };
@@ -80,7 +65,6 @@ export class EventDispatcher {
         return () => this.listeners.delete(listener);
     }
 
-    // Resolves with the first value callback returns for a matching event.
     waitFor<T>(resource: string, actions: ActionSpec[], callback: (event: ArloEvent) => T | undefined,
         { fromId, replay, timeout, signal }: { fromId?: string, replay?: boolean, timeout?: number, signal?: AbortSignal } = {}): Promise<T> {
         const result = new Deferred<T>();
@@ -104,7 +88,6 @@ export class EventDispatcher {
         this.deliver(event);
     }
 
-    // Delivers the events held during device setup.
     releaseHeld(): void {
         const held = this.held;
         this.held = [];
@@ -144,8 +127,6 @@ export interface StreamHost {
     requestRestart(scope: 'event_stream'): void;
 }
 
-// The connection that brings Arlo events in. Subclasses supply the transport.
-// A stream is used once: restarting the event stream replaces it.
 export abstract class Stream {
     connected = false;
     initializing = true;
@@ -194,7 +175,6 @@ export abstract class Stream {
         await withTimeout(this.connectWait!.promise, timeout, `${this.name} did not connect within ${timeout / 1000} seconds`);
     }
 
-    // Restarts the event stream every interval minutes; 0 turns this off.
     setRefreshInterval(minutes: number): void {
         this.cancelRefresh?.();
         this.cancelRefresh = undefined;

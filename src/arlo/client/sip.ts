@@ -15,7 +15,6 @@ function genBranch(): string {
     return 'z9hG4bK' + randString(7, '0123456789');
 }
 
-// The entries of a comma-separated header, ignoring commas inside <> or quotes.
 function splitHeaderList(value: string): string[] {
     const entries: string[] = [];
     let start = 0;
@@ -38,8 +37,6 @@ function splitHeaderList(value: string): string[] {
     return entries.filter(Boolean);
 }
 
-// Why Arlo hung up, from the Reason headers of its BYE, such as
-// Reason: SIP;cause=804;text="MEDIA_TIMEOUT".
 function hangUpReason(bye: SIPMessage): string {
     const reasons = bye.getHeaders('Reason').flatMap(splitHeaderList)
         .map(reason => /text="([^"]*)"/.exec(reason)?.[1] || reason);
@@ -55,7 +52,6 @@ export class SIPMessage {
     statusCode?: number;
     reason?: string;
     uri?: string;
-    // Header names are kept lower case, as the Python plugin sent them.
     readonly headers = new Map<string, string[]>();
     body = '';
 
@@ -104,8 +100,6 @@ export class SIPMessage {
         this.headers.set(key, [...this.headers.get(key) ?? [], value]);
     }
 
-    // Headers end with an empty line even without a body; the Python plugin
-    // left that line off messages without a body.
     build(): string {
         const start = this.method ? `${this.method} ${this.uri} SIP/2.0` : `SIP/2.0 ${this.statusCode} ${this.reason}`;
         const lines = [start];
@@ -178,18 +172,10 @@ export interface SIPConfig {
 
 const READ_TIMEOUT = 5_000;
 const CONNECT_TIMEOUT = 10_000;
-// Talk inside a call that also carries video goes quiet after about 30
-// seconds unless it is refreshed.
 const KEEPALIVE_INTERVAL = 30_000;
 
-// Places a SIP call to an Arlo camera over a WebSocket to get its SDP answer,
-// and starts and stops talk with SIP MESSAGEs, one request and its reply at a
-// time.
 export class SIPManager {
-    // Called once if the call ends from the far side: the camera's BYE, or the
-    // websocket closing when close() was not asked for. Says why.
     onEnded?: (why: string) => void;
-    // Whether startTalk was sent and stopTalk not yet.
     talking = false;
     private readonly randHost = randString(12) + '.invalid';
     private readonly transactions = new AsyncLock();
@@ -223,7 +209,6 @@ export class SIPManager {
             const text = data.toString();
             if (text.startsWith('BYE ')) {
                 this.logger.debug(`Got SIP BYE:\n${text}`);
-                // The call is over; no BYE goes back.
                 this.inviteResponse = undefined;
                 this.farEnd(hangUpReason(SIPMessage.parse(text)));
                 return;
@@ -262,8 +247,6 @@ export class SIPManager {
         this.onEnded?.(why);
     }
 
-    // Sends a request and reads its reply, after any request already waiting
-    // for one.
     private transaction(msg: SIPMessage): Promise<SIPMessage> {
         return this.transactions.run(async () => {
             await this.write(msg);
@@ -288,8 +271,6 @@ export class SIPManager {
         msg.setHeader('Contact', this.contact());
         msg.setHeader('User-Agent', this.config.UserAgent);
         msg.setHeader('Supported', 'outbound');
-        // Arlo's own app names the device on every INVITE, the trailing
-        // semicolon included. Without it Arlo ends a talk call within a second.
         msg.setHeader('X-extension', `${this.config.DeviceID};`);
         msg.setHeader('Content-Type', 'application/sdp');
         msg.setHeader('Content-Length', String(Buffer.byteLength(localSdp)));
@@ -344,7 +325,6 @@ export class SIPManager {
     }
 
     private async write(msg: SIPMessage): Promise<void> {
-        // Arlo expects the WebRTC-UDP transport name quoted.
         const text = msg.build().replaceAll('WebRTC-UDP', '"WebRTC-UDP"');
         this.logger.debug(`Sending SIP message:\n${text}`);
         await new Promise<void>((resolve, reject) => this.ws!.send(text, e => e ? reject(e) : resolve()));
@@ -360,8 +340,6 @@ export class SIPManager {
         return SIPMessage.parse(raw);
     }
 
-    // Sends the INVITE, answers a proxy authentication challenge, and returns
-    // the camera's SDP answer.
     async start(): Promise<string> {
         await this.connectWebsocket();
         try {
@@ -395,10 +373,6 @@ export class SIPManager {
             const to = response.getHeader('To');
             if (to?.includes('tag='))
                 this.toTag = to.split('tag=').pop()!.split(';')[0];
-            // In-dialog requests carry the recorded route as Route headers,
-            // from this end inwards: the reverse of the 200 OK's Record-Route
-            // list. Echoed back as Record-Route, the ACK never reached Arlo's
-            // media server, which ended the call after 32 seconds.
             this.routeSet = response.getHeaders('Record-Route').flatMap(splitHeaderList).reverse();
             await this.write(this.buildAck());
             this.inviteResponse = response;
@@ -430,12 +404,8 @@ export class SIPManager {
         this.ws = undefined;
     }
 
-    // Switches talk on inside a call that also carries video, and keeps it on
-    // with keepAlive every 30 seconds until stopTalk or the end of the call. A
-    // call for talk alone needs neither.
     async startTalk(): Promise<void> {
         await this.taskManager.cancelAndAwaitByTag('sip_keepalive', this);
-        // Set first, so a startTalk whose reply never came is still stopped.
         this.talking = true;
         await this.talk('startTalk');
         this.taskManager.createTask(signal => this.keepaliveLoop(signal), { tag: 'sip_keepalive', owner: this });

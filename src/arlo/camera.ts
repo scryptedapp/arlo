@@ -55,20 +55,13 @@ const ARLO_TO_SCRYPTED_BRIGHTNESS: Record<number, number> = Object.fromEntries(
 
 const TIMEOUT = 10_000;
 const DAY = 86_400_000;
-// Arlo reports a new cloud stream within seconds; one it has not reported by
-// then never started.
 const STREAM_START_GRACE = 15_000;
 
-// A snapshot source that does not apply right now, which is not a failure.
 class SourceUnavailable extends Error { }
 
 const SNAPSHOT_SOURCES = { prebuffer: 'Prebuffer', arlo_cloud: 'Arlo Cloud' } as const;
 type SnapshotSource = keyof typeof SNAPSHOT_SOURCES;
 
-// The WebRTC plugin hands the camera the same call for its own WebRTC stream,
-// which Rebroadcast runs, and for a viewer it passes through. A browser or app
-// reports its user agent and codec capabilities; the WebRTC plugin's own
-// session reports neither.
 async function isViewerSession(session: RTCSignalingSession): Promise<boolean> {
     const options: RTCSignalingOptions | undefined = typeof session.options === 'object'
         ? session.options
@@ -91,18 +84,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private skipPrebufferOnFirstAutoSnapshot = true;
     private readonly snapshotLock = new AsyncLock();
     private readonly rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
-    // The SIP session that came with the current cloud RTSP stream, for the
-    // SIP-only intercom. Held in memory only, since it carries a SIP password,
-    // and cleared when the camera reports the stream ended.
     streamSipInfo?: StreamSipInfo;
-    // This plugin's own stream on the camera's one Arlo connection: the cloud
-    // RTSP stream Rebroadcast runs, confirmed once the camera reports it and
-    // ended when it reports idle, or the camera's own WebRTC stream, until it
-    // ends.
     private ownStream?: { kind: 'rtsp', id: string, confirmed: boolean, startedAt: number } | { kind: 'webrtc' };
-    // Held while this plugin asks the camera for a cloud snapshot, a stream or
-    // a WebRTC session, until Arlo has taken the request: Arlo reports the
-    // camera busy only seconds later.
     private readonly connectionLock = new AsyncLock();
 
     readonly storageSettings = new StorageSettings(this, {
@@ -269,8 +252,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
     }
 
-    // Automatic snapshots, every throttle interval, while the plugin setting is on.
-
     private shouldRunAutoSnapshot(): boolean {
         return this.provider.autoSnapshotGeneration && this.snapshotThrottleInterval > 0;
     }
@@ -296,7 +277,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             }
             if (!startupDelayDone) {
                 startupDelayDone = true;
-                // Spread cameras out over the first two minutes.
                 const spread = [...this.nativeId!].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 90;
                 await sleep((30 + spread) * 1_000, signal);
             }
@@ -304,7 +284,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 await sleep(interval, signal);
                 continue;
             }
-            // A close does not wait for a snapshot under way to finish.
             await abortable(this.snapshotLock.run(async () => {
                 await this.createSnapshot(!this.skipPrebufferOnFirstAutoSnapshot);
                 this.skipPrebufferOnFirstAutoSnapshot = false;
@@ -322,8 +301,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await this.taskManager.cancelAndAwaitByTag('auto_snapshot', this);
         this.startAutoSnapshot();
     }
-
-    // Capabilities and settings.
 
     override getApplicableInterfaces(): string[] {
         const interfaces = new Set<string>([
@@ -344,7 +321,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             interfaces.add(ScryptedInterface.Battery);
             interfaces.add(ScryptedInterface.Charger);
         }
-        // Scrypted loads child devices through their parent's getDevice.
         if (this.hasSiren || this.hasSpotlight || this.hasFloodlight || this.hasNightlight || this.hasPushToTalk)
             interfaces.add(ScryptedInterface.DeviceProvider);
         if (this.hasAudioSensor)
@@ -413,8 +389,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.arloDevice.deviceId === this.arloDevice.parentId && this.provider.arlo?.userId === this.arloDevice.owner?.ownerId;
     }
 
-    // Wired indoor cameras have a status light instead, and still report a
-    // charge notification LED setting that does nothing.
     get hasStatusLight(): boolean {
         return this.hasCapability('StatusLight') && this.hasProperty('idleLedEnable');
     }
@@ -423,7 +397,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return !this.hasStatusLight && this.hasProperty('chargeNotificationLedEnable');
     }
 
-    // The Arlo property behind the camera's OnOff.
     get ledProperty(): 'idleLedEnable' | 'chargeNotificationLedEnable' | undefined {
         if (this.hasStatusLight)
             return 'idleLedEnable';
@@ -470,8 +443,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.hasCapability('Siren', 'ResourceTypes');
     }
 
-    // The older Automation block names the trigger AudioDetectionTrigger;
-    // Automation3.0 names it audioStart.
     get hasAudioSensor(): boolean {
         return this.hasCapability('AudioDetectionTrigger', 'Automation', 'AutomationTriggers')
             || this.hasCapability('AudioDetectionTrigger', 'Automation3.0', 'AutomationTriggers')
@@ -507,9 +478,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return (this.registered && this.storageSettings.values.local_live_streaming_codec) || 'h.264';
     }
 
-    // The codec the cloud stream carries, from the camera's Video block: H.264
-    // where it is listed, otherwise H.265. The CloudStreaming block's own codec
-    // can be wrong (it says avc on cameras that stream HEVC).
     get cloudStreamingVideoCodec(): string {
         const codecs = this.localLiveStreamingCodecList.map(codec => String(codec).toLowerCase().replace('.', ''));
         if (codecs.includes('h264') || codecs.includes('avc'))
@@ -566,8 +534,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await this.onDeviceEvent(ScryptedInterface.Settings, undefined);
     }
 
-    // Gives an Arlo request 10 seconds, then cancels it, so the request layer
-    // does not go on retrying a stream or snapshot nobody waits for.
     private async withRequestTimeout<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
         const controller = new AbortController();
         try {
@@ -578,13 +544,11 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
     }
 
-    // This plugin's cloud stream, reported by the camera or just asked for.
     private get ownCloudStream(): boolean {
         const own = this.ownStream;
         return own?.kind === 'rtsp' && (own.confirmed || Date.now() - own.startedAt < STREAM_START_GRACE);
     }
 
-    // Arlo serves one stream or cloud snapshot per camera at a time.
     private get arloConnection(): 'snapshot' | 'stream' | undefined {
         if (this.ownStream?.kind === 'webrtc' || this.ownCloudStream)
             return 'stream';
@@ -602,8 +566,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.activityState ?? 'unknown';
     }
 
-    // queried is true for the camera's answer to a property request, which is
-    // current, unlike an event that may be late.
     private applyActivityState(state: string, queried = false): void {
         this.activityState = state;
         const own = this.ownStream;
@@ -611,9 +573,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             own.confirmed = true;
         if (state !== 'idle')
             return;
-        // The previous stream's idle report, or a repeat of it, can arrive
-        // after a new stream was asked for. It ends only a stream the camera
-        // has reported; one it has not keeps its start grace.
         if (own?.kind === 'rtsp' && !own.confirmed && !queried) {
             this.logger.debug('Idle report from before the new stream started; keeping the new stream.');
             return;
@@ -626,8 +585,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.ownStream = undefined;
     }
 
-    // Waits up to 10 seconds for the camera to come free. The reported state
-    // can stick, so before giving up it asks the camera.
     private async waitForConnection(purpose: string): Promise<void> {
         if (!this.arloConnection)
             return;
@@ -649,8 +606,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.logger.debug(`Camera is free; continuing to ${purpose}.`);
     }
 
-    // Snapshots.
-
     async getPictureOptions(): Promise<ResponsePictureOptions[]> {
         return [];
     }
@@ -665,11 +620,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return snapshot;
     }
 
-    // A frame from Rebroadcast's running stream (its prebuffer) where there is
-    // one. Otherwise a cloud snapshot, since Arlo serves one connection per
-    // camera, only while the camera is free; while it is busy, within the eco
-    // mode throttle, or when Arlo Cloud fails, the last picture. Nothing here
-    // starts a stream.
     private async createSnapshot(usePrebuffer: boolean): Promise<MediaObject | undefined> {
         if (usePrebuffer && await this.trySnapshotSource('prebuffer'))
             return this.lastSnapshot;
@@ -708,7 +658,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.logger.error(`${label} snapshot failed: ${e}`);
     }
 
-    // Cloud snapshots are throttled only in eco mode, as its settings say.
     private isTimeForNewSnapshot(): boolean {
         const interval = this.ecoMode ? this.snapshotThrottleInterval : 0;
         return interval === 0 || Date.now() - this.lastSnapshotTime >= interval * 60_000;
@@ -775,8 +724,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.lastSnapshotTime = Date.now();
     }
 
-    // Streams.
-
     async getVideoStreamOptions(): Promise<ResponseMediaStreamOptions[]> {
         const audio = this.arloDevice.modelId === 'VMC3030' ? null : { codec: 'aac' };
         const cloud: ResponseMediaStreamOptions = {
@@ -806,8 +753,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         const all = await this.getVideoStreamOptions();
         const option = all.find(o => o.id === (options?.id ?? 'default')) ?? all[0];
         const mso: ResponseMediaStreamOptions = { ...option, refreshAt: Date.now() + 30 * 60_000 };
-        // Rebroadcast refreshes a stream by asking again with the options it
-        // got, which carry refreshAt; a new session's request does not.
         const refreshing = !!(options as ResponseMediaStreamOptions | undefined)?.refreshAt;
         const url = await this.getVideoStreamUrl(option, refreshing);
         const input: FFmpegInput = {
@@ -824,18 +769,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     }
 
     private async startVideoStream(option: ResponseMediaStreamOptions, refreshing: boolean): Promise<string> {
-        // Rebroadcast's refresh of the cloud stream it runs, while the camera
-        // still reports it, reuses this plugin's own connection. A stream the
-        // camera never reported is gone.
         const own = this.ownStream;
         const ours = own?.kind === 'rtsp' && own.confirmed && own.id === option.id && this.activityState !== 'idle';
         if (own?.kind === 'rtsp' && !this.ownCloudStream)
             this.ownStream = undefined;
         let refresh = ours && refreshing;
         if (ours && !refreshing) {
-            // A new session while the camera still reports the last one, which
-            // is ending: its idle report would clear the new stream's tracking,
-            // so wait for it. A stream that does not end is reused.
             this.logger.debug('Waiting for the previous cloud stream to end.');
             const deadline = Date.now() + TIMEOUT;
             while (this.ownStream === own && Date.now() < deadline)
@@ -863,8 +802,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             return url;
         }
         this.logger.info('Requesting rtsp stream');
-        // Marked before asking, since Arlo can report the stream running before
-        // it answers the request.
         if (!refresh)
             this.ownStream = { kind: 'rtsp', id: option.id!, confirmed: false, startedAt: Date.now() };
         try {
@@ -883,8 +820,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             throw e;
         }
     }
-
-    // Talk, through the intercom child device.
 
     async startIntercom(media: MediaObject): Promise<void> {
         try {
@@ -908,10 +843,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.intercomActive = false;
         try {
             this.speaker ??= this.getIntercom().speaker();
-            // Scrypted's WebRTC plugin keeps nothing to stop an Arlo speaker's
-            // talk with, and answers "webrtc session not connected". So the
-            // plugin also ends its own side: a SIP talk call is hung up, while
-            // push-to-talk has nothing to hang up and ends with its audio.
             await this.speaker.stopIntercom().catch((e: unknown) =>
                 this.logger.debug(`Scrypted's WebRTC plugin did not stop the talk: ${e instanceof Error ? e.message : e}`));
             await this.getIntercom().endTalk();
@@ -921,8 +852,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             this.logger.error('Error in stopIntercom:', e);
         }
     }
-
-    // Video clips from Arlo Cloud recordings.
 
     private async findRecording(id: string, noCache = false): Promise<any> {
         const time = Number(id);
@@ -955,7 +884,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 video: { href: recording.presignedContentUrl },
             },
         }));
-        // The SDK does not type reverseOrder, but Scrypted sends it.
         return (options as { reverseOrder?: boolean } | undefined)?.reverseOrder ? clips.reverse() : clips;
     }
 
@@ -974,8 +902,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     async removeVideoClips(...videoClipIds: string[]): Promise<void> {
         throw new Error('Deleting Arlo video clips is not implemented by this plugin - please delete clips through the Arlo App.');
     }
-
-    // Child devices.
 
     async getDevice(nativeId: string): Promise<any> {
         if ((nativeId.endsWith('spotlight') && this.hasSpotlight) || (nativeId.endsWith('floodlight') && this.hasFloodlight)
@@ -1014,8 +940,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         return this.intercom;
     }
 
-    // Object detection, from Arlo's smart notifications.
-
     async getDetectionInput(detectionId: string, eventId?: any): Promise<MediaObject> {
         return this.clipThumbnail(detectionId, true);
     }
@@ -1023,8 +947,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     async getObjectTypes(): Promise<ObjectDetectionTypes> {
         return { classes: ['person', 'vehicle', 'package', 'animal', 'car', 'truck', 'bus', 'motorbike', 'bicycle', 'dog', 'cat'] };
     }
-
-    // Brightness, in Scrypted's 0 to 100 as Arlo's -2 to 2.
 
     async setBrightness(brightness: number): Promise<void> {
         this.logger.debug(`Brightness ${brightness}`);
@@ -1034,20 +956,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await this.provider.arlo!.setBrightness(this.arloBasestation, this.arloDevice, SCRYPTED_TO_ARLO_BRIGHTNESS[level]);
     }
 
-    // Live video over SIP (WebRTC).
-
-    // Only the WebRTC plugin's own stream, which Rebroadcast runs, opens the
-    // camera's WebRTC; a viewer passed through is served from Rebroadcast.
     async startRTCSignalingSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
         if (await isViewerSession(scryptedSession))
             return this.startViewerSession(scryptedSession);
         return this.connectionLock.run(() => this.startOwnRTCSignalingSession(scryptedSession));
     }
 
-    // Serves a viewer from Rebroadcast's stream, as the web viewer does when a
-    // destination is picked, so it shares the camera's one Arlo connection.
-    // Rebroadcast's stream settings decide whether that is the cloud RTSP
-    // stream or the camera's own WebRTC.
     private async startViewerSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
         this.logger.debug('Serving a WebRTC viewer from Rebroadcast.');
         const device: VideoCamera | undefined = sdk.systemManager.getDeviceById(this.id!) as any;
@@ -1094,8 +1008,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 if (this.ownStream?.kind === 'webrtc' && !this.rtcSessions.size)
                     this.ownStream = undefined;
             };
-            // The camera can end the call before the WebRTC plugin ends the
-            // session, or the WebRTC plugin can go without ending it.
             established.onEnded = why => {
                 this.logger.debug(`The camera ended its WebRTC call: ${why}.`);
                 if (established.arloSip?.talking)
@@ -1113,8 +1025,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             throw e;
         }
     }
-
-    // The status light, or the charge notification LED.
 
     async turnOn(): Promise<void> {
         await this.setLed(true);

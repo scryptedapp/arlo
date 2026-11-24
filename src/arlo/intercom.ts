@@ -12,13 +12,8 @@ import {
     ArloIntercomWebRTCSignalingSession,
 } from './webrtc_sip';
 
-// How long WebRTC push-to-talk waits for Arlo's answer, which arrives as an
-// event rather than as a reply.
 const ANSWER_TIMEOUT = 10_000;
 
-// The camera's speaker: a two-way audio device the camera's Intercom
-// interface hands talk to. It talks over SIP when the camera supports that,
-// otherwise over the older WebRTC push-to-talk.
 export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel {
     private readonly sessions = new Set<ArloIntercomSIPSignalingSession | ArloIntercomWebRTCSignalingSession>();
 
@@ -32,8 +27,6 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
         await super.close();
     }
 
-    // Ends every talk session this intercom has open: a SIP talk call is hung
-    // up.
     async endTalk(): Promise<void> {
         const sessions = [...this.sessions];
         this.sessions.clear();
@@ -49,8 +42,6 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
         return ScryptedDeviceType.Speaker;
     }
 
-    // Waits up to 3 seconds for an offer with its ICE candidates, then asks
-    // again without waiting for them.
     private async createOffer(scryptedSession: RTCSignalingSession, setup: RTCAVSignalingSetup, sendIceCandidate?: (candidate: RTCIceCandidateInit) => Promise<void>): Promise<RTCSessionDescriptionInit> {
         try {
             return await withTimeout(scryptedSession.createLocalDescription('offer', setup, sendIceCandidate), 3_000);
@@ -76,8 +67,6 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             session.scryptedSession = scryptedSession;
             const setup: RTCAVSignalingSetup = {
                 type: 'offer',
-                // Arlo ends a talk call offered send-only, about 30 seconds in,
-                // as no audio ever comes back.
                 audio: { direction: 'sendrecv' },
                 configuration: { iceServers: session.iceServers, iceCandidatePoolSize: 0 },
             };
@@ -112,9 +101,6 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             await session.setRemoteDescription(offer);
             const answer = await session.createLocalDescription();
             this.logger.debug(`Setting remote description with answer: ${answer.sdp}`);
-            // A call for talk alone: Arlo's own app sends startTalk only
-            // inside a call that also carries video, as the camera's WebRTC
-            // stream does.
             await scryptedSession.setRemoteDescription(answer, setup);
             this.logger.debug('SIP signaling session established.');
             this.camera.logger.info(`Talk started over SIP; Arlo answered in ${Date.now() - started} ms.`);
@@ -128,8 +114,6 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
         }
     }
 
-    // This intercom as a Scrypted device, which other plugins give the
-    // Intercom interface.
     speaker(): any {
         return sdk.systemManager.getDeviceById(this.id!);
     }

@@ -2,9 +2,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { Logger } from './logging';
 
-// Async helpers. Background work is cancelled through an AbortSignal: the
-// helpers below reject with CancelledError when it aborts.
-
 export class CancelledError extends Error {
     override name = 'CancelledError';
 
@@ -17,11 +14,8 @@ export class TimeoutError extends Error {
     override name = 'TimeoutError';
 }
 
-// Node runs a timer longer than this (about 24.8 days) after 1 ms.
 const MAX_TIMER = 2 ** 31 - 1;
 
-// setTimeout for any delay, waiting in steps where one timer cannot. Returns
-// a function that cancels it.
 export function setLongTimeout(callback: () => void, ms: number): () => void {
     const end = Date.now() + ms;
     let timer: NodeJS.Timeout;
@@ -52,7 +46,6 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
-// Settles like promise, or rejects with CancelledError if signal aborts first.
 export function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal)
         return promise;
@@ -65,8 +58,6 @@ export function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise
     });
 }
 
-// Settles like promise, or rejects with TimeoutError after ms. The work behind
-// promise is not stopped; pass it a signal for that.
 export function withTimeout<T>(promise: Promise<T>, ms: number, message?: string): Promise<T> {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new TimeoutError(message ?? `Timed out after ${ms / 1000} seconds`)), ms);
@@ -81,7 +72,6 @@ export class Deferred<T> {
 
     constructor() {
         this.promise = new Promise<T>((resolve, reject) => this.settle = { resolve, reject });
-        // A rejection nobody waits for is not an error here.
         this.promise.catch(() => { });
     }
 
@@ -132,7 +122,6 @@ export class AsyncLock {
     private tail: Promise<void> = Promise.resolve();
     private holders = 0;
 
-    // True while the lock is held or waited for.
     get locked(): boolean {
         return this.holders > 0;
     }
@@ -150,8 +139,6 @@ export class AsyncLock {
         }
         finally {
             this.holders--;
-            // A waiter cancelled before its turn hands the lock on only once the
-            // holder before it is done.
             if (acquired)
                 release();
             else
@@ -159,10 +146,6 @@ export class AsyncLock {
         }
     }
 }
-
-// Background tasks, each tagged and owned so that a device or the provider can
-// cancel its own work. Cancelling aborts the task's signal; the task stops at
-// its next sleep, wait or request that uses the signal.
 
 export interface TaskOptions {
     tag: string;
@@ -187,7 +170,6 @@ const currentTask = new AsyncLocalStorage<Task>();
 export class TaskManager {
     private readonly tasks = new Set<Task>();
 
-    // logger reports failed tasks whose owner has no logger of its own.
     constructor(private readonly logger: Logger) {
     }
 
@@ -217,13 +199,11 @@ export class TaskManager {
         return this.cancelAndAwait(task => task.owner === owner);
     }
 
-    // Cancels without waiting; tasks tagged tag are kept.
     cancelAllExcept(tag?: string, owner?: object): void {
         for (const task of this.select(task => (!owner || task.owner === owner) && task.tag !== tag))
             task.controller.abort();
     }
 
-    // The task calling these is never cancelled by them.
     private select(match: (task: Task) => boolean): Task[] {
         const current = currentTask.getStore();
         return [...this.tasks].filter(task => task !== current && !task.done && match(task));
@@ -237,16 +217,14 @@ export class TaskManager {
     }
 }
 
-// Request errors, sorted by what the caller should do about them.
-
 export interface RequestErrorDetails {
     statusCode?: number;
-    // Milliseconds until requests may resume.
     retryAfter?: number;
     method?: string;
     url?: string;
 }
 
+/** Base error for request-related failures. */
 export class RequestError extends Error {
     statusCode?: number;
     retryAfter?: number;
@@ -260,19 +238,19 @@ export class RequestError extends Error {
     }
 }
 
-// The Arlo session token is no longer valid.
-export class UnauthorizedError extends RequestError { }
+/** Raised when a request proves the Arlo session token is no longer valid. */
+export class UnauthorizedRestartException extends RequestError { }
 
-// Arlo or Cloudflare asked the plugin to stop sending requests.
+/** Raised when Arlo or Cloudflare asks the plugin to stop sending requests. */
 export class RateLimitedError extends RequestError { }
 
-// A temporary network or server failure that should not trigger a new login.
+/** Raised for temporary network or server failures that should not trigger auth. */
 export class TransientRequestError extends RequestError { }
 
-// The response could not be parsed or did not have the expected shape.
+/** Response could not be parsed or was invalid for expected schema. */
 export class InvalidResponseError extends RequestError { }
 
-// Any other HTTP 4xx; no restart.
+/** HTTP 4xx non-auth client errors that should not trigger restart. */
 export class BadRequestError extends RequestError { }
 
 const MINUTE = 60_000;
@@ -283,14 +261,12 @@ export class RateLimitPause {
 
     private nextNotice = 0;
 
-    // Starts a pause and returns when it ends.
     activate(): number {
         const now = Date.now();
         this.nextNotice = now + RateLimitPause.noticeInterval;
         return now + RateLimitPause.delay;
     }
 
-    // True at most once per notice interval, to keep the waiting notice quiet.
     shouldLogWait(): boolean {
         const now = Date.now();
         if (now < this.nextNotice)
@@ -299,8 +275,6 @@ export class RateLimitPause {
         return true;
     }
 
-    // Rounds up to whole minutes before splitting off hours, so 1h 59m 59s
-    // reads 2h rather than the Python plugin's 1h 60m.
     static formatRemaining(ms: number): string {
         const totalMinutes = Math.ceil(Math.max(0, Math.floor(ms / 1000)) / 60);
         const hours = Math.floor(totalMinutes / 60);
@@ -322,8 +296,6 @@ function formatLocalTime(time: number): string {
         + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${zone}`.trim();
 }
 
-// URLs that belong to logging in or out, which may run during an auth
-// transition while other cloud requests wait for it.
 const AUTH_FLOW_MARKERS = [
     'ocapi-app.arlo.com/api/',
     '/api/auth',
@@ -355,10 +327,6 @@ export interface RequestOptions {
     suppressRestartOn401?: boolean;
 }
 
-// Turns HTTP failures into the errors above and handles what they imply:
-// recovering the session after a 401, and pausing the plugin for 65 minutes
-// after a 429. Login and recovery run as auth transitions; other cloud
-// requests wait until no transition is active.
 export class ErrorManager {
     private readonly rateLimit = new RateLimitPause();
     private readonly authReady = new AsyncEvent(true);
@@ -409,10 +377,6 @@ export class ErrorManager {
         return formatLocalTime(this.rateLimitUntil);
     }
 
-    // Runs fn as an auth transition that ends without marking a login success,
-    // for the cleanup steps before a new login. Work holding the provider's
-    // locks waits for transitions to end, so take those locks before starting
-    // one, never inside it.
     async authTransition<T>(reason: string, fn: () => Promise<T>): Promise<T> {
         this.beginAuthTransition(reason);
         try {
@@ -449,8 +413,6 @@ export class ErrorManager {
         this.authReady.set();
     }
 
-    // Called at startup. Returns true when a rate-limit pause is still running:
-    // the plugin stays disabled and restarts itself when the pause ends.
     handleRateLimitStartup(): boolean {
         const remaining = this.rateLimitRemaining();
         if (remaining > 0) {
@@ -471,8 +433,6 @@ export class ErrorManager {
         return false;
     }
 
-    // Applies the Disable Arlo Plugin setting. Returns false when the user tries
-    // to re-enable the plugin during a rate-limit pause, which is refused.
     handleDisablePluginSetting(requestedDisable: boolean): boolean {
         const remaining = this.rateLimitRemaining();
         if (!requestedDisable && remaining > 0) {
@@ -510,8 +470,6 @@ export class ErrorManager {
         this.options.restartPlugin();
     }
 
-    // Throws instead of sending when the plugin is rate limited, or when an auth
-    // transition is active and url is not part of it.
     beforeRequest(method: string, url: string, { suppressRestartOn401 = false }: RequestOptions = {}): void {
         if (this.rateLimitRemaining() > 0) {
             const remaining = this.logRateLimitWait(method, url);
@@ -543,8 +501,6 @@ export class ErrorManager {
         return !AUTH_FLOW_MARKERS.some(marker => url.includes(marker));
     }
 
-    // Handles a non-2xx response. Returns an empty result for a 401 the caller
-    // asked to ignore; otherwise throws.
     handleHttpError(statusCode: number, method: string, url: string, requestStartedAt?: number, { suppressRestartOn401 = false }: RequestOptions = {}): Record<string, never> {
         if (suppressRestartOn401 && statusCode === 401) {
             this.logger.debug(`Ignoring 401 for cleanup request ${method} ${url}.`);
@@ -553,7 +509,6 @@ export class ErrorManager {
         this.raiseRequestError(statusCode, `HTTP error ${statusCode} for ${method} ${url}`, method, url, requestStartedAt);
     }
 
-    // Handles a 2xx response whose body reports failure in meta.code.
     raiseBodyError(body: unknown, method: string, url: string, requestStartedAt?: number): never {
         const code = Number((body as { meta?: { code?: unknown } })?.meta?.code);
         this.raiseRequestError(Number.isInteger(code) ? code : undefined,
@@ -563,7 +518,7 @@ export class ErrorManager {
     private raiseRequestError(statusCode: number | undefined, message: string, method: string, url: string, requestStartedAt?: number): never {
         if (statusCode === 401) {
             this.requestAuthRecovery(message, requestStartedAt);
-            throw new UnauthorizedError(message, { statusCode, method, url });
+            throw new UnauthorizedRestartException(message, { statusCode, method, url });
         }
         if (statusCode === 429) {
             const retryAfter = this.activateRateLimit(message);
@@ -579,9 +534,6 @@ export class ErrorManager {
             this.clearRateLimitPause();
     }
 
-    // Starts session recovery after a 401, unless the 401 predates the latest
-    // login, came during a login, recovery is already running, or the plugin
-    // is rate limited.
     requestAuthRecovery(reason: string, requestStartedAt?: number): void {
         if (this.rateLimitRemaining() > 0) {
             this.logRateLimitWait('AUTH_RECOVERY', reason);
@@ -593,8 +545,6 @@ export class ErrorManager {
             this.logger.debug(`Session recovery already in progress. Latest reason: ${reason}`);
             return;
         }
-        // Cloud requests wait out an auth transition, so a 401 during one
-        // comes from the login itself, which reports its own failure.
         if (!this.authReady.isSet()) {
             this.logger.debug(`Ignoring a 401 during an Arlo auth transition (${this.authReason || 'auth refresh'}): ${reason}`);
             return;
@@ -602,7 +552,6 @@ export class ErrorManager {
         this.authRecovery = this.host.taskManager.createTask(signal => this.options.recoverAuth(reason, signal), { tag: 'auth_recovery', owner: this.host });
     }
 
-    // Starts a 65-minute pause: the plugin disables itself and restarts.
     private activateRateLimit(source: string): number {
         const until = this.rateLimit.activate();
         this.rateLimitUntil = until;

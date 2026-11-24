@@ -11,8 +11,6 @@ export abstract class ArloBaseLight extends ArloDeviceBase implements OnOff {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
-    // Starts from the state the camera reported when it was discovered. A new
-    // light is created before Scrypted registers it, so this waits for that.
     protected override async delayedInit(signal: AbortSignal): Promise<void> {
         await super.delayedInit(signal);
         const on = this.reportedState(this.camera?.arloProperties ?? this.arloProperties ?? {});
@@ -81,8 +79,6 @@ export class ArloFloodlight extends ArloBaseLight {
     }
 }
 
-// The nightlight belongs to the device itself, which acts as its own
-// basestation for the command.
 export class ArloNightlight extends ArloBaseLight {
     protected readonly lightName = 'nightlight';
 

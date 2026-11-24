@@ -12,7 +12,7 @@ import {
     RateLimitedError,
     sleep,
     TransientRequestError,
-    UnauthorizedError,
+    UnauthorizedRestartException,
 } from '../util';
 
 type Impers = typeof import('impers');
@@ -28,10 +28,6 @@ interface Log {
 let impers: Promise<Impers> | undefined;
 let verified: Promise<Impers> | undefined;
 
-// The browser Arlo Cloud requests impersonate. It is pinned, so an impers
-// update cannot change the TLS fingerprint under the user agent sent with it,
-// which is the one libcurl-impersonate sends for this target. An impers
-// update whose library drops the target fails the check below.
 export const BROWSER = {
     target: 'chrome152_macos',
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
@@ -42,10 +38,6 @@ const NOT_LOADED = 'libcurl-impersonate is not loaded, so the plugin sends no re
     + 'On its first start the plugin downloads it from GitHub (api.github.com and its release downloads); '
     + 'once the Scrypted server can reach them, restart the plugin.';
 
-// impers finds or downloads libcurl-impersonate when it is first imported, so
-// the cache must point into the plugin volume before that. It survives
-// container updates there. impers keeps one folder per libcurl-impersonate
-// release it pins, so a newer impers with a newer pin downloads that release.
 function cacheDir(): string | undefined {
     const volume = process.env.SCRYPTED_PLUGIN_VOLUME;
     return volume && path.join(volume, 'impers-cache');
@@ -61,11 +53,6 @@ export function loadImpers(): Promise<Impers> {
     return impers;
 }
 
-// Has impers' loader find or download libcurl-impersonate without loading
-// it, and checks a library it downloaded against the SHA-256 recorded for
-// this platform by scripts/impers.mjs. One that does not match is
-// deleted and never loaded. A library installed on the system, or named by
-// an environment variable, is the server owner's choice and is not checked.
 async function checkDownloadedLibrary(): Promise<void> {
     const dir = cacheDir();
     if (!dir)
@@ -87,8 +74,6 @@ async function checkDownloadedLibrary(): Promise<void> {
         + 'so it was deleted and not loaded, and the plugin sends no requests to Arlo Cloud.');
 }
 
-// impers, once it has loaded libcurl-impersonate and the library can
-// impersonate BROWSER. Requests are only made through this.
 function loadVerifiedImpers(): Promise<Impers> {
     verified ??= (async () => {
         const loaded = await loadImpers();
@@ -110,9 +95,6 @@ function loadVerifiedImpers(): Promise<Impers> {
     return verified;
 }
 
-// The release archive also carries static and import libraries, headers,
-// pkg-config files and a build probe, none of which loading the shared library
-// needs. The license files stay.
 function unneeded(name: string, isDirectory: boolean): boolean {
     if (isDirectory)
         return name === 'include';
@@ -126,8 +108,6 @@ function size(file: string): number {
     return fs.readdirSync(file).reduce((total, name) => total + size(path.join(file, name)), 0);
 }
 
-// Deletes unneeded files under dir, and folders left empty, returning the
-// bytes freed.
 function trim(dir: string): number {
     let freed = 0;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -145,8 +125,6 @@ function trim(dir: string): number {
     return freed;
 }
 
-// Logs which libcurl was loaded, removes cached libcurl-impersonate releases
-// the bundled impers no longer uses, and trims the one in use.
 export async function initImpers(log: Log): Promise<void> {
     const { Curl, resolveLibrary } = await loadImpers();
     const library = await resolveLibrary();
@@ -180,12 +158,8 @@ export type Params = Record<string, unknown>;
 export interface RequestOptions {
     params?: Params;
     headers?: Record<string, string>;
-    // Return the whole JSON body, without checking it reports success.
     raw?: boolean;
-    // Leave out the eventId and time query parameters the Arlo web app adds.
     skipEventId?: boolean;
-    // Treat a 401 as an empty result instead of starting session recovery,
-    // for logout and other cleanup.
     suppressRestartOn401?: boolean;
     signal?: AbortSignal;
 }
@@ -208,9 +182,6 @@ function isSuccess(body: any): boolean {
     return body.success === true;
 }
 
-// Arlo Cloud requests through an impers session that impersonates BROWSER.
-// Failed requests are sorted by the ErrorManager; temporary failures are
-// retried up to three times, waiting 1 and then 2 seconds.
 export class Request {
     private session: Session;
 
@@ -230,9 +201,6 @@ export class Request {
         return new this.impers.Session({ impersonate: BROWSER.target });
     }
 
-    // Replaces the session with a new one, without headers or cookies. Callers
-    // keep this object, so requests waiting for a login to end go out on the
-    // session the login made rather than a closed one.
     async renew(): Promise<void> {
         const previous = this.session;
         this.session = this.newSession();
@@ -255,7 +223,6 @@ export class Request {
         return this.request('PUT', url, options);
     }
 
-    // Headers sent with every request, such as the session's Authorization.
     setHeaders(headers: Record<string, string>): void {
         for (const [name, value] of Object.entries(headers))
             this.session.headers.set(name, value);
@@ -299,7 +266,7 @@ export class Request {
             catch (e) {
                 if (signal?.aborted || e instanceof this.impers.AbortError)
                     throw new CancelledError();
-                if (e instanceof UnauthorizedError || e instanceof RateLimitedError || e instanceof BadRequestError || e instanceof InvalidResponseError)
+                if (e instanceof UnauthorizedRestartException || e instanceof RateLimitedError || e instanceof BadRequestError || e instanceof InvalidResponseError)
                     throw e;
                 let error = e;
                 if (e instanceof this.impers.RequestException)

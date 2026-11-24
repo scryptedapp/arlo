@@ -14,9 +14,6 @@ export interface ManifestOptions {
     nativeId?: string;
 }
 
-// What every Arlo device has: its Arlo records, capabilities and smart
-// features, a logger on its own console, and event subscriptions that end
-// when it closes.
 export class ArloDeviceBase extends ScryptedDeviceBase {
     readonly logger: Logger;
     arloCapabilities: any = {};
@@ -38,11 +35,8 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
         return this.provider.taskManager;
     }
 
-    // A device's storage and state exist only once Scrypted has registered it;
-    // until then its settings read as their defaults.
     get registered(): boolean {
         try {
-            // The storage object exists either way; reading it fails until then.
             this.storage.getItem('registered');
             return true;
         }
@@ -143,8 +137,6 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
     async refreshDevice(): Promise<void> {
     }
 
-    // Starts the event subscription under key unless it is already running.
-    // While device setup runs it starts once setup ends.
     protected createOrRegisterEventSubscription(key: string, subscribe: () => Unsubscribe): void {
         if (this.stopSubscriptions)
             return;
@@ -160,7 +152,6 @@ export class ArloDeviceBase extends ScryptedDeviceBase {
         this.taskManager.createTask(async signal => {
             while (this.provider.setupInProgress && !this.stopSubscriptions)
                 await sleep(1_000, signal);
-            // Not if the device closed, or the subscription was removed, meanwhile.
             if (!this.stopSubscriptions && this.subscriptions.get(key) === 'pending')
                 this.subscriptions.set(key, subscribe());
         }, { tag: key, owner: this });
