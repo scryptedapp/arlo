@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 
 import type { Logger } from '../logging';
-import { AsyncLock, Deferred, sleep, TaskManager, withTimeout } from '../util';
+import { AsyncLock, Deferred, TaskManager, withTimeout } from '../util';
 
 function randString(n: number, chars = 'abcdefghijklmnopqrstuvwxyz0123456789'): string {
     let result = '';
@@ -13,6 +13,29 @@ function randString(n: number, chars = 'abcdefghijklmnopqrstuvwxyz0123456789'): 
 
 function genBranch(): string {
     return 'z9hG4bK' + randString(7, '0123456789');
+}
+
+// The entries of a comma-separated header, ignoring commas inside <> or quotes.
+function splitHeaderList(value: string): string[] {
+    const entries: string[] = [];
+    let start = 0;
+    let inAngle = false;
+    let inQuote = false;
+    for (let i = 0; i < value.length; i++) {
+        const c = value[i];
+        if (c === '"')
+            inQuote = !inQuote;
+        else if (!inQuote && c === '<')
+            inAngle = true;
+        else if (!inQuote && c === '>')
+            inAngle = false;
+        else if (c === ',' && !inAngle && !inQuote) {
+            entries.push(value.slice(start, i).trim());
+            start = i + 1;
+        }
+    }
+    entries.push(value.slice(start).trim());
+    return entries.filter(Boolean);
 }
 
 function md5(...parts: string[]): string {
@@ -252,6 +275,9 @@ export class SIPManager {
         msg.setHeader('Contact', this.contact());
         msg.setHeader('User-Agent', this.config.UserAgent);
         msg.setHeader('Supported', 'outbound');
+        // Arlo's own app names the device on every INVITE, the trailing
+        // semicolon included. Without it Arlo ends a talk call within a second.
+        msg.setHeader('X-extension', `${this.config.DeviceID};`);
         msg.setHeader('Content-Type', 'application/sdp');
         msg.setHeader('Content-Length', String(Buffer.byteLength(localSdp)));
         if (auth)
@@ -274,7 +300,7 @@ export class SIPManager {
         msg.setHeader('User-Agent', this.config.UserAgent);
         msg.setHeader('Supported', 'outbound');
         msg.setHeader('Content-Length', '0');
-        this.routeSet.forEach(route => msg.addHeader('Record-Route', route));
+        this.routeSet.forEach(route => msg.addHeader('Route', route));
         return msg;
     }
 
@@ -356,7 +382,11 @@ export class SIPManager {
             const to = response.getHeader('To');
             if (to?.includes('tag='))
                 this.toTag = to.split('tag=').pop()!.split(';')[0];
-            this.routeSet = response.getHeaders('Record-Route');
+            // In-dialog requests carry the recorded route as Route headers,
+            // from this end inwards: the reverse of the 200 OK's Record-Route
+            // list. Echoed back as Record-Route, the ACK never reached Arlo's
+            // media server, which ended the call after 32 seconds.
+            this.routeSet = response.getHeaders('Record-Route').flatMap(splitHeaderList).reverse();
             await this.write(this.buildAck());
             this.inviteResponse = response;
             this.logger.debug('SIPManager session started successfully.');
@@ -366,23 +396,6 @@ export class SIPManager {
             this.logger.error('Exception in SIPManager.start:', e);
             await this.close();
             throw e;
-        }
-    }
-
-    private async keepaliveLoop(signal: AbortSignal): Promise<void> {
-        try {
-            while (true) {
-                await sleep(30_000, signal);
-                const response = await this.transaction(this.buildMessage('keepAlive'));
-                if (response.statusCode !== 200 && response.statusCode !== 202) {
-                    this.logger.warn(`Did not receive 200 OK or 202 Accepted for keepAlive, got ${response.statusCode}`);
-                    break;
-                }
-            }
-        }
-        catch (e) {
-            if (!signal.aborted)
-                this.logger.error('Error in keepalive loop:', e);
         }
     }
 
@@ -401,11 +414,6 @@ export class SIPManager {
         this.inviteResponse = undefined;
         this.ws?.close();
         this.ws = undefined;
-    }
-
-    async autoStartTalk(): Promise<void> {
-        await this.startTalk();
-        this.taskManager.createTask(signal => this.keepaliveLoop(signal), { tag: 'sip_keepalive', owner: this });
     }
 
     async startTalk(): Promise<void> {

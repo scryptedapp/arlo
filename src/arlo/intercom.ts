@@ -68,7 +68,9 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             session.scryptedSession = scryptedSession;
             const setup: RTCAVSignalingSetup = {
                 type: 'offer',
-                audio: { direction: 'sendonly' },
+                // Arlo ends a talk call offered send-only, about 30 seconds in,
+                // as no audio ever comes back.
+                audio: { direction: 'sendrecv' },
                 configuration: { iceServers: session.iceServers, iceCandidatePoolSize: 0 },
             };
             if (session instanceof ArloIntercomWebRTCSignalingSession) {
@@ -101,8 +103,10 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
             await session.setRemoteDescription(offer);
             const answer = await session.createLocalDescription();
             this.logger.debug(`Setting remote description with answer: ${answer.sdp}`);
+            // A call for talk alone: Arlo's own app sends startTalk only
+            // inside a call that also carries video, as the camera's WebRTC
+            // stream does.
             await scryptedSession.setRemoteDescription(answer, setup);
-            await session.arloSip!.autoStartTalk();
             this.logger.debug('SIP signaling session established.');
             return new ArloIntercomSIPSessionControl(session, onEnd);
         }
