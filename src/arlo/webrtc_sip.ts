@@ -200,7 +200,12 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
         this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerSdp', sdp => {
             this.answer = { sdp: this.patchSdp(sdp), type: 'answer' };
         }));
-        this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerCandidate', candidate => {
+        // Arlo sends each candidate as an SDP line, with the a= prefix and
+        // a line ending, where WebRTC expects the bare candidate.
+        this.subscriptions.push(this.provider.arlo!.subscribeToPushToTalkEvents(this.arloDevice, 'answerCandidate', line => {
+            const candidate = String(line ?? '').trim().replace(/^a=/, '');
+            if (!candidate)
+                return;
             this.scryptedSession?.addIceCandidate({ candidate, sdpMid: '0', sdpMLineIndex: 0 })
                 .catch(e => this.logger.error('Error in candidate answer subscription:', e));
         }));
