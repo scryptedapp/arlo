@@ -14,7 +14,7 @@ export interface IceServer {
     credential?: string;
 }
 
-export abstract class BaseArloSignalingSession {
+export class BaseArloSignalingSession {
     logger: Logger;
     provider: ArloProvider;
     arloDevice: ArloDevice;
@@ -86,7 +86,8 @@ export abstract class BaseArloSignalingSession {
         return [header.join('\r\n'), ...patched.map(section => section.join('\r\n'))].join('\r\n') + '\r\n';
     }
 
-    abstract close(): Promise<void>;
+    async close(): Promise<void> {
+    }
 }
 
 export class BaseArloSessionControl implements RTCSessionControl {
@@ -118,8 +119,8 @@ export class BaseArloSessionControl implements RTCSessionControl {
 
 export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
-    onEnded?: (why: string) => void;
-    private sipInfo: any;
+    sipInfo: any;
+    onEnded?: (reason: string) => void;
 
     async delayedInit(): Promise<void> {
         this.logger.debug('Fetching SIP info for camera WebRTC session.');
@@ -142,8 +143,8 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
             WebsocketOrigin: 'https://my.arlo.com',
             WebsocketHeaders: { 'User-Agent': USER_AGENTS.firefox },
             SDP: this.cleanSdp(offer.sdp ?? ''),
-        }, this.provider.taskManager);
-        this.arloSip.onEnded = why => this.onEnded?.(why);
+        }, this.provider);
+        this.arloSip.onEnded = reason => this.onEnded?.(reason);
         this.logger.debug('SIPManager initialized for camera session.');
     }
 
@@ -164,17 +165,21 @@ export class ArloCameraWebRTCSignalingSession extends BaseArloSignalingSession {
 }
 
 export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
+    constructor(public arloSession: ArloCameraWebRTCSignalingSession, onEnd?: () => void) {
+        super(arloSession, onEnd);
+    }
+
     async setPlayback(options: { audio: boolean, video: boolean }): Promise<void> {
-        const sip = (this.arloSession as ArloCameraWebRTCSignalingSession).arloSip;
-        if (!sip)
+        const arloSip = this.arloSession.arloSip;
+        if (!arloSip)
             return;
         try {
             if (options.audio) {
-                await sip.startTalk();
+                await arloSip.startTalk();
                 this.arloSession.logger.info('Talk started in the video call.');
             }
-            else if (sip.talking) {
-                await sip.stopTalk();
+            else if (arloSip.talking) {
+                await arloSip.stopTalk();
                 this.arloSession.logger.info('Talk stopped in the video call.');
             }
         }
@@ -186,7 +191,7 @@ export class ArloCameraWebRTCSessionControl extends BaseArloSessionControl {
 }
 
 export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession {
-    private arloBasestation: ArloDevice;
+    arloBasestation: ArloDevice;
     sessionId = '';
     answer?: { sdp: string, type: 'answer' };
     closed = false;
@@ -202,11 +207,21 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
         const pushToTalk = await this.provider.arlo.startPushToTalk(this.arloDevice);
         if (!pushToTalk)
             throw new Error('Arlo did not start a push-to-talk session.');
-        [this.sessionId] = pushToTalk;
-        this.iceServers = this.formatIceServers(pushToTalk[1]);
+        const [sessionId, iceServers] = pushToTalk;
+        this.sessionId = sessionId;
+        this.iceServers = this.formatIceServers(iceServers);
+        this.startSdpAnswerSubscription();
+        this.startCandidateAnswerSubscription();
+        this.logger.debug('Intercom WebRTC session initialized.');
+    }
+
+    private startSdpAnswerSubscription(): void {
         this.subscriptions.push(this.provider.arlo.subscribeToPushToTalkEvents(this.arloDevice, 'answerSdp', sdp => {
             this.answer = { sdp: this.patchSdp(sdp), type: 'answer' };
         }));
+    }
+
+    private startCandidateAnswerSubscription(): void {
         this.subscriptions.push(this.provider.arlo.subscribeToPushToTalkEvents(this.arloDevice, 'answerCandidate', line => {
             const candidate = String(line ?? '').trim().replace(/^a=/, '');
             if (!candidate)
@@ -214,7 +229,6 @@ export class ArloIntercomWebRTCSignalingSession extends BaseArloSignalingSession
             this.scryptedSession?.addIceCandidate({ candidate, sdpMid: '0', sdpMLineIndex: 0 })
                 .catch(e => this.logger.error('Error in candidate answer subscription:', e));
         }));
-        this.logger.debug('Intercom WebRTC session initialized.');
     }
 
     async setRemoteDescription(offer: { sdp?: string }): Promise<void> {
@@ -236,8 +250,8 @@ export class ArloIntercomWebRTCSessionControl extends BaseArloSessionControl {
 
 export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
     arloSip?: SIPManager;
-    private sipInfo: any;
-    private camera: ArloCamera;
+    sipInfo: any;
+    camera: ArloCamera;
 
     constructor(intercom: ArloIntercom) {
         super(intercom);
@@ -264,8 +278,8 @@ export class ArloIntercomSIPSignalingSession extends BaseArloSignalingSession {
             WebsocketOrigin: 'https://my.arlo.com',
             WebsocketHeaders: { 'User-Agent': USER_AGENTS.linux },
             SDP: this.cleanSdp(offer.sdp ?? ''),
-        }, this.provider.taskManager);
-        this.arloSip.onEnded = why => this.camera.logger.info(`Talk ended: ${why}.`);
+        }, this.provider);
+        this.arloSip.onEnded = reason => this.camera.logger.info(`Talk ended: ${reason}.`);
         this.logger.debug('SIPManager initialized for intercom SIP session.');
     }
 

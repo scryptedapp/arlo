@@ -796,7 +796,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 throw new Error("Must specify the basestation's Hostname to use local stream.");
             if (!basestation.peerCert)
                 throw new Error('This basestation does not have a certificate, unable to use local stream.');
-            const port = await new ArloLocalStreamProxy(this.provider.arloPrivateKey, basestation, this).start();
+            const port = await new ArloLocalStreamProxy(this.provider, basestation, this).start();
             const url = `rtsp://localhost:${port}/${this.nativeId}/tcp/${this.localLiveStreamingCodec === 'h.265' ? 'hevc' : 'avc'}`;
             this.logger.debug(`Got local stream URL at ${url}`);
             return url;

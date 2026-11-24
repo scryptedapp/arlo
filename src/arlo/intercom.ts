@@ -12,10 +12,8 @@ import {
     ArloIntercomWebRTCSignalingSession,
 } from './webrtc_sip';
 
-const ANSWER_TIMEOUT = 10_000;
-
 export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel {
-    private sessions = new Set<ArloIntercomSIPSignalingSession | ArloIntercomWebRTCSignalingSession>();
+    private activeSignalingSessions = new Set<ArloIntercomSIPSignalingSession | ArloIntercomWebRTCSignalingSession>();
 
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
         provider: ArloProvider, public camera: ArloCamera) {
@@ -28,8 +26,8 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
     }
 
     async endTalk(): Promise<void> {
-        const sessions = [...this.sessions];
-        this.sessions.clear();
+        const sessions = [...this.activeSignalingSessions];
+        this.activeSignalingSessions.clear();
         for (const session of sessions)
             await session.close().catch(e => this.logger.debug(`Could not close a talk session: ${e}`));
     }
@@ -42,73 +40,79 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
         return ScryptedDeviceType.Speaker;
     }
 
-    private async createOffer(scryptedSession: RTCSignalingSession, setup: RTCAVSignalingSetup, sendIceCandidate?: (candidate: RTCIceCandidateInit) => Promise<void>): Promise<RTCSessionDescriptionInit> {
-        try {
-            return await withTimeout(scryptedSession.createLocalDescription('offer', setup, sendIceCandidate), 3_000);
-        }
-        catch (e) {
-            if (!(e instanceof TimeoutError))
-                throw e;
-            this.logger.warn('Timeout waiting for ICE candidates, falling back to ignore trickle.');
-            return scryptedSession.createLocalDescription('offer', setup, async () => { });
-        }
-    }
-
     async startRTCSignalingSession(scryptedSession: RTCSignalingSession): Promise<RTCSessionControl | undefined> {
         const started = Date.now();
-        const sip = this.camera.usesSipPushToTalk;
-        const sessionType = sip ? 'SIP' : 'WebRTC';
+        const sessionType = this.camera.usesSipPushToTalk ? 'SIP' : 'WebRTC';
         this.logger.debug(`Using ${sessionType} for intercom session.`);
-        const session = sip ? new ArloIntercomSIPSignalingSession(this) : new ArloIntercomWebRTCSignalingSession(this);
-        this.sessions.add(session);
-        const onEnd = () => this.sessions.delete(session);
+        const pluginSession = this.camera.usesSipPushToTalk ? new ArloIntercomSIPSignalingSession(this) : new ArloIntercomWebRTCSignalingSession(this);
+        this.activeSignalingSessions.add(pluginSession);
+        const onEnd = () => this.activeSignalingSessions.delete(pluginSession);
         try {
-            await session.delayedInit();
-            session.scryptedSession = scryptedSession;
-            const setup: RTCAVSignalingSetup = {
+            await pluginSession.delayedInit();
+            pluginSession.scryptedSession = scryptedSession;
+            const scryptedSetup: RTCAVSignalingSetup = {
                 type: 'offer',
                 audio: { direction: 'sendrecv' },
-                configuration: { iceServers: session.iceServers, iceCandidatePoolSize: 0 },
+                configuration: { iceServers: pluginSession.iceServers, iceCandidatePoolSize: 0 },
             };
-            if (session instanceof ArloIntercomWebRTCSignalingSession) {
-                const offer = await this.createOffer(scryptedSession, setup, async candidate => {
+            if (pluginSession instanceof ArloIntercomWebRTCSignalingSession) {
+                const sendIceCandidate = async (candidate: RTCIceCandidateInit) => {
                     try {
-                        await this.provider.arlo.notifyPushToTalkOfferCandidate(this.arloBasestation, this.arloDevice, session.sessionId, candidate.candidate ?? '');
+                        await this.provider.arlo.notifyPushToTalkOfferCandidate(this.arloBasestation, this.arloDevice, pluginSession.sessionId, candidate.candidate ?? '');
                         this.logger.debug(`Sent ICE candidate: ${candidate.candidate}`);
                     }
                     catch (e) {
                         this.logger.error('Error sending ICE candidate:', e);
                     }
-                });
-                this.logger.debug(`Setting local description with offer: ${offer.sdp}`);
-                await session.setRemoteDescription(offer);
+                };
+                let scryptedOffer: RTCSessionDescriptionInit;
+                try {
+                    scryptedOffer = await withTimeout(scryptedSession.createLocalDescription('offer', scryptedSetup, sendIceCandidate), 3_000);
+                }
+                catch (e) {
+                    if (!(e instanceof TimeoutError))
+                        throw e;
+                    this.logger.warn('Timeout waiting for ICE candidates, falling back to ignore trickle.');
+                    scryptedOffer = await scryptedSession.createLocalDescription('offer', scryptedSetup, async () => { });
+                }
+                this.logger.debug(`Setting local description with offer: ${scryptedOffer.sdp}`);
+                await pluginSession.setRemoteDescription(scryptedOffer);
                 this.logger.debug('Waiting for local description to be set by plugin session.');
-                const deadline = Date.now() + ANSWER_TIMEOUT;
-                while (!session.answer && !session.closed && Date.now() < deadline)
+                const deadline = Date.now() + 10_000;
+                while (!pluginSession.answer && !pluginSession.closed && Date.now() < deadline)
                     await sleep(100);
-                if (!session.answer)
-                    throw new Error(session.closed
+                if (!pluginSession.answer)
+                    throw new Error(pluginSession.closed
                         ? 'The intercom session closed before Arlo answered.'
-                        : `Arlo did not answer the intercom within ${ANSWER_TIMEOUT / 1000} seconds.`);
-                this.logger.debug(`Setting remote description with answer: ${session.answer.sdp}`);
-                await scryptedSession.setRemoteDescription(session.answer, setup);
+                        : 'Arlo did not answer the intercom within 10 seconds.');
+                this.logger.debug(`Setting remote description with answer: ${pluginSession.answer.sdp}`);
+                await scryptedSession.setRemoteDescription(pluginSession.answer, scryptedSetup);
                 this.logger.debug('WebRTC signaling session established.');
                 this.camera.logger.info(`Talk started over push-to-talk; Arlo answered in ${Date.now() - started} ms.`);
-                return new ArloIntercomWebRTCSessionControl(session, onEnd);
+                return new ArloIntercomWebRTCSessionControl(pluginSession, onEnd);
             }
-            const offer = await this.createOffer(scryptedSession, setup);
-            this.logger.debug(`Setting local description with offer: ${offer.sdp}`);
-            await session.setRemoteDescription(offer);
-            const answer = await session.createLocalDescription();
-            this.logger.debug(`Setting remote description with answer: ${answer.sdp}`);
-            await scryptedSession.setRemoteDescription(answer, setup);
+            let scryptedOffer: RTCSessionDescriptionInit;
+            try {
+                scryptedOffer = await withTimeout(scryptedSession.createLocalDescription('offer', scryptedSetup, undefined), 3_000);
+            }
+            catch (e) {
+                if (!(e instanceof TimeoutError))
+                    throw e;
+                this.logger.warn('Timeout waiting for ICE candidates, falling back to ignore trickle.');
+                scryptedOffer = await scryptedSession.createLocalDescription('offer', scryptedSetup, async () => { });
+            }
+            this.logger.debug(`Setting local description with offer: ${scryptedOffer.sdp}`);
+            await pluginSession.setRemoteDescription(scryptedOffer);
+            const pluginAnswer = await pluginSession.createLocalDescription();
+            this.logger.debug(`Setting remote description with answer: ${pluginAnswer.sdp}`);
+            await scryptedSession.setRemoteDescription(pluginAnswer, scryptedSetup);
             this.logger.debug('SIP signaling session established.');
             this.camera.logger.info(`Talk started over SIP; Arlo answered in ${Date.now() - started} ms.`);
-            return new ArloIntercomSIPSessionControl(session, onEnd);
+            return new ArloIntercomSIPSessionControl(pluginSession, onEnd);
         }
         catch (e) {
             onEnd();
-            await session.close().catch(() => { });
+            await pluginSession.close().catch(() => { });
             this.logger.error(`Failed to start ${sessionType} signaling session:`, e);
             throw e;
         }
