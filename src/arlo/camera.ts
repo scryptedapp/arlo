@@ -185,7 +185,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 this.activityState = this.arloProperties.activityState ?? 'unavailable';
                 this.brightness = ARLO_TO_SCRYPTED_BRIGHTNESS[this.arloProperties.brightness ?? 0];
                 if (this.hasPanTiltZoom)
-                    this.ptzCapabilities = { pan: true, tilt: true, zoom: false };
+                    this.ptzCapabilities = { pan: true, tilt: !!this.getCapability('tilt', 'PanTiltZoom'), zoom: false };
                 this.startAutoSnapshot();
                 return;
             }
@@ -975,8 +975,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         this.ptzSwitches ??= [
             new ArloPtzSwitch(`${id}.panleft`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Pan Left', -1, 0),
             new ArloPtzSwitch(`${id}.panright`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Pan Right', 1, 0),
-            new ArloPtzSwitch(`${id}.tiltup`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Tilt Up', 0, 1),
-            new ArloPtzSwitch(`${id}.tiltdown`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Tilt Down', 0, -1),
+            ...(this.getCapability('tilt', 'PanTiltZoom') ? [
+                new ArloPtzSwitch(`${id}.tiltup`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Tilt Up', 0, 1),
+                new ArloPtzSwitch(`${id}.tiltdown`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Tilt Down', 0, -1),
+            ] : []),
         ];
         return this.ptzSwitches;
     }
