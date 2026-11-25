@@ -15,6 +15,9 @@ import sdk, {
     ObjectDetector,
     ObjectsDetected,
     OnOff,
+    PanTiltZoom,
+    PanTiltZoomCommand,
+    PanTiltZoomMovement,
     RequestMediaStreamOptions,
     RequestPictureOptions,
     ResponseMediaStreamOptions,
@@ -63,7 +66,7 @@ async function isViewerSession(session: RTCSignalingSession): Promise<boolean> {
 }
 
 export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, Brightness, Camera, Charger, DeviceProvider,
-    MotionSensor, ObjectDetector, OnOff, RTCSignalingChannel, Settings, VideoCamera, VideoClips, Intercom {
+    MotionSensor, ObjectDetector, OnOff, PanTiltZoom, RTCSignalingChannel, Settings, VideoCamera, VideoClips, Intercom {
     intercom?: ArloIntercom;
     light?: ArloBaseLight;
     svss?: ArloSirenVirtualSecuritySystem;
@@ -75,6 +78,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private lastSnapshotTime = 0;
     private lastSnapshotUrl = '';
     private intercomActive = false;
+    private ptzStopTimer?: NodeJS.Timeout;
     private skipPrebufferOnFirstAutoSnapshot = true;
     private snapshotLock = new AsyncLock();
     private rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
@@ -176,6 +180,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 this.deviceState = this.arloProperties.connectionState ?? 'unavailable';
                 this.activityState = this.arloProperties.activityState ?? 'unavailable';
                 this.brightness = ARLO_TO_SCRYPTED_BRIGHTNESS[this.arloProperties.brightness ?? 0];
+                if (this.hasPanTiltZoom)
+                    this.ptzCapabilities = { pan: true, tilt: true, zoom: false };
                 this.startAutoSnapshot();
                 return;
             }
@@ -320,11 +326,32 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             interfaces.add(ScryptedInterface.AudioSensor);
         if (this.hasCloudRecording)
             interfaces.add(ScryptedInterface.VideoClips);
+        if (this.hasPanTiltZoom)
+            interfaces.add(ScryptedInterface.PanTiltZoom);
         return [...interfaces];
     }
 
     getDeviceType(): string {
         return ScryptedDeviceType.Camera;
+    }
+
+    async ptzCommand(command: PanTiltZoomCommand): Promise<void> {
+        const movement = command.movement ?? PanTiltZoomMovement.Relative;
+        if (movement !== PanTiltZoomMovement.Relative && movement !== PanTiltZoomMovement.Continuous) {
+            this.logger.warn(`Arlo cameras do not support ${movement} PTZ movement.`);
+            return;
+        }
+        clearTimeout(this.ptzStopTimer);
+        const pan = (command.pan ?? 0) * (command.speed?.pan ?? 1);
+        const tilt = (command.tilt ?? 0) * (command.speed?.tilt ?? 1);
+        if (!pan && !tilt) {
+            await this.provider.arlo.ptzStop(this.arloBasestation, this.arloDevice);
+            return;
+        }
+        await this.provider.arlo.ptzContinuousMove(this.arloBasestation, this.arloDevice, pan, tilt);
+        const duration = movement === PanTiltZoomMovement.Continuous ? command.timeout || 1_000 : 500;
+        this.ptzStopTimer = setTimeout(() => this.provider.arlo.ptzStop(this.arloBasestation, this.arloDevice)
+            .catch(e => this.logger.error(`Error stopping PTZ movement: ${e}`)), duration);
     }
 
     getBuiltinChildDeviceManifests(): Device[] {
@@ -455,6 +482,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     get hasSipWebrtcStreaming(): boolean {
         return this.hasCapability('SIPStreaming', 'Streaming');
+    }
+
+    get hasPanTiltZoom(): boolean {
+        return !!this.getCapability('pan', 'PanTiltZoom');
     }
 
     get hasLocalLiveStreaming(): boolean {

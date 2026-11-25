@@ -898,6 +898,23 @@ export class ArloClient {
         await this.setChildDevice('setBrightness', basestation, camera.deviceId, { brightness });
     }
 
+    async ptzContinuousMove(basestation: ArloDevice, camera: ArloDevice, x: number, y: number): Promise<void> {
+        await this.ignoreUnauthorized('ptzContinuousMove', undefined, () => this.notify(basestation, {
+            action: 'continuousMove',
+            resource: `cameras/${camera.deviceId}/ptz`,
+            publishResponse: true,
+            properties: { panTiltSpaces: { velocityGenericSpace: { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) } } },
+        }));
+    }
+
+    async ptzStop(basestation: ArloDevice, camera: ArloDevice): Promise<void> {
+        await this.ignoreUnauthorized('ptzStop', undefined, () => this.notify(basestation, {
+            action: 'stop',
+            resource: `cameras/${camera.deviceId}/ptz`,
+            publishResponse: true,
+        }));
+    }
+
     private async setChildDevice(name: string, basestation: ArloDevice, deviceId: string, properties: Record<string, unknown>): Promise<void> {
         await this.ignoreUnauthorized(name, undefined, () => this.notify(basestation, {
             action: 'set',
