@@ -9,6 +9,13 @@ from .stream_async import Stream
 from .logging import logger
 
 
+class SessionSSEClient(sseclient.SSEClient):
+    """Reads the stream through the session's response, since curl_cffi responses have no raw socket."""
+
+    def iter_content(self):
+        return self.resp.iter_content(chunk_size=self.chunk_size)
+
+
 class GoSSEStream(Stream):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -153,7 +160,7 @@ class PySSEStream(Stream):
                 self.event_loop.call_soon_threadsafe(self.event_loop.create_task, self.restart())
 
         try:
-            self.event_stream = sseclient.SSEClient(
+            self.event_stream = SessionSSEClient(
                 'https://myapi.arlo.com/hmsweb/client/subscribe?token=' +
                 self.arlo.request.session.headers.get('Authorization'),
                 session=self.arlo.request.session
