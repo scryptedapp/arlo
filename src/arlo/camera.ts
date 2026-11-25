@@ -363,8 +363,9 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         }
         else if (movement === PanTiltZoomMovement.Continuous) {
             await this.provider.arlo.ptzContinuousMove(this.arloBasestation, this.arloDevice, pan * (command.speed?.pan ?? 1), tilt * (command.speed?.tilt ?? 1));
-            this.ptzStopTimer = setTimeout(() => this.provider.arlo.ptzStop(this.arloBasestation, this.arloDevice)
-                .catch(e => this.logger.error(`Error stopping PTZ movement: ${e}`)), command.timeout || 1_000);
+            if (command.timeout)
+                this.ptzStopTimer = setTimeout(() => this.provider.arlo.ptzStop(this.arloBasestation, this.arloDevice)
+                    .catch(e => this.logger.error(`Error stopping PTZ movement: ${e}`)), command.timeout);
         }
         else {
             await this.provider.arlo.ptzRelativeMove(this.arloBasestation, this.arloDevice, pan, tilt);
