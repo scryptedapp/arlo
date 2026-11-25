@@ -48,6 +48,8 @@ export class ArloIntercom extends ArloDeviceBase implements RTCSignalingChannel 
         this.activeSignalingSessions.add(pluginSession);
         const onEnd = () => this.activeSignalingSessions.delete(pluginSession);
         try {
+            if (this.camera.sipCallReason)
+                throw new Error(`The camera is in a SIP video call (${this.camera.sipCallReason}); talk works only inside that call.`);
             await pluginSession.delayedInit();
             pluginSession.scryptedSession = scryptedSession;
             const scryptedSetup: RTCAVSignalingSetup = {

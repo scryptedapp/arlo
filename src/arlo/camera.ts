@@ -79,6 +79,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private snapshotLock = new AsyncLock();
     private rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
     streamSipInfo?: StreamSipInfo;
+    sipCallActive = false;
     private ownStream?: { kind: 'rtsp', id: string, confirmed: boolean, startedAt: number } | { kind: 'webrtc' };
     private connectionLock = new AsyncLock();
 
@@ -547,6 +548,14 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         if (!state || state === 'idle' || state === 'unavailable')
             return undefined;
         return state;
+    }
+
+    get sipCallReason(): string | undefined {
+        if (this.ownStream?.kind === 'webrtc')
+            return "this plugin's WebRTC stream";
+        if (this.sipCallActive)
+            return 'another app';
+        return undefined;
     }
 
     private applyActivityState(state: string, fromProperties = false): void {

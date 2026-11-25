@@ -13,6 +13,8 @@ export class ArloDoorbell extends ArloCamera implements BinarySensor {
     private startDoorbellSubscription(): void {
         this.createOrRegisterEventSubscription('doorbell_subscription', () =>
             this.provider.arlo.subscribeToDoorbellEvents(this.arloDevice, doorbellPressed => this.binaryState = doorbellPressed));
+        this.createOrRegisterEventSubscription('sip_call_subscription', () =>
+            this.provider.arlo.subscribeToSipCallEvents(this.arloDevice, sipCallActive => this.sipCallActive = sipCallActive));
     }
 
     getDeviceType(): string {

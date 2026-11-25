@@ -684,6 +684,13 @@ export class ArloClient {
         };
     }
 
+    subscribeToSipCallEvents(doorbell: ArloDevice, callback: (active: boolean) => void): Unsubscribe {
+        return this.events.listen(`doorbells/${doorbell.deviceId}`, [['is', 'sipCallActive']], event => {
+            if (event.properties && 'sipCallActive' in event.properties)
+                callback(event.properties.sipCallActive);
+        });
+    }
+
     subscribeToActiveModeEvents(locationId: string, callback: (properties: any) => void): Unsubscribe {
         return this.events.listen('automation/activeMode', ['is'], event => {
             if (event.locationId === locationId && event.properties != null)
