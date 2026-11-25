@@ -25,7 +25,7 @@ If you experience any trouble logging in, turn on **Force Re-Authentication** in
 
 ## General Setup Notes
 
-- **Switching from the Python plugin (0.12):** Uninstall the Arlo plugin first, then install this version and set it up from scratch. Do the same to go back.
+- **Switching from the Python plugin (0.11 or 0.12):** Install this version over it. Your devices keep their HomeKit pairings and Scrypted settings (from 0.11, the siren security systems are created again). Arlo asks for a new MFA code, and camera switches that were on, such as **Plugged In to External Power**, and hidden devices need setting again. To go back, uninstall this version first.
 
 - **MFA Requirement:** Ensure that your Arlo account's default MFA option is set to either SMS or EMAIL. Without this, you will not be able to log in and use the plugin. The plugin will require you to enter a MFA code once your credentials are entered. This code is sent to you via your selected method, and you will need to input it into the plugin settings.
 
