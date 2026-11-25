@@ -48,6 +48,7 @@ import { ArloIntercom } from './intercom';
 import { ArloBaseLight, ArloFloodlight, ArloNightlight, ArloSpotlight } from './light';
 import { ArloLocalStreamProxy } from './local_stream';
 import type { ArloProvider } from './provider';
+import { ArloPtzSwitch } from './ptz';
 import { abortable, AsyncLock, sleep, TimeoutError, withTimeout } from './util';
 import { ArloSirenVirtualSecuritySystem } from './vss';
 import { ArloCameraWebRTCSessionControl, ArloCameraWebRTCSignalingSession } from './webrtc_sip';
@@ -70,6 +71,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     intercom?: ArloIntercom;
     light?: ArloBaseLight;
     svss?: ArloSirenVirtualSecuritySystem;
+    ptzSwitches?: ArloPtzSwitch[];
     timeout = 10_000;
     private speaker?: Intercom;
     deviceState?: string;
@@ -157,6 +159,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await this.intercom?.close().catch(() => { });
         await this.light?.close().catch(() => { });
         await this.svss?.close().catch(() => { });
+        for (const ptzSwitch of this.ptzSwitches ?? [])
+            await ptzSwitch.close().catch(() => { });
         this.intercomActive = false;
         this.speaker = undefined;
         await super.close();
@@ -320,7 +324,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             interfaces.add(ScryptedInterface.Battery);
             interfaces.add(ScryptedInterface.Charger);
         }
-        if (this.hasSiren || this.hasSpotlight || this.hasFloodlight || this.hasNightlight || this.hasPushToTalk)
+        if (this.hasSiren || this.hasSpotlight || this.hasFloodlight || this.hasNightlight || this.hasPushToTalk || this.hasPanTiltZoom)
             interfaces.add(ScryptedInterface.DeviceProvider);
         if (this.hasAudioSensor)
             interfaces.add(ScryptedInterface.AudioSensor);
@@ -387,13 +391,23 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 nativeId: intercom.nativeId,
             }));
         }
+        if (this.hasPanTiltZoom) {
+            for (const ptzSwitch of this.getPtzSwitches())
+                manifests.push(ptzSwitch.getDeviceManifest({
+                    name: `${this.arloDevice.deviceName} ${ptzSwitch.direction}`,
+                    interfaces: ptzSwitch.getApplicableInterfaces(),
+                    deviceType: ptzSwitch.getDeviceType(),
+                    providerNativeId: this.nativeId,
+                    nativeId: ptzSwitch.nativeId,
+                }));
+        }
         return manifests;
     }
 
     async refreshDevice(): Promise<void> {
         try {
             this.arloProperties = await this.provider.getDeviceProperties(this.arloBasestation, this.arloDevice);
-            for (const child of [this.light, this.svss, this.svss?.siren, this.intercom])
+            for (const child of [this.light, this.svss, this.svss?.siren, this.intercom, ...(this.ptzSwitches ?? [])])
                 if (child)
                     child.arloProperties = this.arloProperties;
             for (const manifest of [this.getDeviceManifest(), ...this.getBuiltinChildDeviceManifests()])
@@ -925,6 +939,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             return this.getSvss();
         if (nativeId.endsWith('intercom') && this.hasPushToTalk)
             return this.getIntercom();
+        if (this.hasPanTiltZoom)
+            return this.getPtzSwitches().find(ptzSwitch => ptzSwitch.nativeId === nativeId);
         return undefined;
     }
 
@@ -952,6 +968,17 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private getIntercom(): ArloIntercom {
         this.intercom ??= new ArloIntercom(`${this.arloDevice.deviceId}.intercom`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this);
         return this.intercom;
+    }
+
+    private getPtzSwitches(): ArloPtzSwitch[] {
+        const id = this.arloDevice.deviceId;
+        this.ptzSwitches ??= [
+            new ArloPtzSwitch(`${id}.panleft`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Pan Left', -1, 0),
+            new ArloPtzSwitch(`${id}.panright`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Pan Right', 1, 0),
+            new ArloPtzSwitch(`${id}.tiltup`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Tilt Up', 0, 1),
+            new ArloPtzSwitch(`${id}.tiltdown`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, 'Tilt Down', 0, -1),
+        ];
+        return this.ptzSwitches;
     }
 
     async getDetectionInput(detectionId: string, eventId?: any): Promise<MediaObject> {
