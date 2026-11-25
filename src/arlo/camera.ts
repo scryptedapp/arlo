@@ -581,11 +581,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         if (!this.busyReason)
             return;
         this.logger.debug(`Camera is busy (${this.busyReason}); waiting to ${purpose}.`);
-        const deadline = Date.now() + this.timeout;
+        const deadline = Date.now() + 7_000;
         while (this.busyReason && Date.now() < deadline)
             await sleep(250);
         if (this.busyReason && this.ownStream?.kind !== 'webrtc') {
-            const properties = await this.provider.getDeviceProperties(this.arloBasestation, this.arloDevice);
+            const properties = await this.provider.arlo.triggerProperties(this.arloBasestation, this.arloDevice, { timeout: 2_000 })
+                .catch((): Record<string, any> => ({}));
             if (typeof properties.activityState === 'string')
                 this.applyActivityState(properties.activityState, true);
         }
