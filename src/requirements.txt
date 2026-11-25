@@ -6,7 +6,7 @@ cachetools==8.0.2
 scrypted-arlo-go==0.7.11
 cloudscraper==1.2.71
 curl-cffi==0.17.0; platform_machine != "armv7l"
-curl-cffi==0.13.0; platform_machine == "armv7l"
+curl-cffi==0.17.0; platform_machine == "armv7l"
 async-timeout==5.0.1
 beautifulsoup4==4.15.0
 sseclient==0.0.27
