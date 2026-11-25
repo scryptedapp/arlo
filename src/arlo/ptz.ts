@@ -1,4 +1,4 @@
-import { OnOff, ScryptedDeviceType, ScryptedInterface } from '@scrypted/sdk';
+import { OnOff, PanTiltZoomCommand, ScryptedDeviceType, ScryptedInterface } from '@scrypted/sdk';
 
 import { ArloDeviceBase } from './base';
 import type { ArloCamera } from './camera';
@@ -10,7 +10,7 @@ export class ArloPtzSwitch extends ArloDeviceBase implements OnOff {
     private resetTimer?: NodeJS.Timeout;
 
     constructor(nativeId: string, arloDevice: ArloDevice, arloBasestation: ArloDevice, arloProperties: Record<string, any>,
-        provider: ArloProvider, public camera: ArloCamera, public direction: string, public pan: number, public tilt: number) {
+        provider: ArloProvider, public camera: ArloCamera, public command: PanTiltZoomCommand) {
         super(nativeId, arloDevice, arloBasestation, arloProperties, provider);
     }
 
@@ -44,10 +44,10 @@ export class ArloPtzSwitch extends ArloDeviceBase implements OnOff {
         this.on = true;
         this.resetTimer = setTimeout(() => this.turnOff(), 1_000);
         try {
-            await this.camera.ptzCommand({ pan: this.pan, tilt: this.tilt });
+            await this.camera.ptzCommand(this.command);
         }
         catch (e) {
-            this.logger.error(`Error moving the camera (${this.direction}): ${e}`);
+            this.logger.error(`Error moving the camera: ${e}`);
         }
     }
 

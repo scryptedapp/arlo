@@ -83,6 +83,10 @@ function formatDate(date: Date): string {
     return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function ptzSpace(x: number, y: number): { x: number, y: number } {
+    return { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) };
+}
+
 export class ArloClient {
     arloUrl = 'my.arlo.com';
     arloApiUrl = 'myapi.arlo.com';
@@ -899,19 +903,44 @@ export class ArloClient {
     }
 
     async ptzContinuousMove(basestation: ArloDevice, camera: ArloDevice, x: number, y: number): Promise<void> {
-        await this.ignoreUnauthorized('ptzContinuousMove', undefined, () => this.notify(basestation, {
-            action: 'continuousMove',
-            resource: `cameras/${camera.deviceId}/ptz`,
-            publishResponse: true,
-            properties: { panTiltSpaces: { velocityGenericSpace: { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) } } },
-        }));
+        await this.ptzNotify('ptzContinuousMove', basestation, camera, 'continuousMove', { panTiltSpaces: { velocityGenericSpace: ptzSpace(x, y) } });
+    }
+
+    async ptzRelativeMove(basestation: ArloDevice, camera: ArloDevice, x: number, y: number): Promise<void> {
+        await this.ptzNotify('ptzRelativeMove', basestation, camera, 'relativeMove', { panTiltSpaces: { translationGenericSpace: ptzSpace(x, y) } });
+    }
+
+    async ptzAbsoluteMove(basestation: ArloDevice, camera: ArloDevice, x: number, y: number): Promise<void> {
+        await this.ptzNotify('ptzAbsoluteMove', basestation, camera, 'absoluteMove', { panTiltSpaces: { positionGenericSpace: ptzSpace(x, y) } });
     }
 
     async ptzStop(basestation: ArloDevice, camera: ArloDevice): Promise<void> {
-        await this.ignoreUnauthorized('ptzStop', undefined, () => this.notify(basestation, {
-            action: 'stop',
+        await this.ptzNotify('ptzStop', basestation, camera, 'stop');
+    }
+
+    async ptzGotoPreset(basestation: ArloDevice, camera: ArloDevice, presetToken: string): Promise<void> {
+        await this.ptzNotify('ptzGotoPreset', basestation, camera, 'gotoPreset', { presetToken });
+    }
+
+    async ptzGotoHomePosition(basestation: ArloDevice, camera: ArloDevice): Promise<void> {
+        await this.ptzNotify('ptzGotoHomePosition', basestation, camera, 'gotoHomePosition');
+    }
+
+    async getPtzPresets(basestation: ArloDevice, camera: ArloDevice, { timeout, signal }: { timeout?: number, signal?: AbortSignal } = {}): Promise<any[]> {
+        return this.ignoreUnauthorized('getPtzPresets', [], () => {
+            const resource = `cameras/${camera.deviceId}/ptz`;
+            return this.triggerAndHandleEvents(resource, [['getPresets', 'presets']],
+                () => this.notify(basestation, { action: 'getPresets', resource, publishResponse: true }, signal),
+                event => Array.isArray(event.properties?.presets) ? event.properties.presets : undefined, { timeout, signal });
+        });
+    }
+
+    private async ptzNotify(name: string, basestation: ArloDevice, camera: ArloDevice, action: string, properties?: Record<string, unknown>): Promise<void> {
+        await this.ignoreUnauthorized(name, undefined, () => this.notify(basestation, {
+            action,
             resource: `cameras/${camera.deviceId}/ptz`,
             publishResponse: true,
+            ...(properties && { properties }),
         }));
     }
 
