@@ -72,7 +72,6 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     light?: ArloBaseLight;
     svss?: ArloSirenVirtualSecuritySystem;
     ptzSwitches = new Map<string, ArloPtzSwitch>();
-    ptzPresets: { presetToken: string, name: string }[] = [];
     timeout = 10_000;
     private speaker?: Intercom;
     deviceState?: string;
@@ -150,6 +149,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             type: 'button',
             noStore: true,
             onGet: async () => ({ hide: !this.canRestart }),
+        },
+        ptz_presets: {
+            multiple: true,
+            hide: true,
+            json: true,
+            defaultValue: [],
         },
     });
 
@@ -526,6 +531,10 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     get hasPanTiltZoom(): boolean {
         return !!this.getCapability('pan', 'PanTiltZoom');
+    }
+
+    get ptzPresets(): { presetToken: string, name: string }[] {
+        return this.registered ? this.storageSettings.values.ptz_presets ?? [] : [];
     }
 
     get hasLocalLiveStreaming(): boolean {
@@ -1013,10 +1022,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     }
 
     private async refreshPtzPresets(signal?: AbortSignal): Promise<void> {
+        for (let attempt = 0; attempt < 100 && !this.registered; attempt++)
+            await sleep(100, signal);
         const previous = JSON.stringify(this.ptzPresets);
         try {
             const presets = await this.provider.arlo.getPtzPresets(this.arloBasestation, this.arloDevice, { timeout: this.timeout, signal });
-            this.ptzPresets = presets.filter(preset => preset?.presetToken)
+            this.storageSettings.values.ptz_presets = presets.filter(preset => preset?.presetToken)
                 .map(preset => ({ presetToken: String(preset.presetToken), name: String(preset.name || preset.presetToken) }));
         }
         catch (e) {
@@ -1029,9 +1040,14 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 zoom: false,
                 presets: Object.fromEntries(this.ptzPresets.map(preset => [preset.presetToken, preset.name])),
             };
-            if (JSON.stringify(this.ptzPresets) !== previous)
-                for (const manifest of this.getBuiltinChildDeviceManifests())
-                    await sdk.deviceManager.onDeviceDiscovered(manifest);
+            if (JSON.stringify(this.ptzPresets) !== previous) {
+                while (this.provider.setupInProgress)
+                    await sleep(1_000, signal);
+                await sdk.deviceManager.onDevicesChanged({
+                    providerNativeId: this.nativeId,
+                    devices: this.getBuiltinChildDeviceManifests().filter(manifest => manifest.providerNativeId === this.nativeId),
+                });
+            }
         }
         catch (e) {
             this.logger.debug(`Could not update the PTZ presets: ${e}`);
