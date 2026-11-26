@@ -15,6 +15,9 @@ import sdk, {
     ObjectDetector,
     ObjectsDetected,
     OnOff,
+    PanTiltZoom,
+    PanTiltZoomCommand,
+    PanTiltZoomMovement,
     RequestMediaStreamOptions,
     RequestPictureOptions,
     ResponseMediaStreamOptions,
@@ -45,6 +48,7 @@ import { ArloIntercom } from './intercom';
 import { ArloBaseLight, ArloFloodlight, ArloNightlight, ArloSpotlight } from './light';
 import { ArloLocalStreamProxy } from './local_stream';
 import type { ArloProvider } from './provider';
+import { ArloPtzSwitch } from './ptz';
 import { abortable, AsyncLock, sleep, TimeoutError, withTimeout } from './util';
 import { ArloSirenVirtualSecuritySystem } from './vss';
 import { ArloCameraWebRTCSessionControl, ArloCameraWebRTCSignalingSession } from './webrtc_sip';
@@ -63,10 +67,11 @@ async function isViewerSession(session: RTCSignalingSession): Promise<boolean> {
 }
 
 export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, Brightness, Camera, Charger, DeviceProvider,
-    MotionSensor, ObjectDetector, OnOff, RTCSignalingChannel, Settings, VideoCamera, VideoClips, Intercom {
+    MotionSensor, ObjectDetector, OnOff, PanTiltZoom, RTCSignalingChannel, Settings, VideoCamera, VideoClips, Intercom {
     intercom?: ArloIntercom;
     light?: ArloBaseLight;
     svss?: ArloSirenVirtualSecuritySystem;
+    ptzSwitches = new Map<string, ArloPtzSwitch>();
     timeout = 10_000;
     private speaker?: Intercom;
     deviceState?: string;
@@ -75,6 +80,7 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private lastSnapshotTime = 0;
     private lastSnapshotUrl = '';
     private intercomActive = false;
+    private ptzStopTimer?: NodeJS.Timeout;
     private skipPrebufferOnFirstAutoSnapshot = true;
     private snapshotLock = new AsyncLock();
     private rtcSessions = new Set<ArloCameraWebRTCSignalingSession>();
@@ -144,6 +150,12 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             noStore: true,
             onGet: async () => ({ hide: !this.canRestart }),
         },
+        ptz_presets: {
+            multiple: true,
+            hide: true,
+            json: true,
+            defaultValue: [],
+        },
     });
 
     async close(): Promise<void> {
@@ -153,6 +165,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
         await this.intercom?.close().catch(() => { });
         await this.light?.close().catch(() => { });
         await this.svss?.close().catch(() => { });
+        for (const ptzSwitch of this.ptzSwitches.values())
+            await ptzSwitch.close().catch(() => { });
         this.intercomActive = false;
         this.speaker = undefined;
         await super.close();
@@ -176,6 +190,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 this.deviceState = this.arloProperties.connectionState ?? 'unavailable';
                 this.activityState = this.arloProperties.activityState ?? 'unavailable';
                 this.brightness = ARLO_TO_SCRYPTED_BRIGHTNESS[this.arloProperties.brightness ?? 0];
+                if (this.hasPanTiltZoom)
+                    this.refreshPtzPresets(signal);
                 this.startAutoSnapshot();
                 return;
             }
@@ -314,17 +330,51 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             interfaces.add(ScryptedInterface.Battery);
             interfaces.add(ScryptedInterface.Charger);
         }
-        if (this.hasSiren || this.hasSpotlight || this.hasFloodlight || this.hasNightlight || this.hasPushToTalk)
+        if (this.hasSiren || this.hasSpotlight || this.hasFloodlight || this.hasNightlight || this.hasPushToTalk || this.hasPanTiltZoom)
             interfaces.add(ScryptedInterface.DeviceProvider);
         if (this.hasAudioSensor)
             interfaces.add(ScryptedInterface.AudioSensor);
         if (this.hasCloudRecording)
             interfaces.add(ScryptedInterface.VideoClips);
+        if (this.hasPanTiltZoom)
+            interfaces.add(ScryptedInterface.PanTiltZoom);
         return [...interfaces];
     }
 
     getDeviceType(): string {
         return ScryptedDeviceType.Camera;
+    }
+
+    async ptzCommand(command: PanTiltZoomCommand): Promise<void> {
+        clearTimeout(this.ptzStopTimer);
+        const movement = command.movement ?? (command.preset ? PanTiltZoomMovement.Preset : PanTiltZoomMovement.Relative);
+        const pan = command.pan ?? 0;
+        const tilt = command.tilt ?? 0;
+        if (movement === PanTiltZoomMovement.Preset) {
+            if (!command.preset) {
+                this.logger.warn('A PTZ preset move needs a preset.');
+                return;
+            }
+            await this.provider.arlo.ptzGotoPreset(this.arloBasestation, this.arloDevice, command.preset);
+        }
+        else if (movement === PanTiltZoomMovement.Home) {
+            await this.provider.arlo.ptzGotoHomePosition(this.arloBasestation, this.arloDevice);
+        }
+        else if (movement === PanTiltZoomMovement.Absolute) {
+            await this.provider.arlo.ptzAbsoluteMove(this.arloBasestation, this.arloDevice, pan, tilt);
+        }
+        else if (!pan && !tilt) {
+            await this.provider.arlo.ptzStop(this.arloBasestation, this.arloDevice);
+        }
+        else if (movement === PanTiltZoomMovement.Continuous) {
+            await this.provider.arlo.ptzContinuousMove(this.arloBasestation, this.arloDevice, pan * (command.speed?.pan ?? 1), tilt * (command.speed?.tilt ?? 1));
+            if (command.timeout)
+                this.ptzStopTimer = setTimeout(() => this.provider.arlo.ptzStop(this.arloBasestation, this.arloDevice)
+                    .catch(e => this.logger.error(`Error stopping PTZ movement: ${e}`)), command.timeout);
+        }
+        else {
+            await this.provider.arlo.ptzRelativeMove(this.arloBasestation, this.arloDevice, pan, tilt);
+        }
     }
 
     getBuiltinChildDeviceManifests(): Device[] {
@@ -360,13 +410,35 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
                 nativeId: intercom.nativeId,
             }));
         }
+        if (this.hasPanTiltZoom) {
+            const id = this.arloDevice.deviceId;
+            const labels: [string, string][] = [
+                [`${id}.panleft`, 'Pan Left'],
+                [`${id}.panright`, 'Pan Right'],
+                ...(this.getCapability('tilt', 'PanTiltZoom') ? [[`${id}.tiltup`, 'Tilt Up'], [`${id}.tiltdown`, 'Tilt Down']] as [string, string][] : []),
+                [`${id}.home`, 'Home Position'],
+                ...this.ptzPresets.map(preset => [`${id}.preset.${preset.presetToken}`, `Preset ${preset.name}`] as [string, string]),
+            ];
+            for (const [nativeId, label] of labels) {
+                const ptzSwitch = this.getPtzSwitch(nativeId);
+                manifests.push(ptzSwitch.getDeviceManifest({
+                    name: `${this.arloDevice.deviceName} ${label}`,
+                    interfaces: ptzSwitch.getApplicableInterfaces(),
+                    deviceType: ptzSwitch.getDeviceType(),
+                    providerNativeId: this.nativeId,
+                    nativeId: ptzSwitch.nativeId,
+                }));
+            }
+        }
         return manifests;
     }
 
     async refreshDevice(): Promise<void> {
         try {
             this.arloProperties = await this.provider.getDeviceProperties(this.arloBasestation, this.arloDevice);
-            for (const child of [this.light, this.svss, this.svss?.siren, this.intercom])
+            if (this.hasPanTiltZoom)
+                await this.refreshPtzPresets();
+            for (const child of [this.light, this.svss, this.svss?.siren, this.intercom, ...this.ptzSwitches.values()])
                 if (child)
                     child.arloProperties = this.arloProperties;
             for (const manifest of [this.getDeviceManifest(), ...this.getBuiltinChildDeviceManifests()])
@@ -455,6 +527,14 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
 
     get hasSipWebrtcStreaming(): boolean {
         return this.hasCapability('SIPStreaming', 'Streaming');
+    }
+
+    get hasPanTiltZoom(): boolean {
+        return !!this.getCapability('pan', 'PanTiltZoom');
+    }
+
+    get ptzPresets(): { presetToken: string, name: string }[] {
+        return this.registered ? this.storageSettings.values.ptz_presets ?? [] : [];
     }
 
     get hasLocalLiveStreaming(): boolean {
@@ -894,6 +974,8 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
             return this.getSvss();
         if (nativeId.endsWith('intercom') && this.hasPushToTalk)
             return this.getIntercom();
+        if (this.hasPanTiltZoom)
+            return this.getPtzSwitch(nativeId);
         return undefined;
     }
 
@@ -921,6 +1003,55 @@ export class ArloCamera extends ArloDeviceBase implements AudioSensor, Battery, 
     private getIntercom(): ArloIntercom {
         this.intercom ??= new ArloIntercom(`${this.arloDevice.deviceId}.intercom`, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this);
         return this.intercom;
+    }
+
+    private getPtzSwitch(nativeId: string): ArloPtzSwitch | undefined {
+        const kind = nativeId.slice(this.arloDevice.deviceId.length + 1);
+        const command: PanTiltZoomCommand | undefined = kind === 'panleft' ? { pan: -0.05 }
+            : kind === 'panright' ? { pan: 0.05 }
+            : kind === 'tiltup' ? { tilt: 0.05 }
+            : kind === 'tiltdown' ? { tilt: -0.05 }
+            : kind === 'home' ? { movement: PanTiltZoomMovement.Home }
+            : kind.startsWith('preset.') ? { movement: PanTiltZoomMovement.Preset, preset: kind.slice('preset.'.length) }
+            : undefined;
+        if (!command)
+            return undefined;
+        if (!this.ptzSwitches.has(nativeId))
+            this.ptzSwitches.set(nativeId, new ArloPtzSwitch(nativeId, this.arloDevice, this.arloBasestation, this.arloProperties, this.provider, this, command));
+        return this.ptzSwitches.get(nativeId);
+    }
+
+    private async refreshPtzPresets(signal?: AbortSignal): Promise<void> {
+        for (let attempt = 0; attempt < 100 && !this.registered; attempt++)
+            await sleep(100, signal);
+        const previous = JSON.stringify(this.ptzPresets);
+        try {
+            const presets = await this.provider.arlo.getPtzPresets(this.arloBasestation, this.arloDevice, { timeout: this.timeout, signal });
+            this.storageSettings.values.ptz_presets = presets.filter(preset => preset?.presetToken)
+                .map(preset => ({ presetToken: String(preset.presetToken), name: String(preset.name || preset.presetToken) }));
+        }
+        catch (e) {
+            this.logger.debug(`Could not read the PTZ presets: ${e}`);
+        }
+        try {
+            this.ptzCapabilities = {
+                pan: true,
+                tilt: !!this.getCapability('tilt', 'PanTiltZoom'),
+                zoom: false,
+                presets: Object.fromEntries(this.ptzPresets.map(preset => [preset.presetToken, preset.name])),
+            };
+            if (JSON.stringify(this.ptzPresets) !== previous) {
+                while (this.provider.setupInProgress)
+                    await sleep(1_000, signal);
+                await sdk.deviceManager.onDevicesChanged({
+                    providerNativeId: this.nativeId,
+                    devices: this.getBuiltinChildDeviceManifests().filter(manifest => manifest.providerNativeId === this.nativeId),
+                });
+            }
+        }
+        catch (e) {
+            this.logger.debug(`Could not update the PTZ presets: ${e}`);
+        }
     }
 
     async getDetectionInput(detectionId: string, eventId?: any): Promise<MediaObject> {

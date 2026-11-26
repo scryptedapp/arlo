@@ -50,6 +50,8 @@ If you experience any trouble logging in, turn on **Force Re-Authentication** in
 
 - **Prebuffering:** Enable prebuffering only if the camera is connected to a constant power source (e.g., wall outlet). Solar panels often do not provide sufficient power for prebuffering to function correctly. This feature is most useful for wired cameras with a steady power supply, and will only work when the camera does not have a battery, or when **Plugged In to External Power** is turned on in the camera's settings.
 
+- **Pan and Tilt:** Pan-tilt cameras can be moved from Scrypted, including to their presets and home position, and get switches for HomeKit: Pan Left, Pan Right, Tilt Up, Tilt Down, Home Position and one per preset.
+
 > **Bandwidth Usage:** Keep in mind that using anything other than the Local RTSP stream type, streaming and recording video uses extra bandwidth, as video and audio streams must travel from your camera to Arlo Cloud, and then from Arlo Cloud to your network, before finally reaching Scrypted. This additional round-trip may affect your network speed and performance.
 
 ---
